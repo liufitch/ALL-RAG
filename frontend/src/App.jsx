@@ -15,6 +15,12 @@ const visibilityMap = {
   public: "公开",
 };
 
+const retrievalModeMap = {
+  vector: "向量检索",
+  full_text: "全文检索",
+  hybrid: "混合检索",
+};
+
 const initialForm = {
   name: "",
   description: "",
@@ -22,6 +28,13 @@ const initialForm = {
   owner: "当前用户",
   visibility: "private",
   embedding_model: "bge-large-zh",
+  retrievalMode: "vector",
+  topK: 5,
+  scoreThreshold: 0.3,
+  rerankEnabled: false,
+  rerankModel: "bge-reranker-large",
+  semanticWeight: 0.7,
+  keywordWeight: 0.3,
   tags: "",
 };
 
@@ -52,6 +65,11 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function clampNumber(value, min, max) {
+  if (Number.isNaN(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 function App() {
@@ -102,13 +120,50 @@ function App() {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
+  function updateRetrievalMode(mode) {
+    setForm((current) => ({
+      ...current,
+      retrievalMode: mode,
+      rerankEnabled: mode === "hybrid" ? false : current.rerankEnabled,
+    }));
+  }
+
+  function updateWeight(key, value) {
+    const next = Number(clampNumber(Number(value), 0, 1).toFixed(2));
+    const pairedKey = key === "semanticWeight" ? "keywordWeight" : "semanticWeight";
+    setForm((current) => ({
+      ...current,
+      [key]: next,
+      [pairedKey]: Number((1 - next).toFixed(2)),
+    }));
+  }
+
   async function createKnowledgeBase(event) {
     event.preventDefault();
     setSubmitting(true);
     setError("");
     try {
+      const topK = clampNumber(Number(form.topK), 1, 100);
+      const scoreThreshold = clampNumber(Number(form.scoreThreshold), 0, 1);
+      const semanticWeight = clampNumber(Number(form.semanticWeight), 0, 1);
+      const keywordWeight = clampNumber(Number(form.keywordWeight), 0, 1);
       const payload = {
-        ...form,
+        name: form.name,
+        description: form.description,
+        category: form.category,
+        owner: form.owner,
+        visibility: form.visibility,
+        embedding_model: form.embedding_model,
+        retrieval_config: {
+          mode: form.retrievalMode,
+          top_k: topK,
+          score_threshold: scoreThreshold,
+          rerank_enabled:
+            form.retrievalMode === "hybrid" ? false : form.rerankEnabled,
+          rerank_model: form.rerankModel,
+          semantic_weight: semanticWeight,
+          keyword_weight: keywordWeight,
+        },
         tags: form.tags
           .split(/[,，\s]+/)
           .map((tag) => tag.trim())
@@ -235,6 +290,7 @@ function App() {
                   <th>状态</th>
                   <th>文档/分片</th>
                   <th>向量模型</th>
+                  <th>检索配置</th>
                   <th>权限</th>
                   <th>更新时间</th>
                   <th></th>
@@ -261,6 +317,9 @@ function App() {
                       <span className="muted"> / {item.chunk_count}</span>
                     </td>
                     <td>{item.embedding_model}</td>
+                    <td>
+                      <RetrievalSummary config={item.retrieval_config} />
+                    </td>
                     <td>{visibilityMap[item.visibility]}</td>
                     <td>{formatDate(item.updated_at)}</td>
                     <td className="actions-cell">
@@ -358,6 +417,141 @@ function App() {
                 </select>
               </label>
             </div>
+            <section className="form-section">
+              <div className="section-title">检索配置</div>
+              <div className="mode-options" role="group" aria-label="检索方式">
+                {Object.entries(retrievalModeMap).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`mode-option ${
+                      form.retrievalMode === mode ? "active" : ""
+                    }`}
+                    aria-pressed={form.retrievalMode === mode}
+                    onClick={() => updateRetrievalMode(mode)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="form-grid">
+                <label>
+                  Top K
+                  <input
+                    required
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={form.topK}
+                    onChange={(event) => updateForm("topK", event.target.value)}
+                  />
+                </label>
+                <label>
+                  Score 阈值
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={form.scoreThreshold}
+                    onChange={(event) =>
+                      updateForm("scoreThreshold", event.target.value)
+                    }
+                  />
+                </label>
+              </div>
+              {form.retrievalMode !== "hybrid" && (
+                <div className="retrieval-card">
+                  <div className="switch-row">
+                    <span>启用 Rerank</span>
+                    <label className="switch-control" aria-label="启用 Rerank">
+                      <input
+                        type="checkbox"
+                        checked={form.rerankEnabled}
+                        onChange={(event) =>
+                          updateForm("rerankEnabled", event.target.checked)
+                        }
+                      />
+                      <span className="switch-track"></span>
+                    </label>
+                  </div>
+                  {form.rerankEnabled && (
+                    <label>
+                      Rerank 模型
+                      <select
+                        value={form.rerankModel}
+                        onChange={(event) =>
+                          updateForm("rerankModel", event.target.value)
+                        }
+                      >
+                        <option value="bge-reranker-large">
+                          bge-reranker-large
+                        </option>
+                        <option value="bge-reranker-v2-m3">
+                          bge-reranker-v2-m3
+                        </option>
+                        <option value="gte-rerank">gte-rerank</option>
+                      </select>
+                    </label>
+                  )}
+                </div>
+              )}
+              {form.retrievalMode === "hybrid" && (
+                <div className="hybrid-settings">
+                  <label>
+                    语义权重
+                    <div className="range-field">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={form.semanticWeight}
+                        onChange={(event) =>
+                          updateWeight("semanticWeight", event.target.value)
+                        }
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={form.semanticWeight}
+                        onChange={(event) =>
+                          updateWeight("semanticWeight", event.target.value)
+                        }
+                      />
+                    </div>
+                  </label>
+                  <label>
+                    关键词权重
+                    <div className="range-field">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={form.keywordWeight}
+                        onChange={(event) =>
+                          updateWeight("keywordWeight", event.target.value)
+                        }
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={form.keywordWeight}
+                        onChange={(event) =>
+                          updateWeight("keywordWeight", event.target.value)
+                        }
+                      />
+                    </div>
+                  </label>
+                </div>
+              )}
+            </section>
             <label>
               标签
               <input
@@ -396,6 +590,34 @@ function Stat({ label, value, tone = "gray" }) {
 
 function Badge({ meta }) {
   return <span className={`badge ${meta.tone}`}>{meta.label}</span>;
+}
+
+function RetrievalSummary({ config }) {
+  const normalized = {
+    mode: "vector",
+    top_k: 5,
+    score_threshold: 0.3,
+    rerank_enabled: false,
+    semantic_weight: 0.7,
+    keyword_weight: 0.3,
+    ...config,
+  };
+
+  return (
+    <div className="retrieval-summary">
+      <strong>{retrievalModeMap[normalized.mode]}</strong>
+      <span>
+        Top K {normalized.top_k} / 阈值 {normalized.score_threshold}
+      </span>
+      {normalized.mode === "hybrid" ? (
+        <span>
+          语义 {normalized.semantic_weight} / 关键词 {normalized.keyword_weight}
+        </span>
+      ) : (
+        <span>{normalized.rerank_enabled ? "Rerank 已启用" : "Rerank 关闭"}</span>
+      )}
+    </div>
+  );
 }
 
 export default App;

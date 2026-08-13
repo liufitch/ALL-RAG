@@ -19,6 +19,16 @@ DATA_FILE = BASE_DIR / "data" / "knowledge_bases.json"
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 
 
+class RetrievalConfig(BaseModel):
+    mode: Literal["vector", "full_text", "hybrid"] = "vector"
+    top_k: int = Field(default=5, ge=1, le=100)
+    score_threshold: float = Field(default=0.3, ge=0, le=1)
+    rerank_enabled: bool = False
+    rerank_model: str = Field(default="bge-reranker-large", max_length=80)
+    semantic_weight: float = Field(default=0.7, ge=0, le=1)
+    keyword_weight: float = Field(default=0.3, ge=0, le=1)
+
+
 class KnowledgeBase(BaseModel):
     id: str
     name: str
@@ -27,6 +37,7 @@ class KnowledgeBase(BaseModel):
     owner: str = "当前用户"
     visibility: Literal["private", "team", "public"] = "private"
     embedding_model: str = "bge-large-zh"
+    retrieval_config: RetrievalConfig = Field(default_factory=RetrievalConfig)
     status: Literal["draft", "indexing", "ready", "failed"] = "draft"
     document_count: int = 0
     chunk_count: int = 0
@@ -42,6 +53,7 @@ class KnowledgeBaseCreate(BaseModel):
     owner: str = Field(default="当前用户", max_length=40)
     visibility: Literal["private", "team", "public"] = "private"
     embedding_model: str = Field(default="bge-large-zh", max_length=80)
+    retrieval_config: RetrievalConfig = Field(default_factory=RetrievalConfig)
     tags: list[str] = Field(default_factory=list)
 
 
@@ -152,6 +164,7 @@ def create_knowledge_base(payload: KnowledgeBaseCreate) -> KnowledgeBase:
         owner=payload.owner.strip() or "当前用户",
         visibility=payload.visibility,
         embedding_model=payload.embedding_model.strip() or "bge-large-zh",
+        retrieval_config=payload.retrieval_config,
         status="draft",
         tags=tags[:6],
         created_at=timestamp,
