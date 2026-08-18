@@ -110,6 +110,64 @@ button {
   margin-bottom: 20px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.connection-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.connection-status.success {
+  color: #166534;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.connection-status.success .connection-dot {
+  background: #16a34a;
+}
+
+.connection-status.warning {
+  color: #92400e;
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.connection-status.warning .connection-dot {
+  background: #d97706;
+}
+
+.connection-status.danger {
+  color: #991b1b;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.connection-status.danger .connection-dot {
+  background: #dc2626;
+}
+
 .eyebrow {
   margin: 0 0 4px;
   color: #64748b;
@@ -369,14 +427,26 @@ tbody tr:last-child td {
   min-width: 150px;
 }
 
-.retrieval-summary strong {
+.retrieval-summary strong,
+.vector-store-summary strong {
   color: #0f172a;
 }
 
-.retrieval-summary span {
+.retrieval-summary span,
+.vector-store-summary span {
   color: #64748b;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.vector-store-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.vector-store-summary span {
+  overflow-wrap: anywhere;
 }
 
 .badge {
@@ -520,6 +590,10 @@ label {
   font-weight: 700;
 }
 
+.form-switch {
+  margin-bottom: 14px;
+}
+
 .switch-control {
   display: inline-flex;
   margin: 0;
@@ -611,7 +685,7 @@ label {
   }
 
   table {
-    min-width: 1030px;
+    min-width: 1180px;
   }
 }
 
@@ -627,9 +701,18 @@ label {
     flex-direction: column;
   }
 
+  .header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .primary-button,
   .ghost-button:not(.icon-button) {
     width: 100%;
+  }
+
+  .connection-status {
+    justify-content: center;
   }
 
   .stats-grid,

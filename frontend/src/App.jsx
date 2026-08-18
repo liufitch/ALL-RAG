@@ -21,6 +21,19 @@ const retrievalModeMap = {
   hybrid: "混合检索",
 };
 
+const embeddingDimensionMap = {
+  "bge-large-zh": 1024,
+  "bge-m3": 1024,
+  "text-embedding-3-large": 3072,
+};
+
+const milvusStatusMap = {
+  connected: { label: "Milvus 已连接", tone: "success" },
+  disabled: { label: "Milvus 已禁用", tone: "neutral" },
+  missing_dependency: { label: "缺少 pymilvus", tone: "warning" },
+  error: { label: "Milvus 异常", tone: "danger" },
+};
+
 const initialForm = {
   name: "",
   description: "",
@@ -35,6 +48,10 @@ const initialForm = {
   rerankModel: "bge-reranker-large",
   semanticWeight: 0.7,
   keywordWeight: 0.3,
+  collectionName: "",
+  embeddingDimension: 1024,
+  metricType: "COSINE",
+  autoCreateCollection: true,
   tags: "",
 };
 
@@ -80,6 +97,7 @@ function App() {
   const [visibility, setVisibility] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [milvusHealth, setMilvusHealth] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(initialForm);
@@ -116,8 +134,21 @@ function App() {
     fetchKnowledgeBases();
   }, [filters]);
 
+  useEffect(() => {
+    fetchMilvusHealth();
+  }, []);
+
   function updateForm(key, value) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateEmbeddingModel(model) {
+    setForm((current) => ({
+      ...current,
+      embedding_model: model,
+      embeddingDimension:
+        embeddingDimensionMap[model] || current.embeddingDimension,
+    }));
   }
 
   function updateRetrievalMode(mode) {
@@ -138,6 +169,24 @@ function App() {
     }));
   }
 
+  // Milvus 健康检查独立于知识库列表，避免连接失败影响已有元数据展示。
+  async function fetchMilvusHealth() {
+    try {
+      const response = await fetch(`${API_BASE}/api/milvus/health`);
+      if (!response.ok) throw new Error("Milvus 状态加载失败");
+      setMilvusHealth(await response.json());
+    } catch (err) {
+      setMilvusHealth({
+        status: "error",
+        message: err.message || "Milvus 状态加载失败",
+      });
+    }
+  }
+
+  async function refreshData() {
+    await Promise.all([fetchKnowledgeBases(), fetchMilvusHealth()]);
+  }
+
   async function createKnowledgeBase(event) {
     event.preventDefault();
     setSubmitting(true);
@@ -147,6 +196,11 @@ function App() {
       const scoreThreshold = clampNumber(Number(form.scoreThreshold), 0, 1);
       const semanticWeight = clampNumber(Number(form.semanticWeight), 0, 1);
       const keywordWeight = clampNumber(Number(form.keywordWeight), 0, 1);
+      const embeddingDimension = clampNumber(
+        Number(form.embeddingDimension),
+        2,
+        32768,
+      );
       const payload = {
         name: form.name,
         description: form.description,
@@ -164,6 +218,13 @@ function App() {
           semantic_weight: semanticWeight,
           keyword_weight: keywordWeight,
         },
+        vector_store: {
+          provider: "milvus",
+          collection_name: form.collectionName,
+          embedding_dimension: embeddingDimension,
+          metric_type: form.metricType,
+          auto_create_collection: form.autoCreateCollection,
+        },
         tags: form.tags
           .split(/[,，\s]+/)
           .map((tag) => tag.trim())
@@ -180,7 +241,7 @@ function App() {
       }
       setForm(initialForm);
       setModalOpen(false);
-      await fetchKnowledgeBases();
+      await refreshData();
     } catch (err) {
       setError(err.message || "创建失败");
     } finally {
@@ -228,10 +289,13 @@ function App() {
             <p className="eyebrow">Datasets Management</p>
             <h1>知识库管理</h1>
           </div>
-          <button className="primary-button" onClick={() => setModalOpen(true)}>
-            <Icon name="plus" />
-            新建知识库
-          </button>
+          <div className="header-actions">
+            <MilvusStatus health={milvusHealth} />
+            <button className="primary-button" onClick={() => setModalOpen(true)}>
+              <Icon name="plus" />
+              新建知识库
+            </button>
+          </div>
         </header>
 
         <section className="stats-grid" aria-label="知识库统计">
@@ -266,7 +330,7 @@ function App() {
             <option value="team">团队</option>
             <option value="public">公开</option>
           </select>
-          <button className="ghost-button icon-button" onClick={fetchKnowledgeBases}>
+          <button className="ghost-button icon-button" onClick={refreshData}>
             <Icon name="refresh" />
           </button>
         </section>
@@ -290,6 +354,7 @@ function App() {
                   <th>状态</th>
                   <th>文档/分片</th>
                   <th>向量模型</th>
+                  <th>向量库</th>
                   <th>检索配置</th>
                   <th>权限</th>
                   <th>更新时间</th>
@@ -317,6 +382,9 @@ function App() {
                       <span className="muted"> / {item.chunk_count}</span>
                     </td>
                     <td>{item.embedding_model}</td>
+                    <td>
+                      <VectorStoreSummary store={item.vector_store} />
+                    </td>
                     <td>
                       <RetrievalSummary config={item.retrieval_config} />
                     </td>
@@ -406,7 +474,7 @@ function App() {
                 <select
                   value={form.embedding_model}
                   onChange={(event) =>
-                    updateForm("embedding_model", event.target.value)
+                    updateEmbeddingModel(event.target.value)
                   }
                 >
                   <option value="bge-large-zh">bge-large-zh</option>
@@ -552,6 +620,59 @@ function App() {
                 </div>
               )}
             </section>
+            <section className="form-section">
+              <div className="section-title">Milvus 配置</div>
+              <div className="form-grid">
+                <label>
+                  Collection
+                  <input
+                    maxLength={255}
+                    value={form.collectionName}
+                    onChange={(event) =>
+                      updateForm("collectionName", event.target.value)
+                    }
+                    placeholder="留空自动生成"
+                  />
+                </label>
+                <label>
+                  向量维度
+                  <input
+                    required
+                    type="number"
+                    min="2"
+                    max="32768"
+                    value={form.embeddingDimension}
+                    onChange={(event) =>
+                      updateForm("embeddingDimension", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Metric
+                  <select
+                    value={form.metricType}
+                    onChange={(event) => updateForm("metricType", event.target.value)}
+                  >
+                    <option value="COSINE">COSINE</option>
+                    <option value="IP">IP</option>
+                    <option value="L2">L2</option>
+                  </select>
+                </label>
+                <div className="switch-row form-switch">
+                  <span>自动创建 Collection</span>
+                  <label className="switch-control" aria-label="自动创建 Collection">
+                    <input
+                      type="checkbox"
+                      checked={form.autoCreateCollection}
+                      onChange={(event) =>
+                        updateForm("autoCreateCollection", event.target.checked)
+                      }
+                    />
+                    <span className="switch-track"></span>
+                  </label>
+                </div>
+              </div>
+            </section>
             <label>
               标签
               <input
@@ -590,6 +711,40 @@ function Stat({ label, value, tone = "gray" }) {
 
 function Badge({ meta }) {
   return <span className={`badge ${meta.tone}`}>{meta.label}</span>;
+}
+
+function MilvusStatus({ health }) {
+  const meta = milvusStatusMap[health?.status] || {
+    label: "Milvus 未知",
+    tone: "neutral",
+  };
+
+  return (
+    <div className={`connection-status ${meta.tone}`} title={health?.message || ""}>
+      <span className="connection-dot"></span>
+      <span>{meta.label}</span>
+    </div>
+  );
+}
+
+function VectorStoreSummary({ store }) {
+  const normalized = {
+    provider: "milvus",
+    collection_name: "",
+    embedding_dimension: 1024,
+    metric_type: "COSINE",
+    ...store,
+  };
+
+  return (
+    <div className="vector-store-summary">
+      <strong>{normalized.provider}</strong>
+      <span>{normalized.collection_name || "未配置 collection"}</span>
+      <span>
+        {normalized.embedding_dimension}D / {normalized.metric_type}
+      </span>
+    </div>
+  );
 }
 
 function RetrievalSummary({ config }) {
