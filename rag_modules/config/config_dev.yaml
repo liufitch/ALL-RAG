@@ -1,0 +1,12 @@
+db_milvus:
+  host: localhost
+  port: 19530
+  database: default
+  collection_prex: graph_rag
+  connect_timeout: 5
+  enable: true
+
+db_mysql:
+  host: localhost
+  port: 19530
+  name: graph_rag
