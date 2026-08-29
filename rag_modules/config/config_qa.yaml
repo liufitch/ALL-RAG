@@ -1,7 +1,17 @@
-db_milvus:
+app_name: Graph RAG
+secret_key: qa-secret-key
+debug: false
+
+database:
+  type: sqlite
+  sqlite_path: ./data/graph_rag_qa.db
+  echo: false
+
+vector_store:
+  provider: milvus
   host: localhost
   port: 19530
   database: default
-  collection_prex: graph_rag
+  collection_prefix: graph_rag
   connect_timeout: 5
-  enable: true
+  enabled: true

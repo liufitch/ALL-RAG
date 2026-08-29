@@ -1,142 +1,160 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from omegaconf import OmegaConf
-from pathlib import Path
-from pydantic import Field
+from __future__ import annotations
+
 import os
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import quote_plus
-from typing import Any,cast
-BASE_DIR = Path(__file__).parent
-# --------------------------
-# 1.读取运行环境 APP_ENV，控制多环境yaml
-# --------------------------
+
+from omegaconf import OmegaConf
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR = Path(__file__).resolve().parent
 APP_ENV = os.getenv("APP_ENV", "dev").lower()
 VALID_ENVS = {"dev", "qa", "prod"}
+DBType = Literal["sqlite", "postgresql", "mysql", "oceanbase", "seekdb"]
+VectorStoreType = Literal["milvus", "pgvector", "qdrant", "weaviate", "opensearch", "elasticsearch"]
+
 if APP_ENV not in VALID_ENVS:
-    raise ValueError(f"APP_ENV 必须为 {VALID_ENVS}, 当前:{APP_ENV}")
+    raise ValueError(f"APP_ENV must be one of {sorted(VALID_ENVS)}, got: {APP_ENV}")
 
-# 找到对应环境
-omegaConfig = OmegaConf.load(BASE_DIR/f"config_{APP_ENV}.yaml")
-yaml_dict: dict[str,Any] = OmegaConf.to_container(omegaConfig, resolve=True)
 
-def flatten_yaml(d: dict, prefix: str = "") -> dict[str, Any]:
-    """嵌套字典扁平化: db_milvus:{host:xx} → db_milvus_host"""
-    out = {}
-    for k, v in d.items():
-        key = f"{prefix}_{k}" if prefix else k
-        if isinstance(v, dict):
-            out.update(flatten_yaml(v, key))
-        else:
-            out[key] = v
-    return out
+def _load_yaml_defaults() -> dict[str, Any]:
+    config_path = BASE_DIR / f"config_{APP_ENV}.yaml"
+    if not config_path.exists():
+        return {}
+    config = OmegaConf.load(config_path)
+    data = OmegaConf.to_container(config, resolve=True)
+    return data if isinstance(data, dict) else {}
 
-flattened_yaml = flatten_yaml(yaml_dict)
+
+class DatabaseSettings(BaseModel):
+    type: DBType = "sqlite"
+    host: str = "localhost"
+    port: int = 0
+    database: str = "graph_rag"
+    username: str = ""
+    password: str = ""
+    charset: str = "utf8mb4"
+    echo: bool = False
+    pool_size: int = 5
+    max_overflow: int = 10
+    pool_timeout: int = 30
+    pool_recycle: int = 1800
+    extra_params: dict[str, Any] = Field(default_factory=dict)
+    sqlite_path: str = "./data/graph_rag.db"
+
+  # 判断数据库使用
+    @property
+    def scheme(self) -> str:
+        return {
+            "sqlite": "sqlite+aiosqlite",
+            "postgresql": "postgresql+asyncpg",
+            "mysql": "mysql+asyncmy",
+            "oceanbase": "mysql+asyncmy",
+            "seekdb": "postgresql+asyncpg",
+        }[self.type]
+
+   #根据scheme 决定使用mysql还是pg数据库
+    @property
+    def uri(self) -> str:
+        if self.type == "sqlite":
+            return f"{self.scheme}:///{self.sqlite_path}"
+
+        user = quote_plus(self.username)
+        password = quote_plus(self.password)
+        auth = user
+        if password:
+            auth = f"{auth}:{password}"
+
+        query = ""
+        params = dict(self.extra_params)
+        if self.type in {"mysql", "oceanbase"} and self.charset:
+            params.setdefault("charset", self.charset)
+        if params:
+            query = "?" + "&".join(f"{key}={value}" for key, value in params.items())
+        return f"{self.scheme}://{auth}@{self.host}:{self.port}/{self.database}{query}"
+
+    @property
+    def engine_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {"echo": self.echo}
+        if self.type != "sqlite":
+            options.update(
+                pool_size=self.pool_size,
+                max_overflow=self.max_overflow,
+                pool_timeout=self.pool_timeout,
+                pool_recycle=self.pool_recycle,
+            )
+        return options
+
+
+class VectorStoreSettings(BaseModel):
+    provider: VectorStoreType = "milvus"
+    host: str = "localhost"
+    port: int = 19530
+    database: str = "default"
+    collection_prefix: str = "graph_rag"
+    connect_timeout: int = 5
+    enabled: bool = True
+    user: str = ""
+    password: str = ""
+    token: str = ""
+    uri: str = ""
+    extra_params: dict[str, Any] = Field(default_factory=dict)
+
+
+_yaml_defaults = _load_yaml_defaults()
 
 
 class Settings(BaseSettings):
-    # ========== db_milvus 配置（来自yaml扁平化 db_milvus.xxx → db_milvus_xxx） ==========
-    db_milvus_host: str
-    db_milvus_port: int
-    db_milvus_database: str
-    db_milvus_collection_prex: str
-    db_milvus_connect_timeout: int
-    db_milvus_enable: bool
-    db_milvus_user: str = Field(
-        default="",
-        validation_alias="MILVUS_USER",
-    )
-    db_milvus_password: str = Field(
-        default="",
-        validation_alias="MILVUS_PASSWORD",
-    )
-    db_milvus_token: str = Field(
-        default="",
-        validation_alias="MILVUS_TOKEN",
-    )
+    app_name: str = "Graph RAG"
+    secret_key: str = "dev-secret-key"
+    debug: bool = False
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
 
-    # mysql 配置
-    db_mysql_host: str
-    db_mysql_port: int
-    db_mysql_db_name: str
-    db_mysql_user: str
-    db_mysql_password: str
-
-    # ========== app配置 ==========
-    app_name: str
-    secret_key: str
-    debug: bool
-
-    # dotenv 配置，指定.env路径
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env" if APP_ENV == "dev" else None,
         env_file_encoding="utf-8",
+        env_nested_delimiter="__",
         extra="ignore",
     )
-   # ** pydantic‑settings的钩子函数 **
+
     @classmethod
     def settings_customise_sources(
-            cls,
-            settings_cls,
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (
             init_settings,
             env_settings,
             dotenv_settings,
-            file_secret_settings,
-    ):
-        """
-        优先级从高到低：
-        init > 系统环境变量 > dotenv(.env仅dev) > yaml配置 > file_secret
-        """
-        return (
-            init_settings,# 1 最高：代码手动传入
-            env_settings,# 2 系统环境变量
-            dotenv_settings,# 3 .env文件
-            cls._yaml_source(flattened_yaml), #yaml兜底默认
+            cls._yaml_source(),
             file_secret_settings,
         )
-    @staticmethod
-    def _yaml_source(yaml_data: dict):
-        print("=== >>> _yaml_source 被执行了")
+
+    @classmethod
+    def _yaml_source(cls):
         def inner() -> dict[str, Any]:
-            print("=== >>> inner() 框架正在读取yaml配置源")
-            return yaml_data
+            return _yaml_defaults
 
         return inner
 
     @property
-    def milvus_config(self) -> dict[str,Any]:
-        return {
-            "host": self.db_milvus_host,
-            "port": self.db_milvus_port,
-            "db_name": self.db_milvus_database,
-            "timeout": self.db_milvus_connect_timeout,
-            "user": self.db_milvus_user,
-            "password": self.db_milvus_password,
-            "token": self.db_milvus_token,
-            "url":self.database_url
-        }
+    def database_type(self) -> DBType:
+        return self.database.type
 
     @property
-    def mysql_config(self) -> dict[str, Any]:
-        user = quote_plus(self.db_mysql_user)
-        password = quote_plus(self.db_mysql_password)
-        host = self.db_mysql_host
-        port = self.db_mysql_port
-        db_name = self.db_mysql_db_name
-        charset ='utf8mb4'
+    def sqlalchemy_database_uri(self) -> str:
+        return self.database.uri
 
-        url = (
-            f"mysql+asyncmy://{user}:{password}"
-            f"@{host}:{port}/{db_name}"
-            f"?charset={charset}"
-        )
-        return {
-            "host": host,
-            "port": port,
-            "db_name": db_name,
-            "user": self.db_mysql_user,
-            "password": self.db_mysql_password,
-            "charset": charset,
-            "url": url,
-        }
+    @property
+    def sqlalchemy_engine_options(self) -> dict[str, Any]:
+        return self.database.engine_options
 
 
-settings = cast(Settings, Settings())
+settings = Settings()

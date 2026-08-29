@@ -1,12 +1,21 @@
-db_milvus:
+app_name: Graph RAG
+secret_key: dev-secret-key
+debug: true
+
+database:
+  type: sqlite
+  sqlite_path: ./data/graph_rag.db
+  echo: false
+  pool_size: 5
+  max_overflow: 10
+  pool_timeout: 30
+  pool_recycle: 1800
+
+vector_store:
+  provider: milvus
   host: localhost
   port: 19530
   database: default
-  collection_prex: graph_rag
+  collection_prefix: graph_rag
   connect_timeout: 5
-  enable: true
-
-db_mysql:
-  host: localhost
-  port: 19530
-  name: graph_rag
+  enabled: true
