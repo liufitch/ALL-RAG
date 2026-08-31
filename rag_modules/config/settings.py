@@ -105,7 +105,8 @@ class VectorStoreSettings(BaseModel):
 
 _yaml_defaults = _load_yaml_defaults()
 
-
+#- BaseSettings 负责“从环境变量/.env 里取值”
+#- Pydantic 负责“把这些值按字段名塞进 Settings 对象”
 class Settings(BaseSettings):
     app_name: str = "Graph RAG"
     secret_key: str = "dev-secret-key"
@@ -117,7 +118,7 @@ class Settings(BaseSettings):
         env_file=BASE_DIR / ".env" if APP_ENV == "dev" else None,
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
-        extra="ignore",
+        extra="ignore", #- 环境变量里多出来、模型里没有定义的字段直接忽略，不报错
     )
 
     @classmethod

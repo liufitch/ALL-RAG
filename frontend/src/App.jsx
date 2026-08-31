@@ -115,8 +115,8 @@ function App() {
     setError("");
     try {
       const [listRes, statsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/knowledge-bases?${filters}`),
-        fetch(`${API_BASE}/api/knowledge-bases/stats`),
+        fetch(`${API_BASE}/api/knowledge_base/list?${filters}`),
+        fetch(`${API_BASE}/api/knowledge_base/stats`),
       ]);
       if (!listRes.ok || !statsRes.ok) throw new Error("数据加载失败");
       const listPayload = await listRes.json();
@@ -230,7 +230,7 @@ function App() {
           .map((tag) => tag.trim())
           .filter(Boolean),
       };
-      const response = await fetch(`${API_BASE}/api/knowledge-bases`, {
+      const response = await fetch(`${API_BASE}/api/knowledge_base`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -250,7 +250,7 @@ function App() {
   }
 
   async function deleteKnowledgeBase(id) {
-    const response = await fetch(`${API_BASE}/api/knowledge-bases/${id}`, {
+    const response = await fetch(`${API_BASE}/api/knowledge_base/${id}`, {
       method: "DELETE",
     });
     if (response.ok) {
@@ -621,6 +621,30 @@ function App() {
               )}
             </section>
             <section className="form-section">
+              <div className="section-title">文件上传</div>
+              <label>
+                上传文件
+                <input
+                  type="file"
+                  multiple
+                  onChange={async (event) => {
+                    const files = Array.from(event.target.files || []);
+                    if (!files.length) return;
+                    const results = [];
+                    for (const file of files) {
+                      const formData = new FormData();
+                      formData.append("file", file);
+                      const response = await fetch(`${API_BASE}/api/file_manage/upload`, {
+                        method: "POST",
+                        body: formData,
+                      });
+                      if (!response.ok) throw new Error(`文件上传失败: ${file.name}`);
+                      results.push(await response.json());
+                    }
+                    console.log("uploaded files", results);
+                  }}
+                />
+              </label>
               <div className="section-title">Milvus 配置</div>
               <div className="form-grid">
                 <label>

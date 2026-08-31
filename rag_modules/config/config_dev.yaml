@@ -3,13 +3,14 @@ secret_key: dev-secret-key
 debug: true
 
 database:
-  type: sqlite
+  type: postgresql
   sqlite_path: ./data/graph_rag.db
   echo: false
   pool_size: 5
   max_overflow: 10
   pool_timeout: 30
   pool_recycle: 1800
+
 
 vector_store:
   provider: milvus

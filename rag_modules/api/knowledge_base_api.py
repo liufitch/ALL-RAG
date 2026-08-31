@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from rag_modules.api.dto.knowledge_base.knowledgeBase import KnowledgeBase
 from rag_modules.api.dto.knowledge_base.knowledgeBaseCreate import KnowledgeBaseCreate
@@ -26,9 +26,26 @@ async def list_knowledge_base(
     return KnowledgeBaseListResponse(items=items, total=total)
 
 
-@router.post("/create", summary="创建知识库", response_model=KnowledgeBase)
+@router.get("/stats", summary="知识库统计")
+async def knowledge_base_stats(
+    service: KnowledgeBaseService = Depends(get_knowledge_base_service),
+) -> dict[str, int]:
+    return await service.knowledge_base_stats()
+
+
+@router.post("", summary="创建知识库", response_model=KnowledgeBase)
 async def create_knowledge_base(
     payload: KnowledgeBaseCreate,
     service: KnowledgeBaseService = Depends(get_knowledge_base_service),
 ) -> KnowledgeBase:
     return await service.create_knowledge_base(payload)
+
+
+@router.delete("/{knowledge_base_id}", summary="删除知识库", status_code=204)
+async def delete_knowledge_base(
+    knowledge_base_id: str,
+    db=Depends(get_db_session),
+) -> None:
+    deleted = await KnowledgeBaseRepository(db).soft_delete(knowledge_base_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="knowledge base not found")

@@ -78,8 +78,8 @@ def safe_collection_name(value: str) -> str:
 # store_lock = threading.Lock()
 app = FastAPI(title="知识库管理")
 # 注册子路由
-app.include_router(knowledge_base_router, prefix="/api/v1", tags=["知识库"])
-app.include_router(file_router, prefix="/api/v1", tags=["文件管理"])
+app.include_router(knowledge_base_router, tags=["知识库"])
+app.include_router(file_router, tags=["文件管理"])
 #
 # app.add_middleware(
 #     CORSMiddleware,
