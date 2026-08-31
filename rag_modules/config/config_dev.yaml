@@ -20,3 +20,48 @@ vector_store:
   collection_prefix: graph_rag
   connect_timeout: 5
   enabled: true
+
+embedding:
+  provider: openai_compatible
+  base_url: http://localhost:8001/v1
+  default_model: bge-m3
+  max_retries: 3
+  models:
+    - id: bge-m3
+      model: bge-m3
+      display_name: BGE-M3
+
+object_storage:
+  provider: minio
+  endpoint: localhost:9000
+  secure: false
+  bucket: graph-rag-uploads
+
+broker:
+  host: localhost
+  port: 5672
+  virtual_host: graph_rag
+
+upload:
+  max_file_size_mb: 50
+  max_decompressed_size_mb: 200
+  allowed_extensions: [".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv"]
+
+parser:
+  max_pdf_pages: 500
+  max_rows: 100000
+  max_columns: 1000
+  max_cell_characters: 32768
+
+preview:
+  max_documents: 20
+  max_chunks: 100
+  timeout_seconds: 30
+
+indexing:
+  default_indexing_technique: high_quality
+  general_max_chunk_length: 1024
+  general_overlap: 50
+  parent_max_chunk_length: 2048
+  child_max_chunk_length: 512
+  child_overlap: 50

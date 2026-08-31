@@ -6,7 +6,7 @@ from typing import Any, Literal
 from urllib.parse import quote_plus
 
 from omegaconf import OmegaConf
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -103,6 +103,100 @@ class VectorStoreSettings(BaseModel):
     extra_params: dict[str, Any] = Field(default_factory=dict)
 
 
+class EmbeddingModelDefinition(BaseModel):
+    id: str
+    model: str
+    display_name: str
+    enabled: bool = True
+    batch_size: int = Field(default=32, ge=1, le=512)
+    max_input_characters: int = Field(default=8000, ge=100)
+    request_timeout: int = Field(default=60, ge=1)
+    dimensions: int | None = Field(default=None, ge=1, le=32768)
+
+
+class EmbeddingSettings(BaseModel):
+    provider: Literal["openai_compatible"] = "openai_compatible"
+    base_url: str = "http://localhost:8001/v1"
+    api_key: SecretStr = SecretStr("")
+    default_model: str = "bge-m3"
+    models: list[EmbeddingModelDefinition] = Field(
+        default_factory=lambda: [
+            EmbeddingModelDefinition(
+                id="bge-m3",
+                model="bge-m3",
+                display_name="BGE-M3",
+            )
+        ]
+    )
+    max_retries: int = Field(default=3, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def validate_default_model(self):
+        if not any(item.id == self.default_model and item.enabled for item in self.models):
+            raise ValueError("default embedding model must exist and be enabled")
+        return self
+
+    def get_model(self, model_id: str) -> EmbeddingModelDefinition:
+        for item in self.models:
+            if item.id == model_id and item.enabled:
+                return item
+        raise ValueError(f"unknown or disabled embedding model: {model_id}")
+
+
+class ObjectStorageSettings(BaseModel):
+    provider: Literal["minio"] = "minio"
+    endpoint: str = "localhost:9000"
+    access_key: SecretStr = SecretStr("")
+    secret_key: SecretStr = SecretStr("")
+    secure: bool = False
+    bucket: str = "graph-rag-uploads"
+
+
+class BrokerSettings(BaseModel):
+    host: str = "localhost"
+    port: int = Field(default=5672, ge=1, le=65535)
+    username: SecretStr = SecretStr("graph_rag")
+    password: SecretStr = SecretStr("")
+    virtual_host: str = "graph_rag"
+
+    @property
+    def url(self) -> str:
+        username = quote_plus(self.username.get_secret_value())
+        password = quote_plus(self.password.get_secret_value())
+        credentials = username
+        if password:
+            credentials = f"{credentials}:{password}"
+        return f"amqp://{credentials}@{self.host}:{self.port}/{quote_plus(self.virtual_host)}"
+
+
+class UploadSettings(BaseModel):
+    max_file_size_mb: int = Field(default=50, ge=1)
+    max_decompressed_size_mb: int = Field(default=200, ge=1)
+    allowed_extensions: tuple[str, ...] = (".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv")
+
+
+class ParserSettings(BaseModel):
+    max_pdf_pages: int = Field(default=500, ge=1)
+    max_rows: int = Field(default=100_000, ge=1)
+    max_columns: int = Field(default=1_000, ge=1)
+    max_cell_characters: int = Field(default=32_768, ge=1)
+
+
+class PreviewSettings(BaseModel):
+    max_documents: int = Field(default=20, ge=1)
+    max_chunks: int = Field(default=100, ge=1)
+    timeout_seconds: int = Field(default=30, ge=1)
+
+
+class IndexingSettings(BaseModel):
+    default_indexing_technique: Literal["high_quality", "economy"] = "high_quality"
+    general_max_chunk_length: int = Field(default=1024, ge=1)
+    general_overlap: int = Field(default=50, ge=0)
+    parent_max_chunk_length: int = Field(default=2048, ge=1)
+    child_max_chunk_length: int = Field(default=512, ge=1)
+    child_overlap: int = Field(default=50, ge=0)
+
+
 _yaml_defaults = _load_yaml_defaults()
 
 #- BaseSettings 负责“从环境变量/.env 里取值”
@@ -113,6 +207,13 @@ class Settings(BaseSettings):
     debug: bool = False
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    object_storage: ObjectStorageSettings = Field(default_factory=ObjectStorageSettings)
+    broker: BrokerSettings = Field(default_factory=BrokerSettings)
+    upload: UploadSettings = Field(default_factory=UploadSettings)
+    parser: ParserSettings = Field(default_factory=ParserSettings)
+    preview: PreviewSettings = Field(default_factory=PreviewSettings)
+    indexing: IndexingSettings = Field(default_factory=IndexingSettings)
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env" if APP_ENV == "dev" else None,
