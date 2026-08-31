@@ -106,3 +106,16 @@ python -m pytest tests/e2e -v
 | 27–28：后端测试、前端测试和生产构建 | 每阶段 verification；06 Task 6 |
 | 29：真实基础设施和 mock Embedding E2E | 07 Tasks 1–5 |
 | 30：移除 `knowledge_bases.json` 和无用引用 | 07 Task 6 |
+
+## Approved Extension: Source Change Synchronization
+
+完整索引阶段 1–5 建立安全索引原语、RabbitMQ/Celery 和版本切换后，按[数据源变更同步路线图](./2026-08-31-source-sync-roadmap.md)继续实施：
+
+| 后续阶段 | 交付物 | 前置依赖 |
+|---|---|---|
+| 8 | 文档 revision、Hash 去重、先构建后切换和查询过滤 | 本路线图 1–5 |
+| 9 | Connector/source/event/outbox、管理 API 和可靠消息投递 | 8 |
+| 10 | 增量轮询、完整对账、删除确认和乱序合并 | 9 |
+| 11 | 签名 Webhook、秒级启动指标、安全和真实基础设施 E2E | 8–10、本路线图 7 |
+
+详细规格：`docs/superpowers/specs/2026-08-31-source-change-sync-design.md`。
