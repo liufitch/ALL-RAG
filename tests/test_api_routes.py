@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 
 from sqlalchemy import ARRAY
+from sqlalchemy.dialects import postgresql
 
 from main import app
 from rag_modules.db.models import DatasetRecord, DocumentRecord, DocumentSegmentRecord
@@ -14,6 +15,18 @@ class ApiRouteContractTest(unittest.TestCase):
         paths = app.openapi()["paths"]
 
         self.assertIn("/api/knowledge_base/list", paths)
+
+    def test_dataset_create_and_detail_contracts_are_in_openapi(self) -> None:
+        schema = app.openapi()
+
+        self.assertIn("201", schema["paths"]["/api/knowledge_base"]["post"]["responses"])
+        self.assertIn("get", schema["paths"]["/api/knowledge_base/{dataset_id}"])
+        create_schema = schema["components"]["schemas"]["KnowledgeBaseCreate"]
+        self.assertEqual(
+            set(create_schema["properties"]),
+            {"name", "description", "permission"},
+        )
+        self.assertFalse(create_schema["additionalProperties"])
 
 
 class DatasetSchemaContractTest(unittest.TestCase):
@@ -31,7 +44,15 @@ class DatasetSchemaContractTest(unittest.TestCase):
 
 
 class _DatasetRepositoryStub:
-    async def list(self, page: int, page_size: int):
+    async def list(
+        self,
+        page: int,
+        page_size: int,
+        *,
+        status: str = "all",
+        visibility: str = "all",
+        q: str | None = None,
+    ):
         now = datetime.now(timezone.utc)
         dataset = DatasetRecord(
             id="dataset-1",
@@ -95,7 +116,51 @@ class _DeleteSessionStub:
         self.committed = True
 
 
+class _ScalarResultStub:
+    def __init__(self, value) -> None:
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _SelectSessionStub:
+    def __init__(self, value) -> None:
+        self.value = value
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _ScalarResultStub(self.value)
+
+
 class DatasetRepositoryContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_get_active_queries_by_id_and_excludes_soft_deleted_rows(self) -> None:
+        now = datetime.now(timezone.utc)
+        dataset = DatasetRecord(
+            id="dataset-1",
+            name="Dataset One",
+            provider="vendor",
+            permission="only_me",
+            indexing_technique="high_quality",
+            created_by="user-1",
+            created_at=now,
+        )
+        session = _SelectSessionStub(dataset)
+        repository = KnowledgeBaseRepository(session)
+
+        found = await repository.get_active("dataset-1")
+
+        self.assertIs(found, dataset)
+        sql = str(
+            session.statement.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("datasets.id = 'dataset-1'", sql)
+        self.assertIn("datasets.deleted_at IS NULL", sql)
+
     async def test_delete_marks_dataset_deleted_without_physical_delete(self) -> None:
         now = datetime.now(timezone.utc)
         dataset = DatasetRecord(
