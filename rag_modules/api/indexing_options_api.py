@@ -19,6 +19,16 @@ from rag_modules.config.settings import settings
 
 router = APIRouter(tags=["Indexing"])
 
+PUBLIC_SUPPORTED_FILES = (
+    ".txt",
+    ".md",
+    ".pdf",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".csv",
+)
+
 
 @router.get(
     "/api/indexing/options",
@@ -58,7 +68,7 @@ def get_indexing_options() -> IndexingOptionsResponse:
                 supported_indexing_techniques=["high_quality"],
             ),
         ],
-        supported_files=list(settings.upload.allowed_extensions),
+        supported_files=list(PUBLIC_SUPPORTED_FILES),
         defaults=IndexingDefaults(
             indexing_technique=settings.indexing.default_indexing_technique,
             embedding_model=settings.embedding.default_model,
