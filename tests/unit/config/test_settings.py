@@ -29,8 +29,8 @@ def test_default_embedding_model_must_be_enabled(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_indexing_runtime_settings_are_available_with_safe_defaults():
-    """Removing a nested runtime settings boundary would break later indexing services."""
+def test_indexing_runtime_settings_are_available_with_approved_defaults():
+    """Changing approved segmentation defaults would change later indexing behavior."""
     loaded = Settings(_env_file=None)
 
     assert loaded.object_storage.bucket == "graph-rag-uploads"
@@ -38,4 +38,9 @@ def test_indexing_runtime_settings_are_available_with_safe_defaults():
     assert loaded.upload.max_file_size_mb > 0
     assert loaded.parser.max_pdf_pages > 0
     assert loaded.preview.timeout_seconds > 0
+    assert loaded.indexing.default_indexing_technique == "high_quality"
     assert loaded.indexing.general_max_chunk_length == 1024
+    assert loaded.indexing.general_overlap == 100
+    assert loaded.indexing.parent_max_chunk_length == 4096
+    assert loaded.indexing.child_max_chunk_length == 512
+    assert loaded.indexing.child_overlap == 50

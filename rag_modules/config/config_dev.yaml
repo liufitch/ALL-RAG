@@ -61,7 +61,7 @@ preview:
 indexing:
   default_indexing_technique: high_quality
   general_max_chunk_length: 1024
-  general_overlap: 50
-  parent_max_chunk_length: 2048
+  general_overlap: 100
+  parent_max_chunk_length: 4096
   child_max_chunk_length: 512
   child_overlap: 50

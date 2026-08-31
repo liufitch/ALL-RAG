@@ -191,8 +191,8 @@ class PreviewSettings(BaseModel):
 class IndexingSettings(BaseModel):
     default_indexing_technique: Literal["high_quality", "economy"] = "high_quality"
     general_max_chunk_length: int = Field(default=1024, ge=1)
-    general_overlap: int = Field(default=50, ge=0)
-    parent_max_chunk_length: int = Field(default=2048, ge=1)
+    general_overlap: int = Field(default=100, ge=0)
+    parent_max_chunk_length: int = Field(default=4096, ge=1)
     child_max_chunk_length: int = Field(default=512, ge=1)
     child_overlap: int = Field(default=50, ge=0)
 
