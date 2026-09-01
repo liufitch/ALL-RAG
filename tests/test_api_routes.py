@@ -123,6 +123,9 @@ class _ScalarResultStub:
     def scalar_one_or_none(self):
         return self.value
 
+    def one_or_none(self):
+        return self.value
+
 
 class _SelectSessionStub:
     def __init__(self, value) -> None:
@@ -135,7 +138,7 @@ class _SelectSessionStub:
 
 
 class DatasetRepositoryContractTest(unittest.IsolatedAsyncioTestCase):
-    async def test_get_active_queries_by_id_and_excludes_soft_deleted_rows(self) -> None:
+    async def test_get_active_with_counts_uses_active_correlated_counts(self) -> None:
         now = datetime.now(timezone.utc)
         dataset = DatasetRecord(
             id="dataset-1",
@@ -146,12 +149,12 @@ class DatasetRepositoryContractTest(unittest.IsolatedAsyncioTestCase):
             created_by="user-1",
             created_at=now,
         )
-        session = _SelectSessionStub(dataset)
+        session = _SelectSessionStub((dataset, 2, 7))
         repository = KnowledgeBaseRepository(session)
 
-        found = await repository.get_active("dataset-1")
+        found = await repository.get_active_with_counts("dataset-1")
 
-        self.assertIs(found, dataset)
+        self.assertEqual(found, (dataset, 2, 7))
         sql = str(
             session.statement.compile(
                 dialect=postgresql.dialect(),
@@ -160,6 +163,12 @@ class DatasetRepositoryContractTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("datasets.id = 'dataset-1'", sql)
         self.assertIn("datasets.deleted_at IS NULL", sql)
+        self.assertIn("count(documents.id)", sql)
+        self.assertIn("documents.dataset_id = datasets.id", sql)
+        self.assertIn("documents.deleted_at IS NULL", sql)
+        self.assertIn("count(document_segments.id)", sql)
+        self.assertIn("document_segments.dataset_id = datasets.id", sql)
+        self.assertIn("document_segments.deleted_at IS NULL", sql)
 
     async def test_delete_marks_dataset_deleted_without_physical_delete(self) -> None:
         now = datetime.now(timezone.utc)

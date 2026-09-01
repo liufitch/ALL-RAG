@@ -19,6 +19,7 @@ from rag_modules.vector_stores import factory as vector_store_factory
 class DatasetRepositoryStub:
     def __init__(self) -> None:
         self.records: dict[str, DatasetRecord] = {}
+        self.counts: dict[str, tuple[int, int]] = {}
         self.last_list_filters: dict[str, object] | None = None
 
     async def create(self, record: DatasetRecord) -> DatasetRecord:
@@ -33,6 +34,16 @@ class DatasetRepositoryStub:
         if record is None or record.deleted_at is not None:
             return None
         return record
+
+    async def get_active_with_counts(
+        self,
+        dataset_id: str,
+    ) -> tuple[DatasetRecord, int, int] | None:
+        record = await self.get_active(dataset_id)
+        if record is None:
+            return None
+        document_count, chunk_count = self.counts.get(dataset_id, (0, 0))
+        return record, document_count, chunk_count
 
     async def list(
         self,
@@ -150,8 +161,38 @@ def test_get_dataset_returns_active_dataset(dataset_client, repository) -> None:
     response = dataset_client.get("/api/knowledge_base/dataset-1")
 
     assert response.status_code == 200
-    assert response.json()["id"] == "dataset-1"
-    assert response.json()["permission"] == "all_team_members"
+    payload = response.json()
+    assert payload["id"] == "dataset-1"
+    assert payload["permission"] == "all_team_members"
+    assert payload["document_count"] == 0
+    assert payload["chunk_count"] == 0
+    assert payload["indexing_status"] == "not_started"
+    assert payload["status"] == "draft"
+
+
+def test_get_non_empty_dataset_returns_active_counts_and_ready_status(
+    dataset_client,
+    repository,
+) -> None:
+    repository.records["dataset-1"] = DatasetRecord(
+        id="dataset-1",
+        name="Indexed Dataset",
+        provider="vendor",
+        permission="only_me",
+        indexing_technique="high_quality",
+        created_by="user-1",
+        created_at=datetime.now(timezone.utc),
+    )
+    repository.counts["dataset-1"] = (2, 7)
+
+    response = dataset_client.get("/api/knowledge_base/dataset-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["document_count"] == 2
+    assert payload["chunk_count"] == 7
+    assert payload["indexing_status"] == "completed"
+    assert payload["status"] == "ready"
 
 
 @pytest.mark.parametrize("deleted", [False, True])

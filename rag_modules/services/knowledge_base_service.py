@@ -61,10 +61,11 @@ class KnowledgeBaseService:
         return self._to_dto(created, 0, 0)
 
     async def get_knowledge_base(self, dataset_id: str) -> KnowledgeBase | None:
-        record = await self.repository.get_active(dataset_id)
-        if record is None:
+        detail = await self.repository.get_active_with_counts(dataset_id)
+        if detail is None:
             return None
-        return self._to_dto(record, 0, 0)
+        record, document_count, chunk_count = detail
+        return self._to_dto(record, document_count, chunk_count)
 
     def _to_dto(self, record: DatasetRecord, document_count: int, chunk_count: int) -> KnowledgeBase:
         visibility = {

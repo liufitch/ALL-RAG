@@ -90,13 +90,34 @@ class KnowledgeBaseRepository:
         total_result = await self.session.execute(count_stmt)
         return list(result.all()), int(total_result.scalar_one())
 
-    async def get_active(self, dataset_id: str) -> DatasetRecord | None:
-        stmt = select(DatasetRecord).where(
+    async def get_active_with_counts(
+        self,
+        dataset_id: str,
+    ) -> tuple[DatasetRecord, int, int] | None:
+        document_count = (
+            select(func.count(DocumentRecord.id))
+            .where(
+                DocumentRecord.dataset_id == DatasetRecord.id,
+                DocumentRecord.deleted_at.is_(None),
+            )
+            .correlate(DatasetRecord)
+            .scalar_subquery()
+        )
+        segment_count = (
+            select(func.count(DocumentSegmentRecord.id))
+            .where(
+                DocumentSegmentRecord.dataset_id == DatasetRecord.id,
+                DocumentSegmentRecord.deleted_at.is_(None),
+            )
+            .correlate(DatasetRecord)
+            .scalar_subquery()
+        )
+        stmt = select(DatasetRecord, document_count, segment_count).where(
             DatasetRecord.id == dataset_id,
             DatasetRecord.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.one_or_none()
 
     async def create(self, record: DatasetRecord) -> DatasetRecord:
         self.session.add(record)
