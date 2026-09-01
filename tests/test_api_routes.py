@@ -138,6 +138,32 @@ class _SelectSessionStub:
 
 
 class DatasetRepositoryContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_get_active_returns_only_active_dataset_by_id(self) -> None:
+        now = datetime.now(timezone.utc)
+        dataset = DatasetRecord(
+            id="dataset-1",
+            name="Dataset One",
+            provider="vendor",
+            permission="only_me",
+            indexing_technique="high_quality",
+            created_by="user-1",
+            created_at=now,
+        )
+        session = _SelectSessionStub(dataset)
+        repository = KnowledgeBaseRepository(session)
+
+        found = await repository.get_active("dataset-1")
+
+        self.assertIs(found, dataset)
+        sql = str(
+            session.statement.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("datasets.id = 'dataset-1'", sql)
+        self.assertIn("datasets.deleted_at IS NULL", sql)
+
     async def test_get_active_with_counts_uses_active_correlated_counts(self) -> None:
         now = datetime.now(timezone.utc)
         dataset = DatasetRecord(

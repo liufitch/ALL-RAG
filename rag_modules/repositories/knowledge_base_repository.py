@@ -119,6 +119,14 @@ class KnowledgeBaseRepository:
         result = await self.session.execute(stmt)
         return result.one_or_none()
 
+    async def get_active(self, dataset_id: str) -> DatasetRecord | None:
+        stmt = select(DatasetRecord).where(
+            DatasetRecord.id == dataset_id,
+            DatasetRecord.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def create(self, record: DatasetRecord) -> DatasetRecord:
         self.session.add(record)
         await self.session.commit()
