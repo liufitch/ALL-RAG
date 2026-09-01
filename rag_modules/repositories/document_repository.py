@@ -55,3 +55,39 @@ class DocumentRepository:
             await self.session.rollback()
             raise
         return record
+
+    async def list(
+        self,
+        dataset_id: str,
+        page: int,
+        page_size: int,
+        *,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> tuple[list[DocumentRecord], int]:
+        """List active documents belonging to one dataset.
+
+        Dataset filtering is part of both the result and count queries so a
+        caller cannot accidentally expose another dataset's documents when a
+        name or status filter is applied.
+        """
+        filters = [
+            DocumentRecord.dataset_id == dataset_id,
+            DocumentRecord.deleted_at.is_(None),
+        ]
+        if status:
+            filters.append(DocumentRecord.indexing_status == status)
+        if q:
+            filters.append(DocumentRecord.name.ilike(f"%{q}%"))
+
+        stmt = (
+            select(DocumentRecord)
+            .where(*filters)
+            .order_by(DocumentRecord.position.asc(), DocumentRecord.id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        count_stmt = select(func.count()).select_from(DocumentRecord).where(*filters)
+        result = await self.session.execute(stmt)
+        total_result = await self.session.execute(count_stmt)
+        return list(result.scalars()), int(total_result.scalar_one())

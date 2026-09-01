@@ -102,6 +102,29 @@ class DocumentService:
             raise
         return self._item(created)
 
+    async def list_documents(
+        self,
+        dataset_id: str,
+        *,
+        page: int,
+        page_size: int,
+        status: str | None = None,
+        q: str | None = None,
+    ) -> tuple[list[DocumentUploadItem], int]:
+        """Return active documents for an active dataset with pagination."""
+        dataset = await self.dataset_repository.get_active(dataset_id)
+        if dataset is None:
+            raise DatasetNotFoundError(dataset_id)
+
+        records, total = await self.repository.list(
+            dataset_id,
+            page,
+            page_size,
+            status=status,
+            q=q.strip() if q and q.strip() else None,
+        )
+        return [self._item(record) for record in records], total
+
     @staticmethod
     def _item(record: DocumentRecord, *, duplicate: bool = False) -> DocumentUploadItem:
         return DocumentUploadItem(
