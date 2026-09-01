@@ -68,12 +68,53 @@ def test_text_parser_accepts_genuine_bomless_utf16_japanese_text():
     assert parsed.metadata["encoding"] == "utf_16_le"
 
 
-def test_text_parser_rejects_ambiguous_non_utf8_bytes():
+@pytest.mark.parametrize("source", ["Plain Latin text", "Привет, мир"])
+def test_text_parser_accepts_bomless_utf16_text_that_is_valid_utf8_bytes(source):
+    """A low-quality UTF-8 decode must fall through to the UTF-16 evidence."""
+    parsed = TextParser().parse(
+        io.BytesIO(source.encode("utf-16-le")),
+        ParseContext("doc-1", "utf16.txt"),
+    )
+
+    assert [block.text for block in parsed.blocks] == [source]
+    assert parsed.metadata["encoding"] == "utf_16_le"
+
+
+def test_text_parser_decodes_mixed_language_gb18030_without_script_guessing():
+    """Mixed source scripts must not make a legacy decode silently corrupt."""
+    source = "Release 2: 中文, café — ready"
+    parsed = TextParser().parse(
+        io.BytesIO(source.encode("gb18030")),
+        ParseContext("doc-1", "mixed.txt"),
+    )
+
+    assert [block.text for block in parsed.blocks] == [source]
+    assert parsed.metadata["encoding"] == "gb18030"
+
+
+def test_text_parser_rejects_ambiguous_six_byte_non_utf8_payload():
     """Choosing one equally valid legacy decoding must break this uncertainty boundary."""
     with pytest.raises(DocumentParseError) as error:
-        TextParser().parse(io.BytesIO(b"\xc0\xc1\xc2\xc3"), ParseContext("doc-1", "ambiguous.txt"))
+        TextParser().parse(
+            io.BytesIO(b"\xc0\xc1\xc2\xc3\xc4\xc5"),
+            ParseContext("doc-1", "ambiguous.txt"),
+        )
 
     assert error.value.code == "TEXT_ENCODING_UNCERTAIN"
+
+
+def test_text_parser_never_silently_corrupts_accented_legacy_text():
+    """Weak legacy detector evidence may reject, but may not return corrupt text."""
+    source = "“Café déjà vu”"
+    try:
+        parsed = TextParser().parse(
+            io.BytesIO(source.encode("cp1252")),
+            ParseContext("doc-1", "accented.txt"),
+        )
+    except DocumentParseError as error:
+        assert error.code == "TEXT_ENCODING_UNCERTAIN"
+    else:
+        assert [block.text for block in parsed.blocks] == [source]
 
 
 def test_text_parser_rejects_blank_input_with_stable_error():
@@ -201,3 +242,27 @@ def test_markdown_parser_keeps_ambiguous_unclosed_delimiter_in_body():
     assert "front_matter" not in parsed.metadata
     assert "front_matter_raw" not in parsed.metadata
     assert [block.text for block in parsed.blocks] == ["title: still markdown", "Install"]
+
+
+def test_markdown_parser_keeps_indented_delimiter_inside_yaml_block_scalar():
+    """An indented scalar line is YAML content, never a front-matter boundary."""
+    source = b"""---
+summary: |
+  first line
+  ---
+  last line
+tags:
+  - parser
+---
+
+# Install
+"""
+
+    parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "guide.md"))
+
+    assert parsed.metadata["front_matter"] == {
+        "summary": "first line\n---\nlast line\n",
+        "tags": ["parser"],
+    }
+    assert [block.text for block in parsed.blocks] == ["Install"]
+    assert parsed.blocks[0].metadata["line_start"] == 10

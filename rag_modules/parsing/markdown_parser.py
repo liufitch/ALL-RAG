@@ -40,10 +40,10 @@ class MarkdownParser:
 
 def _extract_front_matter(text: str) -> tuple[str, dict[str, Any] | None, int]:
     lines = text.split("\n")
-    if not lines or lines[0].strip() != "---":
+    if not lines or lines[0] != "---":
         return text, None, 0
     for index in range(1, len(lines)):
-        if lines[index].strip() != "---":
+        if lines[index] != "---":
             continue
         raw_front_matter = "\n".join(lines[1:index])
         try:
