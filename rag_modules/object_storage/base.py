@@ -1,5 +1,7 @@
 from dataclasses import dataclass
-from typing import AsyncContextManager, BinaryIO, Protocol
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import BinaryIO, Protocol
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,7 @@ class ObjectStorage(Protocol):
         self, object_key: str, stream: BinaryIO, length: int, content_type: str
     ) -> StoredObject: ...
 
-    def get_stream(self, object_key: str) -> AsyncContextManager[BinaryIO]: ...
+    @asynccontextmanager
+    async def get_stream(self, object_key: str) -> AsyncIterator[BinaryIO]: ...
 
     async def remove_object(self, object_key: str) -> None: ...
