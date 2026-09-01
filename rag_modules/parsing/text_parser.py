@@ -80,9 +80,9 @@ def _has_utf16_byte_lane_evidence(data: bytes, encoding: str) -> bool:
     for left, right in zip(data[::2], data[1::2]):
         if left not in control_bytes and right not in control_bytes:
             continue
-        if encoding == "utf_16_le" and (left != 0 or right not in control_bytes):
+        if encoding == "utf_16_le" and (left not in control_bytes or right != 0):
             return False
-        if encoding == "utf_16_be" and (left not in control_bytes or right != 0):
+        if encoding == "utf_16_be" and (left != 0 or right not in control_bytes):
             return False
     return True
 

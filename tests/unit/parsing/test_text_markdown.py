@@ -68,6 +68,22 @@ def test_text_parser_accepts_genuine_bomless_utf16_japanese_text():
     assert parsed.metadata["encoding"] == "utf_16_le"
 
 
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+def test_text_parser_preserves_multiline_utf16_paragraphs_and_encoding(encoding):
+    """Reversing UTF-16 control-byte lanes must reject ordinary multiline text."""
+    parsed = TextParser().parse(
+        io.BytesIO("first\n\nsecond".encode(encoding)),
+        ParseContext("doc-1", "multiline.txt"),
+    )
+
+    assert [block.text for block in parsed.blocks] == ["first", "second"]
+    assert [block.metadata for block in parsed.blocks] == [
+        {"line_start": 1, "line_end": 1},
+        {"line_start": 3, "line_end": 3},
+    ]
+    assert parsed.metadata["encoding"] == encoding.replace("-", "_")
+
+
 @pytest.mark.parametrize("source", ["Plain Latin text", "Привет, мир"])
 def test_text_parser_accepts_bomless_utf16_text_that_is_valid_utf8_bytes(source):
     """A low-quality UTF-8 decode must fall through to the UTF-16 evidence."""
