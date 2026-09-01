@@ -7,11 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, UploadFile
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.datastructures import Headers
 
 from main import app
-from rag_modules.api.file_api import upload_documents
+from rag_modules.api.file_api import get_document_service, upload_documents
 from rag_modules.config.settings import ObjectStorageSettings, UploadSettings
 from rag_modules.db.models import DatasetRecord, DocumentRecord
 from rag_modules.documents.types import UploadValidationError
@@ -375,7 +376,7 @@ async def test_real_document_list_scopes_filters_counts_and_orders_active_record
 
 
 @pytest.mark.asyncio
-async def test_batch_validation_rejection_preserves_previously_committed_document(
+async def test_batch_validation_rejection_continues_and_commits_valid_documents(
     tmp_path,
 ):
     storage = RecordingStorage()
@@ -387,25 +388,41 @@ async def test_batch_validation_rejection_preserves_previously_committed_documen
         session.add(make_dataset("dataset-1"))
         await session.commit()
 
-        response = await upload_documents(
-            dataset_id="dataset-1",
-            files=[
-                make_upload("first.txt", b"first"),
-                make_upload("legacy.doc", b"bad", "application/msword"),
-            ],
-            service=service,
-        )
+        app.dependency_overrides[get_document_service] = lambda: service
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as client:
+                response = await client.post(
+                    "/api/knowledge_base/dataset-1/documents",
+                    files=[
+                        ("files", ("first.txt", b"first", "text/plain")),
+                        (
+                            "files",
+                            ("legacy.doc", b"bad", "application/msword"),
+                        ),
+                        ("files", ("second.txt", b"second", "text/plain")),
+                    ],
+                )
+        finally:
+            app.dependency_overrides.pop(get_document_service, None)
 
         async with session_factory() as verification_session:
             persisted, total = await DocumentRepository(verification_session).list(
                 "dataset-1", 1, 20
             )
-        assert [item.name for item in response.documents] == ["first.txt"]
-        assert [item.code for item in response.rejected] == [
+        payload = response.json()
+        assert response.status_code == 201
+        assert [item["name"] for item in payload["documents"]] == [
+            "first.txt",
+            "second.txt",
+        ]
+        assert [item["code"] for item in payload["rejected"]] == [
             "UNSUPPORTED_FILE_TYPE"
         ]
-        assert [record.name for record in persisted] == ["first.txt"]
-        assert total == 1
+        assert [record.name for record in persisted] == ["first.txt", "second.txt"]
+        assert total == 2
 
 
 @pytest.mark.asyncio
