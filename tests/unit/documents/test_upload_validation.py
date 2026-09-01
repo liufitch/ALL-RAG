@@ -34,6 +34,14 @@ def make_zip(entries: list[tuple[str, bytes]], *, encrypted: bool = False) -> by
     return bytes(data)
 
 
+def zip_with_entry_count(count: int) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        for index in range(count):
+            archive.writestr(f"entries/{index}.txt", b"")
+    return output.getvalue()
+
+
 def zip_with_declared_uncompressed_size(size: int) -> bytes:
     filename = b"payload.txt"
     payload = b"x"
@@ -112,6 +120,42 @@ async def test_prepare_upload_rejects_unsupported_extensions(name: str):
 
 
 @pytest.mark.asyncio
+async def test_prepare_upload_does_not_allow_configuration_to_add_formats():
+    unvalidated_limits = UploadSettings.model_construct(
+        max_file_size_mb=1,
+        max_decompressed_size_mb=1,
+        allowed_extensions=(".txt", ".exe"),
+    )
+
+    with pytest.raises(UploadValidationError) as error:
+        await prepare_upload(
+            make_upload("payload.exe", b"executable", "application/octet-stream"),
+            unvalidated_limits,
+        )
+
+    assert error.value.code == "UNSUPPORTED_FILE_TYPE"
+
+
+@pytest.mark.asyncio
+async def test_prepare_upload_honors_configured_format_narrowing():
+    limits = UploadSettings(allowed_extensions=(" .TXT ",))
+
+    prepared = await prepare_upload(
+        make_upload("note.txt", b"plain text", "text/plain"),
+        limits,
+    )
+    assert prepared.extension == ".txt"
+
+    with pytest.raises(UploadValidationError) as error:
+        await prepare_upload(
+            make_upload("guide.md", b"# Guide", "text/markdown"),
+            limits,
+        )
+
+    assert error.value.code == "UNSUPPORTED_FILE_TYPE"
+
+
+@pytest.mark.asyncio
 async def test_prepare_upload_rejects_zip_container_expansion_limit():
     file = make_upload("bomb.docx", zip_with_declared_uncompressed_size(300 * 1024 * 1024))
 
@@ -119,6 +163,20 @@ async def test_prepare_upload_rejects_zip_container_expansion_limit():
         await prepare_upload(file, UploadSettings(max_decompressed_size_mb=200))
 
     assert error.value.code == "ARCHIVE_EXPANSION_LIMIT_EXCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_prepare_upload_rejects_excessive_archive_entry_count():
+    file = make_upload(
+        "too-many.docx",
+        zip_with_entry_count(10_001),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    with pytest.raises(UploadValidationError) as error:
+        await prepare_upload(file, UploadSettings())
+
+    assert error.value.code == "ARCHIVE_ENTRY_LIMIT_EXCEEDED"
 
 
 @pytest.mark.asyncio
@@ -178,6 +236,51 @@ async def test_prepare_upload_rejects_bad_fixed_format_signatures(
         await prepare_upload(make_upload(filename, content, content_type), UploadSettings())
 
     assert error.value.code == "INVALID_FILE_SIGNATURE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    [
+        ("manual.pdf", b"%PDF-1.7\n"),
+        ("document.docx", make_zip([("word/document.xml", b"<document/>")])),
+        ("sheet.xlsx", make_zip([("xl/workbook.xml", b"<workbook/>")])),
+        ("legacy.xls", bytes.fromhex("D0CF11E0A1B11AE1") + b"workbook"),
+    ],
+)
+async def test_prepare_upload_rejects_contradictory_fixed_format_mime(
+    filename: str,
+    content: bytes,
+):
+    with pytest.raises(UploadValidationError) as error:
+        await prepare_upload(
+            make_upload(filename, content, "image/png"),
+            UploadSettings(),
+        )
+
+    assert error.value.code == "UNSUPPORTED_CONTENT_TYPE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    [
+        ("manual.pdf", b"%PDF-1.7\n"),
+        ("document.docx", make_zip([("word/document.xml", b"<document/>")])),
+        ("sheet.xlsx", make_zip([("xl/workbook.xml", b"<workbook/>")])),
+        ("legacy.xls", bytes.fromhex("D0CF11E0A1B11AE1") + b"workbook"),
+    ],
+)
+async def test_prepare_upload_accepts_octet_stream_for_fixed_formats(
+    filename: str,
+    content: bytes,
+):
+    prepared = await prepare_upload(
+        make_upload(filename, content, "application/octet-stream"),
+        UploadSettings(),
+    )
+
+    assert prepared.content_type == "application/octet-stream"
 
 
 @pytest.mark.asyncio

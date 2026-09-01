@@ -6,8 +6,10 @@ from typing import Any, Literal
 from urllib.parse import quote_plus
 
 from omegaconf import OmegaConf
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from rag_modules.upload_formats import SUPPORTED_UPLOAD_EXTENSIONS
 
 BASE_DIR = Path(__file__).resolve().parent
 APP_ENV = os.getenv("APP_ENV", "dev").lower()
@@ -172,7 +174,20 @@ class BrokerSettings(BaseModel):
 class UploadSettings(BaseModel):
     max_file_size_mb: int = Field(default=50, ge=1)
     max_decompressed_size_mb: int = Field(default=200, ge=1)
-    allowed_extensions: tuple[str, ...] = (".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv")
+    allowed_extensions: tuple[str, ...] = SUPPORTED_UPLOAD_EXTENSIONS
+
+    @field_validator("allowed_extensions")
+    @classmethod
+    def validate_allowed_extensions(cls, extensions: tuple[str, ...]):
+        normalized = tuple(
+            dict.fromkeys(extension.strip().lower() for extension in extensions)
+        )
+        unsupported = sorted(set(normalized).difference(SUPPORTED_UPLOAD_EXTENSIONS))
+        if unsupported:
+            raise ValueError(
+                f"unsupported upload extensions: {', '.join(unsupported)}"
+            )
+        return normalized
 
 
 class ParserSettings(BaseModel):

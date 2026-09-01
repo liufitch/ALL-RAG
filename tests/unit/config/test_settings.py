@@ -1,6 +1,6 @@
 import pytest
 
-from rag_modules.config.settings import Settings
+from rag_modules.config.settings import Settings, UploadSettings
 
 
 def test_nested_embedding_catalog_and_secrets_are_loaded(monkeypatch):
@@ -44,3 +44,8 @@ def test_indexing_runtime_settings_are_available_with_approved_defaults():
     assert loaded.indexing.parent_max_chunk_length == 4096
     assert loaded.indexing.child_max_chunk_length == 512
     assert loaded.indexing.child_overlap == 50
+
+
+def test_upload_settings_reject_extensions_outside_approved_formats():
+    with pytest.raises(ValueError, match=r"unsupported upload extensions: \.exe"):
+        UploadSettings(allowed_extensions=(".txt", ".exe"))

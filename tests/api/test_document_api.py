@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException, UploadFile
 from httpx import ASGITransport, AsyncClient
+from minio.error import ServerError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.datastructures import Headers
 
@@ -16,7 +17,11 @@ from rag_modules.api.file_api import get_document_service, upload_documents
 from rag_modules.config.settings import ObjectStorageSettings, UploadSettings
 from rag_modules.db.models import DatasetRecord, DocumentRecord
 from rag_modules.documents.types import UploadValidationError
-from rag_modules.object_storage import ObjectStorageUnavailable, StoredObject
+from rag_modules.object_storage import (
+    MinioObjectStorage,
+    ObjectStorageUnavailable,
+    StoredObject,
+)
 from rag_modules.repositories.document_repository import DocumentRepository
 from rag_modules.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from rag_modules.services.document_service import (
@@ -257,6 +262,39 @@ def test_document_upload_maps_storage_unavailability_to_503(document_client):
         "/api/knowledge_base/dataset-1/documents",
         files=[("files", ("guide.txt", b"hello", "text/plain"))],
     )
+
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_document_upload_maps_minio_server_failure_to_503():
+    class ServerFailureClient:
+        def bucket_exists(self, bucket):
+            raise ServerError("MinIO service unavailable", 503)
+
+    class AdapterBackedUnavailableService(DocumentServiceStub):
+        async def upload_one(self, dataset_id, file, actor_id):
+            storage = MinioObjectStorage(
+                client=ServerFailureClient(),
+                bucket="graph-rag-uploads",
+            )
+            await storage.ensure_bucket()
+            raise AssertionError("unreachable")
+
+    app.dependency_overrides[get_document_service] = (
+        lambda: AdapterBackedUnavailableService()
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/knowledge_base/dataset-1/documents",
+                files=[("files", ("guide.txt", b"hello", "text/plain"))],
+            )
+    finally:
+        app.dependency_overrides.pop(get_document_service, None)
 
     assert response.status_code == 503
 

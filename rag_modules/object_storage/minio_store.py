@@ -4,7 +4,7 @@ from functools import partial
 from typing import BinaryIO, Any
 
 import anyio
-from minio.error import InvalidResponseError, S3Error
+from minio.error import MinioException, S3Error
 from urllib3.exceptions import HTTPError
 
 from .base import ObjectStorageUnavailable, StoredObject
@@ -20,7 +20,7 @@ class MinioObjectStorage:
     async def _run(self, operation, *args):
         try:
             return await anyio.to_thread.run_sync(partial(operation, *args))
-        except (S3Error, InvalidResponseError, HTTPError, OSError, TimeoutError, ConnectionError) as exc:
+        except (MinioException, HTTPError, OSError, TimeoutError, ConnectionError) as exc:
             raise ObjectStorageUnavailable("object storage operation failed") from exc
 
     async def ensure_bucket(self) -> None:

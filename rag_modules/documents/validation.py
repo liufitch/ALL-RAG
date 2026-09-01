@@ -9,6 +9,7 @@ from fastapi import UploadFile
 
 from rag_modules.config.settings import UploadSettings
 from rag_modules.documents.types import PreparedUpload, UploadValidationError
+from rag_modules.upload_formats import SUPPORTED_UPLOAD_EXTENSIONS
 
 CHUNK_SIZE: Final = 1024 * 1024
 TEXT_SAMPLE_SIZE: Final = 8192
@@ -28,20 +29,38 @@ TEXT_CONTENT_TYPES: Final = {
     ".md": frozenset({"text/markdown", "text/plain", "text/x-markdown"}),
     ".csv": frozenset({"text/csv", "application/csv", "text/plain"}),
 }
+FIXED_CONTENT_TYPES: Final = {
+    ".pdf": frozenset({"application/pdf", "application/octet-stream"}),
+    ".docx": frozenset(
+        {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/octet-stream",
+        }
+    ),
+    ".xls": frozenset({"application/vnd.ms-excel", "application/octet-stream"}),
+    ".xlsx": frozenset(
+        {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/octet-stream",
+        }
+    ),
+}
 
 
 async def prepare_upload(file: UploadFile, limits: UploadSettings) -> PreparedUpload:
     """Validate an upload while hashing it in bounded-size chunks."""
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
-    allowed_extensions = {item.lower() for item in limits.allowed_extensions}
+    allowed_extensions = {
+        item.strip().lower() for item in limits.allowed_extensions
+    }.intersection(SUPPORTED_UPLOAD_EXTENSIONS)
     if extension not in allowed_extensions:
         raise UploadValidationError(
             "UNSUPPORTED_FILE_TYPE", "The file extension is not supported."
         )
 
     content_type = file.content_type or "application/octet-stream"
-    _validate_text_content_type(extension, content_type)
+    _validate_content_type(extension, content_type)
 
     digest = hashlib.sha256()
     size = 0
@@ -78,13 +97,14 @@ async def prepare_upload(file: UploadFile, limits: UploadSettings) -> PreparedUp
     )
 
 
-def _validate_text_content_type(extension: str, content_type: str) -> None:
-    if extension not in TEXT_EXTENSIONS:
-        return
+def _validate_content_type(extension: str, content_type: str) -> None:
     normalized_content_type = content_type.split(";", 1)[0].strip().lower()
-    if normalized_content_type not in TEXT_CONTENT_TYPES[extension]:
+    allowed_content_types = TEXT_CONTENT_TYPES.get(
+        extension, FIXED_CONTENT_TYPES.get(extension, frozenset())
+    )
+    if normalized_content_type not in allowed_content_types:
         raise UploadValidationError(
-            "UNSUPPORTED_CONTENT_TYPE", "The content type is not valid for this text file."
+            "UNSUPPORTED_CONTENT_TYPE", "The content type is not valid for this file."
         )
 
 
