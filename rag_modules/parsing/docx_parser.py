@@ -8,9 +8,12 @@ from zipfile import BadZipFile
 
 from docx import Document
 from docx.document import Document as DocxDocument
+from docx.opc.exceptions import OpcError
+from docx.oxml.exceptions import InvalidXmlError
 from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+from lxml.etree import XMLSyntaxError
 
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import DocumentParseError, ParsedBlock, ParsedDocument
@@ -30,12 +33,23 @@ class DocxParser:
             )
         try:
             document = Document(stream)
-        except (BadZipFile, OSError, ValueError, KeyError) as error:
-            raise DocumentParseError(
-                "DOCX_MALFORMED", "The DOCX file is malformed or unreadable."
-            ) from error
+            blocks = _body_blocks(document)
+        except DocumentParseError:
+            raise
+        except (
+            BadZipFile,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            IndexError,
+            AttributeError,
+            OpcError,
+            InvalidXmlError,
+            XMLSyntaxError,
+        ) as error:
+            raise _malformed_docx_error() from error
 
-        blocks = _body_blocks(document)
         if not blocks:
             raise DocumentParseError(
                 "NO_EXTRACTABLE_TEXT", "The document contains no extractable text."
@@ -47,6 +61,10 @@ class DocxParser:
             blocks=tuple(blocks),
             metadata={},
         )
+
+
+def _malformed_docx_error() -> DocumentParseError:
+    return DocumentParseError("DOCX_MALFORMED", "The DOCX file is malformed or unreadable.")
 
 
 def _body_blocks(document: DocxDocument) -> list[ParsedBlock]:

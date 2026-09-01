@@ -126,3 +126,15 @@ def test_docx_heading_levels_replace_only_their_same_or_deeper_ancestors(fixture
         ("后续", ["总览", "后续"]),
         ("后续内容", ["总览", "后续"]),
     ]
+
+
+def test_docx_parser_normalizes_malformed_ooxml_inside_a_valid_zip(fixture_bytes):
+    """Leaking lxml XML errors would violate the parser's stable error boundary."""
+    with pytest.raises(DocumentParseError) as error:
+        DocxParser().parse(
+            io.BytesIO(fixture_bytes("malformed-ooxml.docx")),
+            ParseContext("d", "malformed.docx"),
+        )
+
+    assert error.value.code == "DOCX_MALFORMED"
+    assert error.value.retryable is False
