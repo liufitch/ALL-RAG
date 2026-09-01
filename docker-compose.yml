@@ -137,12 +137,32 @@ services:
       timeout: 5s
       retries: 5
 
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: graph-rag-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${BROKER__USERNAME:?BROKER__USERNAME is required}
+      RABBITMQ_DEFAULT_PASS: ${BROKER__PASSWORD:?BROKER__PASSWORD is required}
+      RABBITMQ_DEFAULT_VHOST: ${BROKER__VIRTUAL_HOST:?BROKER__VIRTUAL_HOST is required}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 
 volumes:
   neo4j_data:
   neo4j_logs:
   neo4j_plugins:
   postgres_data:
+  rabbitmq_data:
 
 networks:
   default:
