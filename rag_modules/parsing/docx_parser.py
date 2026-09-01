@@ -33,7 +33,6 @@ class DocxParser:
             )
         try:
             document = Document(stream)
-            blocks = _body_blocks(document)
         except DocumentParseError:
             raise
         except (
@@ -41,13 +40,17 @@ class DocxParser:
             OSError,
             ValueError,
             KeyError,
-            TypeError,
-            IndexError,
-            AttributeError,
             OpcError,
             InvalidXmlError,
             XMLSyntaxError,
         ) as error:
+            raise _malformed_docx_error() from error
+
+        try:
+            blocks = _body_blocks(document)
+        except DocumentParseError:
+            raise
+        except (OpcError, InvalidXmlError, XMLSyntaxError) as error:
             raise _malformed_docx_error() from error
 
         if not blocks:

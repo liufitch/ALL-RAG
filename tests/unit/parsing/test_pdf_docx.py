@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import rag_modules.parsing.docx_parser as docx_parser_module
 from rag_modules.config.settings import settings
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.docx_parser import DocxParser
@@ -138,3 +139,19 @@ def test_docx_parser_normalizes_malformed_ooxml_inside_a_valid_zip(fixture_bytes
 
     assert error.value.code == "DOCX_MALFORMED"
     assert error.value.retryable is False
+
+
+def test_docx_parser_does_not_mislabel_internal_extraction_type_errors(
+    monkeypatch, fixture_bytes
+):
+    """A formatter or body-walk defect must remain debuggable, not look malformed."""
+
+    def fail_body_extraction(_document):
+        raise TypeError("injected extraction bug")
+
+    monkeypatch.setattr(docx_parser_module, "_body_blocks", fail_body_extraction)
+
+    with pytest.raises(TypeError, match="injected extraction bug"):
+        DocxParser().parse(
+            io.BytesIO(fixture_bytes("heading-table.docx")), ParseContext("d", "x.docx")
+        )
