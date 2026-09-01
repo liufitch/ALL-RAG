@@ -54,5 +54,4 @@ class DocumentRepository:
         except BaseException:
             await self.session.rollback()
             raise
-        await self.session.refresh(record)
         return record

@@ -20,14 +20,16 @@ def make_upload(filename: str, content: bytes) -> UploadFile:
 
 
 class RecordingStorage:
-    def __init__(self):
+    def __init__(self, events=None):
         self.keys = []
         self.removed = []
+        self.events = events if events is not None else []
 
     async def ensure_bucket(self):
         pass
 
     async def put_stream(self, object_key, stream, length, content_type):
+        self.events.append("put")
         self.keys.append(object_key)
         assert stream.read() == b"hello"
         return SimpleNamespace(bucket="graph-rag-uploads", object_key=object_key, etag="etag")
@@ -42,8 +44,9 @@ class ExistingDatasetRepository:
 
 
 class RecordingDocumentRepository:
-    def __init__(self):
+    def __init__(self, events=None):
         self.created = None
+        self.events = events if events is not None else []
 
     async def find_duplicate(self, dataset_id, sha256, filename):
         return None
@@ -52,6 +55,7 @@ class RecordingDocumentRepository:
         return 1
 
     async def create(self, record):
+        self.events.append("create")
         self.created = record
         return record
 
@@ -67,8 +71,9 @@ class FailingDocumentRepository(RecordingDocumentRepository):
 
 @pytest.mark.asyncio
 async def test_upload_one_stores_object_before_committing_document():
-    storage = RecordingStorage()
-    repository = RecordingDocumentRepository()
+    events = []
+    storage = RecordingStorage(events)
+    repository = RecordingDocumentRepository(events)
     service = DocumentService(repository, ExistingDatasetRepository(), storage, UploadSettings())
 
     result = await service.upload_one("dataset-1", make_upload("guide.txt", b"hello"), "user-1")
@@ -76,7 +81,10 @@ async def test_upload_one_stores_object_before_committing_document():
     assert result.status == "waiting"
     assert storage.keys == [f"datasets/dataset-1/documents/{result.id}/source.txt"]
     assert repository.created.data_source_info["storage"] == "minio"
+    assert repository.created.data_source_info["original_filename"] == "guide.txt"
     assert repository.created.data_source_info["sha256"] == hashlib.sha256(b"hello").hexdigest()
+    assert repository.created.data_source_info["etag"] == "etag"
+    assert events.index("put") < events.index("create")
 
 
 @pytest.mark.asyncio

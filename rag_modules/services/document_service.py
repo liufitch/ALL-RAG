@@ -70,13 +70,12 @@ class DocumentService:
             "storage": "minio",
             "bucket": stored.bucket,
             "object_key": stored.object_key,
-            "filename": prepared.filename,
+            "original_filename": prepared.filename,
             "content_type": prepared.content_type,
             "size": prepared.size,
             "sha256": prepared.sha256,
+            "etag": stored.etag,
         }
-        if stored.etag:
-            data_source_info["etag"] = stored.etag
 
         record = DocumentRecord(
             id=document_id,
