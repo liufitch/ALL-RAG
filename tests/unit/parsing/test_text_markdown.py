@@ -47,6 +47,35 @@ def test_text_parser_rejects_chaotic_binary_with_stable_encoding_error():
     assert error.value.retryable is False
 
 
+def test_text_parser_rejects_control_heavy_valid_utf8_before_nul_normalization():
+    """Skipping quality checks after UTF-8 decoding must admit binary-like text."""
+    payload = (b"visible\x00 text\x01\x02\x03\x04" * 12)
+
+    with pytest.raises(DocumentParseError) as error:
+        TextParser().parse(io.BytesIO(payload), ParseContext("doc-1", "control.txt"))
+
+    assert error.value.code == "TEXT_ENCODING_UNCERTAIN"
+
+
+def test_text_parser_accepts_genuine_bomless_utf16_japanese_text():
+    """Rejecting BOM-less UTF-16 or selecting a corrupt legacy decode must fail."""
+    parsed = TextParser().parse(
+        io.BytesIO("日本語のテキスト".encode("utf-16-le")),
+        ParseContext("doc-1", "japanese.txt"),
+    )
+
+    assert [block.text for block in parsed.blocks] == ["日本語のテキスト"]
+    assert parsed.metadata["encoding"] == "utf_16_le"
+
+
+def test_text_parser_rejects_ambiguous_non_utf8_bytes():
+    """Choosing one equally valid legacy decoding must break this uncertainty boundary."""
+    with pytest.raises(DocumentParseError) as error:
+        TextParser().parse(io.BytesIO(b"\xc0\xc1\xc2\xc3"), ParseContext("doc-1", "ambiguous.txt"))
+
+    assert error.value.code == "TEXT_ENCODING_UNCERTAIN"
+
+
 def test_text_parser_rejects_blank_input_with_stable_error():
     """Returning an empty ParsedDocument must break this source-level invariant."""
     with pytest.raises(DocumentParseError) as error:
@@ -122,3 +151,53 @@ def test_markdown_parser_rejects_document_without_extractable_blocks():
         )
 
     assert error.value.code == "NO_EXTRACTABLE_TEXT"
+
+
+def test_markdown_parser_preserves_nested_list_and_scalar_front_matter():
+    """Flattening front matter must lose the source document's metadata shape."""
+    source = b"""---
+title: Quick start
+published: true
+owners:
+  - alice
+  - bob
+deployment:
+  region: ap-southeast-1
+  replicas: 2
+---
+
+# Install
+"""
+
+    parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "guide.md"))
+
+    assert parsed.metadata["front_matter"] == {
+        "title": "Quick start",
+        "published": True,
+        "owners": ["alice", "bob"],
+        "deployment": {"region": "ap-southeast-1", "replicas": 2},
+    }
+    assert [block.text for block in parsed.blocks] == ["Install"]
+    assert parsed.blocks[0].metadata["line_start"] == 12
+
+
+def test_markdown_parser_preserves_malformed_front_matter_as_raw_metadata():
+    """Discarding malformed YAML after removing it from the body must fail."""
+    source = b"---\ntitle: [unterminated\n---\n\n# Install\n"
+
+    parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "guide.md"))
+
+    assert parsed.metadata["front_matter_raw"] == "title: [unterminated"
+    assert [block.text for block in parsed.blocks] == ["Install"]
+    assert parsed.blocks[0].metadata["line_start"] == 5
+
+
+def test_markdown_parser_keeps_ambiguous_unclosed_delimiter_in_body():
+    """Removing an unclosed front matter start must corrupt Markdown source content."""
+    source = b"---\ntitle: still markdown\n\n# Install\n"
+
+    parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "guide.md"))
+
+    assert "front_matter" not in parsed.metadata
+    assert "front_matter_raw" not in parsed.metadata
+    assert [block.text for block in parsed.blocks] == ["title: still markdown", "Install"]

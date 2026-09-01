@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, BinaryIO
 
+import yaml
 from markdown_it import MarkdownIt
 
 from rag_modules.parsing.base import ParseContext
@@ -24,8 +25,8 @@ class MarkdownParser:
                 "NO_EXTRACTABLE_TEXT", "The document contains no extractable text."
             )
         metadata: dict[str, Any] = {"encoding": encoding}
-        if front_matter:
-            metadata["front_matter"] = front_matter
+        if front_matter is not None:
+            metadata.update(front_matter)
         if links:
             metadata["links"] = links
         return ParsedDocument(
@@ -37,20 +38,27 @@ class MarkdownParser:
         )
 
 
-def _extract_front_matter(text: str) -> tuple[str, dict[str, str], int]:
+def _extract_front_matter(text: str) -> tuple[str, dict[str, Any] | None, int]:
     lines = text.split("\n")
     if not lines or lines[0].strip() != "---":
-        return text, {}, 0
+        return text, None, 0
     for index in range(1, len(lines)):
         if lines[index].strip() != "---":
             continue
-        metadata: dict[str, str] = {}
-        for line in lines[1:index]:
-            key, separator, value = line.partition(":")
-            if separator and key.strip():
-                metadata[key.strip()] = value.strip()
-        return "\n".join(lines[index + 1 :]), metadata, index + 1
-    return text, {}, 0
+        raw_front_matter = "\n".join(lines[1:index])
+        try:
+            return (
+                "\n".join(lines[index + 1 :]),
+                {"front_matter": yaml.safe_load(raw_front_matter)},
+                index + 1,
+            )
+        except yaml.YAMLError:
+            return (
+                "\n".join(lines[index + 1 :]),
+                {"front_matter_raw": raw_front_matter},
+                index + 1,
+            )
+    return text, None, 0
 
 
 def _walk_tokens(tokens, line_offset: int) -> tuple[list[ParsedBlock], list[str]]:
