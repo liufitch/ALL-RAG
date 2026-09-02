@@ -16,6 +16,11 @@ class ParserRegistry:
             for extension, parser in parsers.items()
         }
 
+    @property
+    def registered_extensions(self) -> set[str]:
+        """Return a copy of the configured dispatch surface for diagnostics."""
+        return set(self._parsers)
+
     @staticmethod
     def _normalize_extension(extension: str) -> str:
         normalized = extension.strip().lower()

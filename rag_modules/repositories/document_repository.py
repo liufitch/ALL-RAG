@@ -12,6 +12,20 @@ class DocumentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_active_by_ids(
+        self, dataset_id: str, document_ids: list[str]
+    ) -> list[DocumentRecord]:
+        """Load active requested documents belonging to exactly one dataset."""
+        if not document_ids:
+            return []
+        stmt = select(DocumentRecord).where(
+            DocumentRecord.dataset_id == dataset_id,
+            DocumentRecord.id.in_(document_ids),
+            DocumentRecord.deleted_at.is_(None),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars())
+
     async def next_position(self, dataset_id: str) -> int:
         """Return the next one-based position among active documents."""
         stmt = select(func.max(DocumentRecord.position)).where(
