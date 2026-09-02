@@ -1,5 +1,8 @@
 """Contracts for parser-output segmentation; these tests exercise no external services."""
 
+import signal
+from contextlib import contextmanager
+
 import pytest
 
 from rag_modules.parsing.models import ParsedBlock, ParsedDocument
@@ -15,6 +18,34 @@ def parsed_document(*blocks: ParsedBlock, source_type: str = "text") -> ParsedDo
     return ParsedDocument("doc-1", "source.txt", source_type, blocks, {})
 
 
+class _SegmentationDeadlineExpired(Exception):
+    pass
+
+
+@contextmanager
+def segmentation_deadline(seconds: float = 0.1):
+    """Bound a known non-progress regression without leaving a process behind."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def expire(_signum, _frame):
+        raise _SegmentationDeadlineExpired("segmenter did not make progress before deadline")
+
+    signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
+def rebuild_with_overlap(segments, overlap: int) -> str:
+    return segments[0].content + "".join(item.content[overlap:] for item in segments[1:])
+
+
 def test_general_segmentation_honors_unicode_character_limit_and_overlap():
     """Ignoring Unicode length or overlap would make preview chunks unsafe to index."""
     parsed = parsed_document(ParsedBlock("paragraph", "第一句。第二句。第三句。", {"line_start": 1, "line_end": 1}))
@@ -25,6 +56,40 @@ def test_general_segmentation_honors_unicode_character_limit_and_overlap():
     assert all(0 < len(item.content) <= 8 for item in result.segments)
     assert result.segments[0].content[-2:] == result.segments[1].content[:2]
     assert [item.local_id for item in result.segments] == ["s-000001", "s-000002"]
+
+
+def test_general_makes_progress_when_a_preferred_boundary_is_not_past_overlap():
+    """Reusing a boundary no farther than overlap must not loop on the same input range."""
+    source = "a。abcdefgh"
+    with segmentation_deadline():
+        result = Segmenter().segment(
+            parsed_document(ParsedBlock("paragraph", source, {})),
+            GeneralSegmentationConfig(max_chunk_length=8, overlap=2),
+        )
+
+    assert all(0 < len(item.content) <= 8 for item in result.segments)
+    assert all(
+        left.content[-2:] == right.content[:2]
+        for left, right in zip(result.segments, result.segments[1:])
+    )
+    assert rebuild_with_overlap(result.segments, 2) == source
+
+
+def test_parent_child_makes_progress_when_a_preferred_child_boundary_is_not_past_overlap():
+    """The parent-child child path shares the splitter and must make the same progress."""
+    source = "a。abcdefgh"
+    with segmentation_deadline():
+        result = Segmenter().segment(
+            parsed_document(ParsedBlock("paragraph", source, {})),
+            ParentChildSegmentationConfig("paragraph", 20, 8, 2),
+        )
+
+    children = [item for item in result.segments if item.index_type == "child"]
+    assert all(0 < len(item.content) <= 8 for item in children)
+    assert all(
+        left.content[-2:] == right.content[:2] for left, right in zip(children, children[1:])
+    )
+    assert rebuild_with_overlap(children, 2) == source
 
 
 def test_general_prefers_configured_then_paragraph_newline_sentence_and_word_boundaries():
@@ -150,6 +215,32 @@ def test_full_document_fallback_keeps_short_code_atomic():
     parents = [item for item in result.segments if item.index_type == "parent"]
     code_parent = next(item for item in parents if item.content == "x = 1")
     assert code_parent.source_metadata["language"] == "python"
+
+
+@pytest.mark.parametrize(
+    "atomic_type, atomic_text, atomic_metadata",
+    [
+        ("code", "x = 1", {"language": "python", "line_start": 3, "line_end": 3}),
+        ("table_row", "名称：甲", {"sheet": "Data", "row": 2, "headers": ["名称"]}),
+    ],
+)
+def test_full_document_fallback_preserves_delimiters_around_short_atomic_blocks(
+    atomic_type, atomic_text, atomic_metadata
+):
+    """Fallback grouping must not erase delimiters on either side of an atomic block."""
+    blocks = (
+        ParsedBlock("paragraph", "aa", {"line_start": 1, "line_end": 1}),
+        ParsedBlock(atomic_type, atomic_text, atomic_metadata),
+        ParsedBlock("paragraph", "bb", {"line_start": 5, "line_end": 5}),
+    )
+    parsed = parsed_document(*blocks)
+
+    result = Segmenter().segment(parsed, ParentChildSegmentationConfig("full_document", 8, 8, 0))
+
+    parents = [item for item in result.segments if item.index_type == "parent"]
+    assert all(len(item.content) <= 8 for item in parents)
+    assert "".join(item.content for item in parents) == "aa\n\n" + atomic_text + "\n\nbb"
+    assert next(item for item in parents if item.content == atomic_text).source_metadata == atomic_metadata
 
 
 def test_spreadsheet_groups_consecutive_rows_per_sheet_and_preserves_headers_in_children():

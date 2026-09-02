@@ -178,11 +178,38 @@ def _general_sources(blocks: tuple[ParsedBlock, ...]) -> tuple[_SourceText, ...]
 def _fallback_parent_sources(
     blocks: tuple[ParsedBlock, ...], maximum: int, separator: str | None
 ) -> tuple[_SourceText, ...]:
-    """Degrade a full-document parent without breaking short code/table atomic units."""
+    """Degrade a full document without breaking atomic units or losing delimiters."""
     sources: list[_SourceText] = []
-    for source in _general_sources(blocks):
-        sources.extend(_split_source(source, maximum, 0, separator))
-    return tuple(sources)
+    prose: list[ParsedBlock] = []
+    previous: ParsedBlock | None = None
+    for block in blocks:
+        if block.block_type not in {"code", "table_row"}:
+            if previous and previous.block_type in {"code", "table_row"}:
+                sources.append(_delimiter_source(previous, block))
+            prose.append(block)
+            previous = block
+            continue
+        if prose:
+            sources.append(_combine_blocks(prose))
+            prose = []
+        if previous:
+            sources.append(_delimiter_source(previous, block))
+        sources.append(_source_for_block(block))
+        previous = block
+    if prose:
+        sources.append(_combine_blocks(prose))
+    split_sources: list[_SourceText] = []
+    for source in sources:
+        split_sources.extend(_split_source(source, maximum, 0, separator))
+    return tuple(split_sources)
+
+
+def _delimiter_source(previous: ParsedBlock, current: ParsedBlock) -> _SourceText:
+    """Keep an inter-block delimiter traceable while leaving both atomic blocks intact."""
+    return _SourceText(
+        "\n\n",
+        (_SourcePiece(0, 2, _merge_metadata((previous.metadata, current.metadata))),),
+    )
 
 
 def _source_for_block(block: ParsedBlock) -> _SourceText:
@@ -226,11 +253,15 @@ def _split_ranges(text: str, maximum: int, overlap: int, separator: str | None) 
         if limit == len(text):
             end = limit
         else:
-            end = _boundary_end(text, start, limit, separator) or limit
+            boundary_end = _boundary_end(text, start, limit, separator)
+            end = boundary_end if boundary_end and boundary_end - start > overlap else limit
         ranges.append((start, end))
         if end == len(text):
             break
-        start = end - overlap
+        next_start = end - overlap
+        if next_start <= start:
+            raise RuntimeError("segmentation split did not make progress")
+        start = next_start
     return tuple(ranges)
 
 
