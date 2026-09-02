@@ -9,14 +9,13 @@ from lxml.etree import XMLSyntaxError
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
-from rag_modules.config.settings import settings
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import (
     DocumentParseError,
     ParsedDocument,
     ParserWarning,
 )
-from rag_modules.parsing.tabular import enforce_column_limit, table_blocks
+from rag_modules.parsing.tabular import TableRowBudget, table_blocks
 
 
 class XlsxParser:
@@ -44,6 +43,7 @@ class XlsxParser:
         try:
             blocks = []
             warnings = []
+            budget = TableRowBudget()
             for worksheet in workbook.worksheets:
                 if worksheet.sheet_state != "visible":
                     warnings.append(
@@ -54,13 +54,9 @@ class XlsxParser:
                         )
                     )
                     continue
-                if worksheet.max_row > settings.parser.max_rows:
-                    raise DocumentParseError(
-                        "TABLE_ROW_LIMIT_EXCEEDED",
-                        "The table exceeds the configured row limit.",
-                    )
-                enforce_column_limit(worksheet.max_column)
-                blocks.extend(table_blocks(_worksheet_rows(worksheet), worksheet.title))
+                blocks.extend(
+                    table_blocks(_worksheet_rows(worksheet), worksheet.title, budget)
+                )
         except DocumentParseError:
             raise
         except (BadZipFile, OSError, KeyError, ValueError, XMLSyntaxError) as error:
@@ -83,8 +79,11 @@ class XlsxParser:
 
 
 def _worksheet_rows(worksheet: Any) -> Iterator[tuple[int, tuple[Any, ...]]]:
-    for source_row, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
-        yield source_row, row
+    for row in worksheet.iter_rows():
+        source_cell = next((cell for cell in row if hasattr(cell, "row")), None)
+        if source_cell is None:
+            continue
+        yield source_cell.row, tuple(cell.value for cell in row)
 
 
 def _malformed_xlsx_error() -> DocumentParseError:

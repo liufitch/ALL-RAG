@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any
 
@@ -64,6 +65,20 @@ def validate_table_values(values: Sequence[Any]) -> None:
             )
 
 
+@dataclass
+class TableRowBudget:
+    """Document-wide count of meaningful source rows consumed by tables."""
+
+    rows_used: int = 0
+
+    def consume(self) -> None:
+        self.rows_used += 1
+        if self.rows_used > settings.parser.max_rows:
+            raise DocumentParseError(
+                "TABLE_ROW_LIMIT_EXCEEDED", "The table exceeds the configured row limit."
+            )
+
+
 def format_table_row(headers: Sequence[str], values: Sequence[Any]) -> str:
     """Render a table row as self-describing header/value pairs.
 
@@ -82,21 +97,31 @@ def format_table_row(headers: Sequence[str], values: Sequence[Any]) -> str:
 
 
 def table_blocks(
-    rows: Iterable[tuple[int, Sequence[Any]]], sheet: str
+    rows: Iterable[tuple[int, Sequence[Any]]], sheet: str, budget: TableRowBudget
 ) -> list[ParsedBlock]:
-    """Convert a bounded source-row iterator into normalized table blocks."""
-    headers: list[str] | None = None
-    blocks: list[ParsedBlock] = []
-    for logical_row, (source_row, values) in enumerate(rows, start=1):
-        if logical_row > settings.parser.max_rows:
-            raise DocumentParseError(
-                "TABLE_ROW_LIMIT_EXCEEDED", "The table exceeds the configured row limit."
-            )
-        validate_table_values(values)
-        if headers is None:
-            if row_has_values(values):
-                headers = normalize_table_headers(values)
+    """Normalize one table after bounded collection under a document row budget."""
+    meaningful_rows: list[tuple[int, list[Any]]] = []
+    for source_row, source_values in rows:
+        values = _trim_trailing_nulls(source_values)
+        if not row_has_values(values):
             continue
+        budget.consume()
+        validate_table_values(values)
+        meaningful_rows.append((source_row, values))
+
+    if not meaningful_rows:
+        return []
+
+    header_values = meaningful_rows[0][1]
+    final_width = max(len(values) for _, values in meaningful_rows)
+    headers = normalize_table_headers(
+        [
+            header_values[index] if index < len(header_values) else None
+            for index in range(final_width)
+        ]
+    )
+    blocks: list[ParsedBlock] = []
+    for source_row, values in meaningful_rows[1:]:
         text = format_table_row(headers, values)
         if text:
             blocks.append(
@@ -107,3 +132,11 @@ def table_blocks(
                 )
             )
     return blocks
+
+
+def _trim_trailing_nulls(values: Sequence[Any]) -> list[Any]:
+    """Keep null gaps for alignment but discard unused trailing source columns."""
+    last_value = len(values)
+    while last_value and values[last_value - 1] is None:
+        last_value -= 1
+    return list(values[:last_value])

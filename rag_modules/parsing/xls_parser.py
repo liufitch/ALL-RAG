@@ -8,10 +8,9 @@ import xlrd
 from xlrd.biffh import XLRDError
 from xlrd.compdoc import CompDocError
 
-from rag_modules.config.settings import settings
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import DocumentParseError, ParsedDocument
-from rag_modules.parsing.tabular import enforce_column_limit, table_blocks
+from rag_modules.parsing.tabular import TableRowBudget, table_blocks
 
 
 class XlsParser:
@@ -31,15 +30,12 @@ class XlsParser:
 
         try:
             blocks = []
+            budget = TableRowBudget()
             for sheet_name in workbook.sheet_names():
                 worksheet = workbook.sheet_by_name(sheet_name)
-                if worksheet.nrows > settings.parser.max_rows:
-                    raise DocumentParseError(
-                        "TABLE_ROW_LIMIT_EXCEEDED",
-                        "The table exceeds the configured row limit.",
-                    )
-                enforce_column_limit(worksheet.ncols)
-                blocks.extend(table_blocks(_worksheet_rows(worksheet, workbook.datemode), sheet_name))
+                blocks.extend(
+                    table_blocks(_worksheet_rows(worksheet, workbook.datemode), sheet_name, budget)
+                )
         except DocumentParseError:
             raise
         except (XLRDError, CompDocError, OSError, ValueError, IndexError) as error:
@@ -64,11 +60,19 @@ def _worksheet_rows(worksheet: Any, datemode: int) -> Iterator[tuple[int, list[A
     for source_row in range(worksheet.nrows):
         values: list[Any] = []
         for cell in worksheet.row(source_row):
-            value = cell.value
-            if cell.ctype == xlrd.XL_CELL_DATE:
-                value = xlrd.xldate_as_datetime(value, datemode)
+            value = _cell_value(cell, datemode)
             values.append(value)
         yield source_row + 1, values
+
+
+def _cell_value(cell: Any, datemode: int) -> Any:
+    if cell.ctype in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK}:
+        return None
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return bool(cell.value)
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        return xlrd.xldate_as_datetime(cell.value, datemode)
+    return cell.value
 
 
 def _malformed_xls_error() -> DocumentParseError:

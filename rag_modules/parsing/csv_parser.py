@@ -8,7 +8,7 @@ from typing import BinaryIO
 
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import DocumentParseError, ParsedDocument
-from rag_modules.parsing.tabular import table_blocks
+from rag_modules.parsing.tabular import TableRowBudget, table_blocks
 from rag_modules.parsing.text_parser import decode_text
 
 
@@ -32,7 +32,7 @@ class CsvParser:
 
         dialect = _dialect_for(text)
         try:
-            blocks = table_blocks(_csv_rows(text, dialect), "CSV")
+            blocks = table_blocks(_csv_rows(text, dialect), "CSV", TableRowBudget())
         except DocumentParseError:
             raise
         except csv.Error as error:
@@ -61,7 +61,7 @@ def _dialect_for(text: str) -> type[csv.Dialect]:
         return csv.excel
 
 
-def _csv_rows(text: str, dialect: type[csv.Dialect]) -> Iterator[tuple[int, list[str]]]:
+def _csv_rows(text: str, dialect: type[csv.Dialect]) -> Iterator[tuple[int, list[str | None]]]:
     reader = csv.reader(io.StringIO(text, newline=""), dialect=dialect, strict=True)
     for values in reader:
-        yield reader.line_num, values
+        yield reader.line_num, [value if value != "" else None for value in values]

@@ -136,6 +136,124 @@ def test_empty_xlsx_has_no_extractable_table_rows(parser_registry, fixture_bytes
     assert error.value.code == "NO_EXTRACTABLE_TEXT"
 
 
+def test_xls_normalizes_blank_cells_and_booleans_without_emitting_empty_rows(
+    parser_registry, fixture_bytes
+):
+    """Passing xlrd blank/boolean primitives through creates false table facts."""
+    parsed = parser_registry.parse(
+        ".xls",
+        io.BytesIO(fixture_bytes("legacy-null-bool.xls")),
+        ParseContext("d", "legacy-null-bool.xls"),
+    )
+
+    assert [(block.text, block.metadata) for block in parsed.blocks] == [
+        (
+            "左：A；右：C；启用：true",
+            {"sheet": "旧表", "row": 2, "headers": ["左", "中", "右", "启用"]},
+        )
+    ]
+
+
+def test_csv_normalizes_empty_fields_and_ignores_a_fully_empty_data_row(
+    parser_registry, fixture_bytes
+):
+    """Treating CSV empty fields as text emits empty pairs and a fake data record."""
+    parsed = parser_registry.parse(
+        ".csv",
+        io.BytesIO(fixture_bytes("null-rows.csv")),
+        ParseContext("d", "null-rows.csv"),
+    )
+
+    assert [(block.text, block.metadata) for block in parsed.blocks] == [
+        (
+            "左：A；右：C",
+            {"sheet": "CSV", "row": 2, "headers": ["左", "中", "右"]},
+        )
+    ]
+
+
+def test_ragged_csv_extends_and_deduplicates_headers_before_any_block_metadata(
+    parser_registry, fixture_bytes
+):
+    """Finalizing ragged rows early leaves metadata unable to describe emitted columns."""
+    parsed = parser_registry.parse(
+        ".csv",
+        io.BytesIO(fixture_bytes("ragged.csv")),
+        ParseContext("d", "ragged.csv"),
+    )
+
+    assert [(block.text, block.metadata) for block in parsed.blocks] == [
+        (
+            "甲：A；列3：B；列3_2：C",
+            {"sheet": "CSV", "row": 2, "headers": ["甲", "列3", "列3_2"]},
+        )
+    ]
+
+
+def test_row_limit_is_a_document_budget_that_counts_visible_sheet_headers(
+    monkeypatch, parser_registry, fixture_bytes
+):
+    """Resetting the limit per sheet permits a workbook to exceed its document budget."""
+    monkeypatch.setattr(settings.parser, "max_rows", 3)
+
+    with pytest.raises(DocumentParseError) as error:
+        parser_registry.parse(
+            ".xlsx",
+            io.BytesIO(fixture_bytes("row-budget.xlsx")),
+            ParseContext("d", "row-budget.xlsx"),
+        )
+
+    assert error.value.code == "TABLE_ROW_LIMIT_EXCEEDED"
+
+
+def test_csv_row_budget_counts_non_empty_header_and_data_but_not_blank_records(
+    monkeypatch, parser_registry, fixture_bytes
+):
+    """A blank CSV record must not consume the same logical row budget as source data."""
+    monkeypatch.setattr(settings.parser, "max_rows", 2)
+
+    parsed = parser_registry.parse(
+        ".csv",
+        io.BytesIO(fixture_bytes("null-rows.csv")),
+        ParseContext("d", "null-rows.csv"),
+    )
+
+    assert [block.metadata["row"] for block in parsed.blocks] == [2]
+
+
+def test_xlsx_ignores_style_only_declared_dimensions_for_row_and_column_limits(
+    monkeypatch, parser_registry, fixture_bytes
+):
+    """Trusting a worksheet's declared Z100 dimension rejects tiny real tables."""
+    monkeypatch.setattr(settings.parser, "max_rows", 2)
+    monkeypatch.setattr(settings.parser, "max_columns", 2)
+
+    parsed = parser_registry.parse(
+        ".xlsx",
+        io.BytesIO(fixture_bytes("style-only-dimensions.xlsx")),
+        ParseContext("d", "style-only-dimensions.xlsx"),
+    )
+
+    assert [(block.text, block.metadata["row"]) for block in parsed.blocks] == [("列：值", 2)]
+
+
+def test_xlsx_remote_non_null_cell_uses_its_real_column_for_the_limit(
+    monkeypatch, parser_registry, fixture_bytes
+):
+    """Ignoring declared dimensions must not hide a real distant value beyond the column limit."""
+    monkeypatch.setattr(settings.parser, "max_rows", 2)
+    monkeypatch.setattr(settings.parser, "max_columns", 2)
+
+    with pytest.raises(DocumentParseError) as error:
+        parser_registry.parse(
+            ".xlsx",
+            io.BytesIO(fixture_bytes("remote-value-dimensions.xlsx")),
+            ParseContext("d", "remote-value-dimensions.xlsx"),
+        )
+
+    assert error.value.code == "TABLE_COLUMN_LIMIT_EXCEEDED"
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "limit_name", "limit", "expected_code"),
     [
