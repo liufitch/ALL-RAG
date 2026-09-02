@@ -45,6 +45,26 @@ class MinioObjectStorage:
             etag=getattr(result, "etag", None),
         )
 
+    async def get_bytes(self, object_key: str, max_bytes: int) -> bytes:
+        """Download bounded bytes while one worker owns the response lifecycle."""
+        try:
+            return await anyio.to_thread.run_sync(
+                partial(self._get_bytes_sync, object_key, max_bytes),
+                abandon_on_cancel=True,
+            )
+        except (MinioException, HTTPError, OSError, TimeoutError, ConnectionError) as exc:
+            raise ObjectStorageUnavailable("object storage operation failed") from exc
+
+    def _get_bytes_sync(self, object_key: str, max_bytes: int) -> bytes:
+        response = self.client.get_object(self.bucket, object_key)
+        try:
+            return response.read(max_bytes)
+        finally:
+            try:
+                response.close()
+            finally:
+                response.release_conn()
+
     @asynccontextmanager
     async def get_stream(self, object_key: str) -> AsyncIterator[BinaryIO]:
         response = await self._run(self.client.get_object, self.bucket, object_key)

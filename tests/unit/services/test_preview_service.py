@@ -1,7 +1,9 @@
 import io
+import time
 from contextlib import asynccontextmanager
-from threading import Event
+from threading import Event, Timer
 
+import anyio
 import pytest
 
 from rag_modules.api.dto.indexing_preview import (
@@ -81,6 +83,43 @@ class MemoryStorage:
     async def get_stream(self, object_key):
         self.keys.append(object_key)
         yield io.BytesIO(self.objects[object_key])
+
+    async def get_bytes(self, object_key, max_bytes):
+        self.keys.append(object_key)
+        return self.objects[object_key][:max_bytes]
+
+
+class SlowStorage:
+    def __init__(self):
+        self.entered = Event()
+        self.release = Event()
+        self.finished = Event()
+
+    def _read(self, max_bytes):
+        self.entered.set()
+        self.release.wait(timeout=5)
+        self.finished.set()
+        return b"A"[:max_bytes]
+
+    async def get_bytes(self, object_key, max_bytes):
+        return await anyio.to_thread.run_sync(
+            self._read,
+            max_bytes,
+            abandon_on_cancel=True,
+        )
+
+    @asynccontextmanager
+    async def get_stream(self, object_key):
+        class SlowStream:
+            consumed = False
+
+            def read(inner_self, size=-1):
+                if inner_self.consumed:
+                    return b""
+                inner_self.consumed = True
+                return self._read(size)
+
+        yield SlowStream()
 
 
 class StaticRegistry:
@@ -288,6 +327,23 @@ async def test_unknown_high_quality_model_is_stable_and_economy_does_not_resolve
 
 
 @pytest.mark.asyncio
+async def test_explicit_empty_high_quality_model_is_not_replaced_by_default():
+    service = _service([], {})
+    request = IndexingPreviewRequest(
+        document_ids=["doc-1"],
+        indexing_technique="high_quality",
+        embedding_model="",
+        segmentation={"mode": "general"},
+    )
+
+    with pytest.raises(PreviewValidationError) as error:
+        await service.preview("dataset-1", ["doc-1"], request)
+
+    assert error.value.code == "EMBEDDING_MODEL_UNAVAILABLE"
+    assert service.repository.calls == []
+
+
+@pytest.mark.asyncio
 async def test_preview_serializes_parser_and_segmentation_warnings_and_metadata():
     class WarningRegistry:
         def parse(self, extension, stream, context):
@@ -415,3 +471,31 @@ async def test_dependency_timeout_is_not_mislabeled_as_preview_deadline():
     service.dataset_repository = TimedOutDataset()
     with pytest.raises(TimeoutError, match="database connection timed out"):
         await service.preview("dataset-1", ["doc-1"], _request("doc-1"))
+
+
+@pytest.mark.asyncio
+async def test_slow_storage_returns_preview_timeout_near_deadline():
+    record = _record()
+    service = _service([record], {})
+    storage = SlowStorage()
+    service.storage = storage
+    service.preview_settings = PreviewSettings(
+        max_documents=20,
+        max_chunks=100,
+        timeout_seconds=1,
+    )
+    delayed_release = Timer(1.6, storage.release.set)
+    delayed_release.start()
+    started = time.monotonic()
+
+    try:
+        with pytest.raises(PreviewValidationError) as error:
+            await service.preview("dataset-1", ["doc-1"], _request("doc-1"))
+        assert error.value.code == "PREVIEW_TIMEOUT"
+        assert time.monotonic() - started < 1.4
+    finally:
+        storage.release.set()
+        delayed_release.cancel()
+        delayed_release.join(timeout=1)
+
+    assert storage.finished.wait(timeout=1)

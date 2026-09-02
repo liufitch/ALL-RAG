@@ -172,7 +172,11 @@ class PreviewService:
                 "Parent-child segmentation requires high-quality indexing.",
             )
         if request.indexing_technique == "high_quality":
-            model_id = request.embedding_model or self.embedding_settings.default_model
+            model_id = (
+                self.embedding_settings.default_model
+                if request.embedding_model is None
+                else request.embedding_model
+            )
             try:
                 self.embedding_settings.get_model(model_id)
             except ValueError as error:
@@ -217,11 +221,7 @@ class PreviewService:
         return filename, extension, object_key, size
 
     async def _read_source(self, object_key: str, expected_size: int) -> bytes:
-        async with self.storage.get_stream(object_key) as stream:
-            payload = await anyio.to_thread.run_sync(
-                partial(_read_bounded, stream, expected_size),
-                abandon_on_cancel=False,
-            )
+        payload = await self.storage.get_bytes(object_key, expected_size + 1)
         if len(payload) != expected_size:
             raise PreviewValidationError(
                 "INVALID_SOURCE_METADATA",
@@ -282,22 +282,6 @@ def _invalid_source_metadata() -> PreviewValidationError:
     return PreviewValidationError(
         "INVALID_SOURCE_METADATA", "The document source metadata is invalid."
     )
-
-
-def _read_bounded(stream, expected_size: int) -> bytes:
-    remaining = expected_size + 1
-    parts: list[bytes] = []
-    while remaining > 0:
-        chunk = stream.read(remaining)
-        if not chunk:
-            break
-        if not isinstance(chunk, bytes):
-            raise PreviewValidationError(
-                "INVALID_SOURCE_METADATA", "The stored source is not binary."
-            )
-        parts.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(parts)
 
 
 def _parse_and_segment(

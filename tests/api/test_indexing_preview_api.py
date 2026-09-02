@@ -1,6 +1,16 @@
+import time
+from threading import Event, Timer
+
+import anyio
 from main import app
+from rag_modules.api import indexing_preview_api
+from rag_modules.api.dto.indexing_preview import PreviewResponse
 from rag_modules.api.indexing_preview_api import get_preview_service
+from rag_modules.config.settings import PreviewSettings, UploadSettings
+from rag_modules.db.models import DocumentRecord
 from rag_modules.object_storage import ObjectStorageUnavailable
+from rag_modules.segmentation.segmenter import Segmenter
+from rag_modules.services.preview_service import PreviewService
 from rag_modules.services.preview_service import PreviewValidationError
 
 
@@ -135,3 +145,154 @@ def test_unknown_high_quality_model_is_domain_422_before_database(client):
 
     assert response.status_code == 422
     assert response.json()["code"] == "EMBEDDING_MODEL_UNAVAILABLE"
+
+
+def test_explicit_empty_high_quality_model_is_domain_422(client):
+    response = client.post(
+        PREVIEW_PATH,
+        json={
+            "document_ids": ["doc-1"],
+            "indexing_technique": "high_quality",
+            "embedding_model": "",
+            "segmentation": {"mode": "general"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "EMBEDDING_MODEL_UNAVAILABLE"
+
+
+def test_preview_rendering_is_inside_route_deadline(client, monkeypatch):
+    class StubService:
+        async def preview(self, dataset_id, document_ids, request):
+            return {
+                "chunks": [],
+                "total_chunks": 0,
+                "truncated": False,
+                "warnings": [],
+                "documents": [],
+            }
+
+    entered, release, finished = Event(), Event(), Event()
+    original_dump = PreviewResponse.model_dump
+
+    def slow_dump(response, *args, **kwargs):
+        entered.set()
+        release.wait(timeout=5)
+        try:
+            return original_dump(response, *args, **kwargs)
+        finally:
+            finished.set()
+
+    app.dependency_overrides[get_preview_service] = lambda: StubService()
+    monkeypatch.setattr(PreviewResponse, "model_dump", slow_dump)
+    monkeypatch.setattr(
+        indexing_preview_api.settings,
+        "preview",
+        PreviewSettings(max_documents=20, max_chunks=100, timeout_seconds=1),
+    )
+    delayed_release = Timer(1.6, release.set)
+    delayed_release.start()
+    started = time.monotonic()
+
+    try:
+        response = client.post(PREVIEW_PATH, json=_general_payload())
+        assert response.status_code == 504
+        assert response.json()["code"] == "PREVIEW_TIMEOUT"
+        assert time.monotonic() - started < 1.4
+        assert entered.is_set()
+    finally:
+        release.set()
+        delayed_release.cancel()
+        delayed_release.join(timeout=1)
+
+    assert finished.wait(timeout=1)
+
+
+def test_dependency_timeout_is_still_infrastructure_503(client):
+    class TimedOutService:
+        async def preview(self, dataset_id, document_ids, request):
+            raise TimeoutError("database timed out")
+
+    app.dependency_overrides[get_preview_service] = lambda: TimedOutService()
+    response = client.post(PREVIEW_PATH, json=_general_payload())
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "PREVIEW_INFRASTRUCTURE_UNAVAILABLE"
+
+
+def test_slow_storage_is_a_bounded_api_504(client):
+    entered, release, finished = Event(), Event(), Event()
+
+    class Documents:
+        async def get_active_by_ids(self, dataset_id, document_ids):
+            return [
+                DocumentRecord(
+                    id="doc-1",
+                    dataset_id="dataset-1",
+                    position=1,
+                    data_source_type="upload_file",
+                    data_source_info={
+                        "storage": "minio",
+                        "bucket": "graph-rag-uploads",
+                        "object_key": (
+                            "datasets/dataset-1/documents/doc-1/source.txt"
+                        ),
+                        "original_filename": "note.txt",
+                        "size": 1,
+                    },
+                    name="note.txt",
+                    created_from="api",
+                    created_by="user-1",
+                    indexing_status="waiting",
+                )
+            ]
+
+    class Dataset:
+        async def get_active(self, dataset_id):
+            return object()
+
+    class Storage:
+        def download(self, max_bytes):
+            entered.set()
+            release.wait(timeout=5)
+            finished.set()
+            return b"A"[:max_bytes]
+
+        async def get_bytes(self, object_key, max_bytes):
+            return await anyio.to_thread.run_sync(
+                self.download,
+                max_bytes,
+                abandon_on_cancel=True,
+            )
+
+    service = PreviewService(
+        repository=Documents(),
+        dataset_repository=Dataset(),
+        storage=Storage(),
+        parser_registry=object(),
+        segmenter=Segmenter(),
+        preview_settings=PreviewSettings(
+            max_documents=20,
+            max_chunks=100,
+            timeout_seconds=1,
+        ),
+        upload_settings=UploadSettings(),
+    )
+    app.dependency_overrides[get_preview_service] = lambda: service
+    delayed_release = Timer(1.6, release.set)
+    delayed_release.start()
+    started = time.monotonic()
+
+    try:
+        response = client.post(PREVIEW_PATH, json=_general_payload())
+        assert response.status_code == 504
+        assert response.json()["code"] == "PREVIEW_TIMEOUT"
+        assert time.monotonic() - started < 1.4
+        assert entered.is_set()
+    finally:
+        release.set()
+        delayed_release.cancel()
+        delayed_release.join(timeout=1)
+
+    assert finished.wait(timeout=1)

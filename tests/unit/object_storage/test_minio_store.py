@@ -1,5 +1,8 @@
 import io
+import time
+from threading import Event
 
+import anyio
 import pytest
 from minio.error import MinioException, S3Error, ServerError
 from urllib3.exceptions import NewConnectionError
@@ -73,6 +76,37 @@ class GetObjectClient:
     def get_object(self, bucket: str, object_key: str) -> FakeResponse:
         self.calls.append((bucket, object_key))
         return self.response
+
+
+class RecordingReadResponse(FakeResponse):
+    def __init__(self, content: bytes) -> None:
+        super().__init__(content)
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return super().read(size)
+
+
+class FailingReadResponse(FakeResponse):
+    def read(self, size: int = -1) -> bytes:
+        raise OSError("download failed")
+
+
+class BlockingReadResponse(FakeResponse):
+    def __init__(self, entered: Event, release: Event, finished: Event) -> None:
+        super().__init__(b"payload")
+        self.entered = entered
+        self.release = release
+        self.finished = finished
+
+    def read(self, size: int = -1) -> bytes:
+        self.entered.set()
+        self.release.wait(timeout=5)
+        try:
+            return super().read(size)
+        finally:
+            self.finished.set()
 
 
 @pytest.mark.asyncio
@@ -173,4 +207,57 @@ async def test_get_stream_closes_and_releases_response_after_consumer_error():
         async with store.get_stream("source.txt"):
             raise RuntimeError("consumer failed")
 
+    assert response.lifecycle == ["close", "release_conn"]
+
+
+@pytest.mark.asyncio
+async def test_get_bytes_reads_at_most_requested_limit_and_releases_response():
+    response = RecordingReadResponse(b"abcdef")
+    store = MinioObjectStorage(
+        client=GetObjectClient(response),
+        bucket="graph-rag-uploads",
+    )
+
+    payload = await store.get_bytes("source.txt", max_bytes=4)
+
+    assert payload == b"abcd"
+    assert response.read_sizes == [4]
+    assert response.lifecycle == ["close", "release_conn"]
+
+
+@pytest.mark.asyncio
+async def test_get_bytes_normalizes_read_failure_and_releases_response():
+    response = FailingReadResponse(b"")
+    store = MinioObjectStorage(
+        client=GetObjectClient(response),
+        bucket="graph-rag-uploads",
+    )
+
+    with pytest.raises(ObjectStorageUnavailable) as error:
+        await store.get_bytes("source.txt", max_bytes=4)
+
+    assert isinstance(error.value.__cause__, OSError)
+    assert response.lifecycle == ["close", "release_conn"]
+
+
+@pytest.mark.asyncio
+async def test_get_bytes_deadline_abandons_owned_response_and_late_worker_releases():
+    entered, release, finished = Event(), Event(), Event()
+    response = BlockingReadResponse(entered, release, finished)
+    store = MinioObjectStorage(
+        client=GetObjectClient(response),
+        bucket="graph-rag-uploads",
+    )
+    started = time.monotonic()
+
+    try:
+        with pytest.raises(TimeoutError):
+            with anyio.fail_after(0.1):
+                await store.get_bytes("source.txt", max_bytes=8)
+        assert time.monotonic() - started < 0.5
+        assert entered.is_set()
+    finally:
+        release.set()
+
+    assert await anyio.to_thread.run_sync(finished.wait, 1)
     assert response.lifecycle == ["close", "release_conn"]
