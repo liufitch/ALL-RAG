@@ -291,6 +291,22 @@ async def test_preview_enforces_unique_document_limit_before_query():
 
 
 @pytest.mark.asyncio
+async def test_preview_rejects_oversized_repeated_document_id_list_before_deduplication():
+    """Repeated IDs must not bypass request-work bounds or trigger quadratic deduplication."""
+    service = _service([], {})
+
+    with pytest.raises(PreviewValidationError) as error:
+        await service.preview(
+            "dataset-1",
+            ["doc-1"] * 101,
+            _request("doc-1"),
+        )
+
+    assert error.value.code == "PREVIEW_DOCUMENT_REFERENCE_LIMIT_EXCEEDED"
+    assert service.repository.calls == []
+
+
+@pytest.mark.asyncio
 async def test_invalid_overlap_is_stable_and_does_not_query():
     service = _service([], {})
     request = _request("doc-1", max_chunk_length=2)
@@ -332,9 +348,10 @@ async def test_explicit_empty_high_quality_model_is_not_replaced_by_default():
     request = IndexingPreviewRequest(
         document_ids=["doc-1"],
         indexing_technique="high_quality",
-        embedding_model="",
+        embedding_model="bge-m3",
         segmentation={"mode": "general"},
     )
+    request.embedding_model = ""
 
     with pytest.raises(PreviewValidationError) as error:
         await service.preview("dataset-1", ["doc-1"], request)

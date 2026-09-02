@@ -9,7 +9,7 @@ from xlrd.biffh import XLRDError
 from xlrd.compdoc import CompDocError
 
 from rag_modules.parsing.base import ParseContext
-from rag_modules.parsing.models import DocumentParseError, ParsedDocument
+from rag_modules.parsing.models import DocumentParseError, ParsedDocument, ParserWarning
 from rag_modules.parsing.tabular import TableRowBudget, table_blocks
 
 
@@ -30,12 +30,31 @@ class XlsParser:
 
         try:
             blocks = []
+            warnings: list[ParserWarning] = []
             budget = TableRowBudget()
             for sheet_name in workbook.sheet_names():
                 worksheet = workbook.sheet_by_name(sheet_name)
-                blocks.extend(
-                    table_blocks(_worksheet_rows(worksheet, workbook.datemode), sheet_name, budget)
+                if worksheet.visibility != 0:
+                    warnings.append(
+                        ParserWarning(
+                            "HIDDEN_SHEET_SKIPPED",
+                            "A hidden worksheet was skipped.",
+                            {"sheet": sheet_name},
+                        )
+                    )
+                    continue
+                sheet_blocks = table_blocks(
+                    _worksheet_rows(worksheet, workbook.datemode), sheet_name, budget
                 )
+                if not sheet_blocks:
+                    warnings.append(
+                        ParserWarning(
+                            "EMPTY_SHEET_SKIPPED",
+                            "A worksheet without data rows was skipped.",
+                            {"sheet": sheet_name},
+                        )
+                    )
+                blocks.extend(sheet_blocks)
         except DocumentParseError:
             raise
         except (XLRDError, CompDocError, OSError, ValueError, IndexError) as error:
@@ -53,6 +72,7 @@ class XlsParser:
             source_type=self.source_type,
             blocks=tuple(blocks),
             metadata={},
+            warnings=tuple(warnings),
         )
 
 

@@ -1,13 +1,43 @@
 from __future__ import annotations
 
+from datetime import date, datetime
+import math
 from typing import Any, BinaryIO
 
 import yaml
 from markdown_it import MarkdownIt
+from yaml.tokens import AliasToken, AnchorToken
 
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import DocumentParseError, ParsedBlock, ParsedDocument
 from rag_modules.parsing.text_parser import decode_text, normalize_text
+
+
+class _BoundedSafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate keys instead of silently collapsing shape."""
+
+    def construct_mapping(self, node, deep=False):
+        mapping: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in mapping
+            except TypeError as error:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable key",
+                    key_node.start_mark,
+                ) from error
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found a duplicate key",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
 
 
 class MarkdownParser:
@@ -38,6 +68,12 @@ class MarkdownParser:
         )
 
 
+_MAX_FRONT_MATTER_RAW_CHARACTERS = 65_536
+_MAX_FRONT_MATTER_SCALAR_CHARACTERS = 16_384
+_MAX_FRONT_MATTER_DEPTH = 20
+_MAX_FRONT_MATTER_NODES = 10_000
+
+
 def _extract_front_matter(text: str) -> tuple[str, dict[str, Any] | None, int]:
     lines = text.split("\n")
     if not lines or lines[0] != "---":
@@ -46,19 +82,75 @@ def _extract_front_matter(text: str) -> tuple[str, dict[str, Any] | None, int]:
         if lines[index] != "---":
             continue
         raw_front_matter = "\n".join(lines[1:index])
-        try:
+        bounded_raw = raw_front_matter[:_MAX_FRONT_MATTER_RAW_CHARACTERS]
+        if len(raw_front_matter) > _MAX_FRONT_MATTER_RAW_CHARACTERS:
             return (
                 "\n".join(lines[index + 1 :]),
-                {"front_matter": yaml.safe_load(raw_front_matter)},
+                {"front_matter_raw": bounded_raw},
                 index + 1,
             )
-        except yaml.YAMLError:
+        try:
+            if any(
+                isinstance(token, (AliasToken, AnchorToken))
+                for token in yaml.scan(raw_front_matter, Loader=yaml.SafeLoader)
+            ):
+                raise ValueError("YAML aliases and anchors are not supported")
+            normalized = _normalize_front_matter(yaml.load(raw_front_matter, Loader=_BoundedSafeLoader))
             return (
                 "\n".join(lines[index + 1 :]),
-                {"front_matter_raw": raw_front_matter},
+                {"front_matter": normalized},
+                index + 1,
+            )
+        except (TypeError, ValueError, yaml.YAMLError):
+            return (
+                "\n".join(lines[index + 1 :]),
+                {"front_matter_raw": bounded_raw},
                 index + 1,
             )
     return text, None, 0
+
+
+def _normalize_front_matter(value: Any) -> Any:
+    """Return bounded, acyclic JSON-compatible metadata or reject the YAML value."""
+    nodes = 0
+    active_ids: set[int] = set()
+
+    def visit(item: Any, depth: int) -> Any:
+        nonlocal nodes
+        nodes += 1
+        if nodes > _MAX_FRONT_MATTER_NODES or depth > _MAX_FRONT_MATTER_DEPTH:
+            raise ValueError("front matter shape exceeds configured limits")
+        if item is None or isinstance(item, (bool, int)):
+            return item
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("front matter contains a non-finite number")
+            return item
+        if isinstance(item, str):
+            if len(item) > _MAX_FRONT_MATTER_SCALAR_CHARACTERS:
+                raise ValueError("front matter scalar exceeds configured limits")
+            return item
+        if isinstance(item, (date, datetime)):
+            return item.isoformat()
+        if not isinstance(item, (dict, list)):
+            raise TypeError("front matter contains a non-JSON value")
+        identity = id(item)
+        if identity in active_ids:
+            raise ValueError("front matter contains a cycle")
+        active_ids.add(identity)
+        try:
+            if isinstance(item, list):
+                return [visit(child, depth + 1) for child in item]
+            normalized: dict[str, Any] = {}
+            for key, child in item.items():
+                if not isinstance(key, str) or len(key) > _MAX_FRONT_MATTER_SCALAR_CHARACTERS:
+                    raise TypeError("front matter keys must be bounded strings")
+                normalized[key] = visit(child, depth + 1)
+            return normalized
+        finally:
+            active_ids.remove(identity)
+
+    return visit(value, 0)
 
 
 def _walk_tokens(tokens, line_offset: int) -> tuple[list[ParsedBlock], list[str]]:

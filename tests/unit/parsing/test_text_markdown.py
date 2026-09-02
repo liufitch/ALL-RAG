@@ -1,4 +1,5 @@
 import io
+import json
 
 import pytest
 
@@ -8,16 +9,15 @@ from rag_modules.parsing.models import DocumentParseError
 from rag_modules.parsing.text_parser import TextParser
 
 
-def test_text_parser_detects_encoding_and_preserves_source_lines():
-    """Removing charset fallback or line tracking must break this behavior."""
-    parsed = TextParser().parse(
-        io.BytesIO("第一段\n\n第二段".encode("gb18030")),
-        ParseContext("doc-1", "guide.txt"),
-    )
+def test_text_parser_rejects_short_gb18030_without_reliable_encoding_evidence():
+    """A reversible short legacy decode is ambiguous and must not silently win."""
+    with pytest.raises(DocumentParseError) as error:
+        TextParser().parse(
+            io.BytesIO("第一段\n\n第二段".encode("gb18030")),
+            ParseContext("doc-1", "guide.txt"),
+        )
 
-    assert [block.text for block in parsed.blocks] == ["第一段", "第二段"]
-    assert parsed.blocks[1].metadata == {"line_start": 3, "line_end": 3}
-    assert parsed.metadata["encoding"] == "gb18030"
+    assert error.value.code == "TEXT_ENCODING_UNCERTAIN"
 
 
 def test_text_parser_normalizes_bom_newlines_and_nuls_before_paragraph_split():
@@ -96,16 +96,35 @@ def test_text_parser_accepts_bomless_utf16_text_that_is_valid_utf8_bytes(source)
     assert parsed.metadata["encoding"] == "utf_16_le"
 
 
-def test_text_parser_decodes_mixed_language_gb18030_without_script_guessing():
-    """Mixed source scripts must not make a legacy decode silently corrupt."""
+def test_text_parser_rejects_mixed_gb18030_without_reliable_encoding_evidence():
+    """ASCII structure plus a round trip is not proof of one legacy encoding."""
     source = "Release 2: 中文, café — ready"
-    parsed = TextParser().parse(
-        io.BytesIO(source.encode("gb18030")),
-        ParseContext("doc-1", "mixed.txt"),
-    )
+    with pytest.raises(DocumentParseError) as error:
+        TextParser().parse(
+            io.BytesIO(source.encode("gb18030")),
+            ParseContext("doc-1", "mixed.txt"),
+        )
 
-    assert [block.text for block in parsed.blocks] == [source]
-    assert parsed.metadata["encoding"] == "gb18030"
+    assert error.value.code == "TEXT_ENCODING_UNCERTAIN"
+
+
+@pytest.mark.parametrize(
+    ("source", "encoding"),
+    [
+        ("日本語の資料\nRelease 2", "shift_jis"),
+        ("繁體中文報告\nRelease 2", "big5"),
+        ("АБ\nRelease 2", "cp1251"),
+    ],
+)
+def test_text_parser_never_reports_other_legacy_encodings_as_gb18030(source, encoding):
+    """Selecting GB18030 for another reversible legacy stream corrupts source text."""
+    with pytest.raises(DocumentParseError) as error:
+        TextParser().parse(
+            io.BytesIO(source.encode(encoding)),
+            ParseContext("doc-1", "legacy.txt"),
+        )
+
+    assert error.value.code == "TEXT_ENCODING_UNCERTAIN"
 
 
 def test_text_parser_rejects_ambiguous_six_byte_non_utf8_payload():
@@ -282,3 +301,44 @@ tags:
     }
     assert [block.text for block in parsed.blocks] == ["Install"]
     assert parsed.blocks[0].metadata["line_start"] == 10
+
+
+@pytest.mark.parametrize(
+    "front_matter",
+    [
+        "base: &base\n  role: reader\ncopy: *base",
+        "loop: &loop\n  self: *loop",
+    ],
+)
+def test_markdown_parser_never_exposes_yaml_alias_graphs(front_matter):
+    """SafeLoader aliases can still create shared or recursive non-JSON metadata graphs."""
+    parsed = MarkdownParser().parse(
+        io.BytesIO(f"---\n{front_matter}\n---\n# Safe\n".encode()),
+        ParseContext("doc-1", "aliases.md"),
+    )
+
+    assert "front_matter" not in parsed.metadata
+    assert parsed.metadata["front_matter_raw"] == front_matter
+    assert json.loads(json.dumps(parsed.metadata)) == parsed.metadata
+
+
+@pytest.mark.parametrize(
+    "front_matter",
+    [
+        "value: " + "x" * 20_000,
+        "value: .nan",
+        "value: .inf",
+        "value:\n" + "  child:\n" * 25 + "    leaf: end",
+        "items:\n" + "\n".join(f"  key_{index}: value" for index in range(10_001)),
+    ],
+)
+def test_markdown_parser_bounds_front_matter_shape(front_matter):
+    """Unbounded YAML scalars, depth, or node counts can exhaust preview serialization."""
+    parsed = MarkdownParser().parse(
+        io.BytesIO(f"---\n{front_matter}\n---\n# Safe\n".encode()),
+        ParseContext("doc-1", "bounded.md"),
+    )
+
+    assert "front_matter" not in parsed.metadata
+    assert len(parsed.metadata["front_matter_raw"]) <= 65_536
+    assert json.loads(json.dumps(parsed.metadata)) == parsed.metadata

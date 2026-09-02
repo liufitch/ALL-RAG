@@ -71,6 +71,11 @@ class PreviewService:
         document_ids: list[str],
         request: IndexingPreviewRequest,
     ) -> PreviewResponse:
+        if len(document_ids) > 100:
+            raise PreviewValidationError(
+                "PREVIEW_DOCUMENT_REFERENCE_LIMIT_EXCEEDED",
+                "Too many document references were supplied for preview.",
+            )
         normalized_ids = _unique_document_ids(document_ids)
         self._validate_request(normalized_ids, request)
         timeout_scope = None

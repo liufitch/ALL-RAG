@@ -2,13 +2,19 @@ import time
 from threading import Event, Timer
 
 import anyio
+import httpx
+import pytest
+from pydantic import ValidationError
 from main import app
 from rag_modules.api import indexing_preview_api
 from rag_modules.api.dto.indexing_preview import PreviewResponse
+from rag_modules.api.dto.indexing_preview import IndexingPreviewRequest
 from rag_modules.api.indexing_preview_api import get_preview_service
 from rag_modules.config.settings import PreviewSettings, UploadSettings
-from rag_modules.db.models import DocumentRecord
+from rag_modules.db.models import DatasetRecord, DocumentRecord
+from rag_modules.db.session import get_db_session
 from rag_modules.object_storage import ObjectStorageUnavailable
+from rag_modules.object_storage.factory import get_object_storage
 from rag_modules.segmentation.segmenter import Segmenter
 from rag_modules.services.preview_service import PreviewService
 from rag_modules.services.preview_service import PreviewValidationError
@@ -25,6 +31,40 @@ def _general_payload(**segmentation):
     }
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"document_ids": ["d"] * 101},
+        {"document_ids": ["d" * 129]},
+        {"document_ids": ["   "]},
+        {"embedding_model": "m" * 256},
+        {"embedding_model": "   "},
+        {"segmentation": {"mode": "general", "separator": "s" * 257}},
+        {"segmentation": {"mode": "general", "max_chunk_length": 1_000_001}},
+        {"segmentation": {"mode": "general", "overlap": 1_000_001}},
+        {
+            "segmentation": {
+                "mode": "parent_child",
+                "parent_max_chunk_length": 1_000_001,
+            }
+        },
+        {
+            "segmentation": {
+                "mode": "parent_child",
+                "child_max_chunk_length": 1_000_001,
+            }
+        },
+    ],
+)
+def test_preview_request_dto_has_finite_string_list_and_numeric_bounds(change):
+    """The HTTP model must reject inputs whose validation work or values are unbounded."""
+    payload = _general_payload()
+    payload.update(change)
+
+    with pytest.raises(ValidationError):
+        IndexingPreviewRequest.model_validate(payload)
+
+
 def test_parent_child_with_economy_is_rejected(client):
     response = client.post(
         PREVIEW_PATH,
@@ -37,7 +77,8 @@ def test_parent_child_with_economy_is_rejected(client):
 
     assert response.status_code == 422
     assert response.json()["code"] == "PARENT_CHILD_REQUIRES_HIGH_QUALITY"
-    assert set(response.json()) == {"code", "message"}
+    assert set(response.json()) == {"code", "message", "detail", "request_id"}
+    assert response.headers["x-request-id"] == response.json()["request_id"]
 
 
 def test_preview_success_serializes_real_service_contract(client):
@@ -93,10 +134,10 @@ def test_preview_domain_error_uses_top_level_envelope(client):
     response = client.post(PREVIEW_PATH, json=_general_payload())
 
     assert response.status_code == 422
-    assert response.json() == {
-        "code": "INVALID_SOURCE_METADATA",
-        "message": "invalid source",
-    }
+    assert response.json()["code"] == "INVALID_SOURCE_METADATA"
+    assert response.json()["message"] == "invalid source"
+    assert response.json()["detail"] is None
+    assert response.headers["x-request-id"] == response.json()["request_id"]
 
 
 def test_preview_storage_failure_is_503(client):
@@ -109,17 +150,28 @@ def test_preview_storage_failure_is_503(client):
 
     assert response.status_code == 503
     assert response.json()["code"] == "OBJECT_STORAGE_UNAVAILABLE"
+    assert set(response.json()) == {"code", "message", "detail", "request_id"}
+    assert response.headers["x-request-id"] == response.json()["request_id"]
 
 
-def test_malformed_preview_shape_keeps_standard_fastapi_validation(client):
+def test_malformed_preview_shape_uses_sanitized_preview_validation_envelope(client):
     response = client.post(
         PREVIEW_PATH,
         json=_general_payload(unexpected=True),
+        headers={"X-Request-ID": "preview-validation-1"},
     )
 
     assert response.status_code == 422
-    assert "detail" in response.json()
-    assert "code" not in response.json()
+    assert response.json()["code"] == "PREVIEW_REQUEST_VALIDATION_FAILED"
+    assert response.json()["request_id"] == "preview-validation-1"
+    assert response.headers["x-request-id"] == "preview-validation-1"
+    assert response.json()["detail"] == [
+        {
+            "location": ["body", "segmentation", "general", "unexpected"],
+            "message": "Extra inputs are not permitted",
+            "type": "extra_forbidden",
+        }
+    ]
 
 
 def test_preview_dto_does_not_coerce_string_limits(client):
@@ -129,7 +181,7 @@ def test_preview_dto_does_not_coerce_string_limits(client):
     )
 
     assert response.status_code == 422
-    assert "detail" in response.json()
+    assert response.json()["code"] == "PREVIEW_REQUEST_VALIDATION_FAILED"
 
 
 def test_unknown_high_quality_model_is_domain_422_before_database(client):
@@ -159,7 +211,45 @@ def test_explicit_empty_high_quality_model_is_domain_422(client):
     )
 
     assert response.status_code == 422
-    assert response.json()["code"] == "EMBEDDING_MODEL_UNAVAILABLE"
+    assert response.json()["code"] == "PREVIEW_REQUEST_VALIDATION_FAILED"
+
+
+def test_preview_validation_detail_never_echoes_secret_input(client):
+    secret = "secret-value-that-must-not-leak"
+    response = client.post(
+        PREVIEW_PATH,
+        json={**_general_payload(), "embedding_model": secret * 100},
+    )
+
+    assert response.status_code == 422
+    assert secret not in response.text
+
+
+def test_preview_rejects_unbounded_dataset_identifier_with_same_envelope(client):
+    response = client.post(
+        "/api/knowledge_base/" + "d" * 129 + "/indexing/preview",
+        json=_general_payload(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "PREVIEW_REQUEST_VALIDATION_FAILED"
+    assert response.headers["x-request-id"] == response.json()["request_id"]
+
+
+def test_preview_openapi_declares_one_complete_error_envelope(client):
+    operation = client.get("/openapi.json").json()["paths"][PREVIEW_PATH.replace("dataset-1", "{dataset_id}")]["post"]
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+
+    for status in ("404", "422", "503", "504"):
+        schema = operation["responses"][status]["content"]["application/json"]["schema"]
+        assert schema["$ref"].endswith("/PreviewErrorResponse")
+        assert "X-Request-ID" in operation["responses"][status]["headers"]
+    assert set(schemas["PreviewErrorResponse"]["required"]) == {
+        "code",
+        "message",
+        "detail",
+        "request_id",
+    }
 
 
 def test_preview_rendering_is_inside_route_deadline(client, monkeypatch):
@@ -219,6 +309,8 @@ def test_dependency_timeout_is_still_infrastructure_503(client):
 
     assert response.status_code == 503
     assert response.json()["code"] == "PREVIEW_INFRASTRUCTURE_UNAVAILABLE"
+    assert set(response.json()) == {"code", "message", "detail", "request_id"}
+    assert response.headers["x-request-id"] == response.json()["request_id"]
 
 
 def test_slow_storage_is_a_bounded_api_504(client):
@@ -296,3 +388,95 @@ def test_slow_storage_is_a_bounded_api_504(client):
         delayed_release.join(timeout=1)
 
     assert finished.wait(timeout=1)
+
+
+def test_production_preview_composition_is_read_only_and_never_constructs_vector_clients(
+    client, monkeypatch
+):
+    """The real route factory must stop at parse/segment and issue SELECT-only SQL."""
+    import rag_modules.vector_stores.factory as vector_factory
+    import rag_modules.vector_stores.milvus as milvus_module
+
+    record = DocumentRecord(
+        id="doc-1",
+        dataset_id="dataset-1",
+        position=1,
+        data_source_type="upload_file",
+        data_source_info={
+            "storage": "minio",
+            "bucket": "graph-rag-uploads",
+            "object_key": "datasets/dataset-1/documents/doc-1/source.txt",
+            "original_filename": "note.txt",
+            "size": 1,
+        },
+        name="note.txt",
+        created_from="api",
+        created_by="user-1",
+        indexing_status="waiting",
+    )
+
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalar_one_or_none(self):
+            return self.values[0] if self.values else None
+
+        def scalars(self):
+            return iter(self.values)
+
+    class SelectOnlySession:
+        def __init__(self):
+            self.statements = []
+
+        async def execute(self, statement):
+            assert statement.is_select
+            sql = str(statement)
+            assert "document_segments" not in sql
+            self.statements.append(sql)
+            entity = statement.column_descriptions[0].get("entity")
+            if entity is DatasetRecord:
+                return Result([object()])
+            if entity is DocumentRecord:
+                return Result([record])
+            raise AssertionError(f"unexpected preview SQL: {sql}")
+
+        def add(self, _record):
+            raise AssertionError("preview attempted segment persistence")
+
+        async def commit(self):
+            raise AssertionError("preview attempted a database commit")
+
+    class Storage:
+        async def get_bytes(self, object_key, max_bytes):
+            assert object_key == record.data_source_info["object_key"]
+            assert max_bytes == 2
+            return b"A"
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("preview constructed an Embedding/Milvus/vector client")
+
+    session = SelectOnlySession()
+    monkeypatch.setattr(vector_factory, "get_vector_store", forbidden)
+    monkeypatch.setattr(milvus_module, "MilvusClient", forbidden)
+    monkeypatch.setattr(httpx, "AsyncClient", forbidden)
+    app.dependency_overrides[get_db_session] = lambda: session
+    app.dependency_overrides[get_object_storage] = lambda: Storage()
+
+    response = client.post(
+        PREVIEW_PATH,
+        json={
+            "document_ids": ["doc-1"],
+            "indexing_technique": "high_quality",
+            "embedding_model": "bge-m3",
+            "segmentation": {
+                "mode": "general",
+                "max_chunk_length": 10,
+                "overlap": 0,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["chunks"][0]["content"] == "A"
+    assert len(session.statements) == 2

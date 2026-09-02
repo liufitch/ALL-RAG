@@ -195,6 +195,10 @@ class ParserSettings(BaseModel):
     max_rows: int = Field(default=100_000, ge=1)
     max_columns: int = Field(default=1_000, ge=1)
     max_cell_characters: int = Field(default=32_768, ge=1)
+    max_spreadsheet_xml_nodes: int = Field(default=2_000_000, ge=1)
+    max_physical_cells: int = Field(default=1_000_000, ge=1)
+    max_row_coordinate: int = Field(default=100_000, ge=1)
+    max_column_coordinate: int = Field(default=16_384, ge=1)
 
 
 class PreviewSettings(BaseModel):

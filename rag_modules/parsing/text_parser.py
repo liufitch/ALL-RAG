@@ -28,20 +28,6 @@ def decode_text(data: bytes) -> tuple[str, str]:
     if utf16 is not None:
         return utf16
 
-    if _has_ascii_text_structure(data):
-        try:
-            text = data.decode("gb18030")
-        except UnicodeDecodeError:
-            pass
-        else:
-            if _round_trips_exactly(text, "gb18030", data):
-                try:
-                    _validate_text_quality(text)
-                except DocumentParseError:
-                    pass
-                else:
-                    return text, "gb18030"
-
     _raise_uncertain_encoding()
 
 
@@ -85,10 +71,6 @@ def _has_utf16_byte_lane_evidence(data: bytes, encoding: str) -> bool:
         if encoding == "utf_16_be" and (left != 0 or right not in control_bytes):
             return False
     return True
-
-
-def _has_ascii_text_structure(data: bytes) -> bool:
-    return any(byte in {0x09, 0x0A, 0x0D} or 0x20 <= byte <= 0x7E for byte in data)
 
 
 def _round_trips_exactly(text: str, encoding: str | None, data: bytes) -> bool:

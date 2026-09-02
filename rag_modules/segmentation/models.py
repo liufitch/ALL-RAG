@@ -54,8 +54,7 @@ class SegmentationResult:
 class SegmentationConfigError(ValueError):
     """Stable caller-facing failure for configurations that cannot make progress."""
 
-    code = "INVALID_SEGMENTATION_CONFIG"
-
-    def __init__(self, message: str):
+    def __init__(self, message: str, code: str = "INVALID_SEGMENTATION_CONFIG"):
+        self.code = code
         self.message = message
         super().__init__(message)

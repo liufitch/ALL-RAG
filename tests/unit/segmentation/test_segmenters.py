@@ -227,7 +227,7 @@ def test_full_document_fallback_keeps_short_code_atomic():
 def test_full_document_fallback_preserves_delimiters_around_short_atomic_blocks(
     atomic_type, atomic_text, atomic_metadata
 ):
-    """Fallback grouping must not erase delimiters on either side of an atomic block."""
+    """Fallback keeps atomic blocks and never publishes delimiter-only parents."""
     blocks = (
         ParsedBlock("paragraph", "aa", {"line_start": 1, "line_end": 1}),
         ParsedBlock(atomic_type, atomic_text, atomic_metadata),
@@ -239,7 +239,8 @@ def test_full_document_fallback_preserves_delimiters_around_short_atomic_blocks(
 
     parents = [item for item in result.segments if item.index_type == "parent"]
     assert all(len(item.content) <= 8 for item in parents)
-    assert "".join(item.content for item in parents) == "aa\n\n" + atomic_text + "\n\nbb"
+    assert "".join(item.content for item in parents) == "aa" + atomic_text + "bb"
+    assert all(item.content.strip() for item in parents)
     assert next(item for item in parents if item.content == atomic_text).source_metadata == atomic_metadata
 
 
@@ -290,3 +291,60 @@ def test_empty_parsed_document_returns_an_empty_stable_result():
 
     assert result.segments == ()
     assert result.warnings == ()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        GeneralSegmentationConfig(max_chunk_length=1, overlap=0),
+        ParentChildSegmentationConfig("paragraph", 1, 1, 0),
+        ParentChildSegmentationConfig("full_document", 1, 1, 0),
+    ],
+)
+def test_every_public_segment_has_nonblank_content(config):
+    """Whitespace blocks and synthetic delimiters must never become searchable records."""
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "   \n\t", {"line_start": 1}),
+        ParsedBlock("paragraph", "A", {"line_start": 2}),
+        ParsedBlock("code", "B", {"line_start": 4}),
+        ParsedBlock("paragraph", "C", {"line_start": 6}),
+    )
+
+    result = Segmenter().segment(parsed, config)
+
+    assert result.segments
+    assert all(segment.content.strip() for segment in result.segments)
+    assert "".join(segment.content.strip() for segment in result.segments if segment.index_type != "child")
+
+
+def test_segmenter_stops_before_materializing_unbounded_tiny_chunks():
+    """A one-character split must hit a stable segment budget in bounded work."""
+    parsed = parsed_document(ParsedBlock("paragraph", "x" * 100, {}))
+
+    with segmentation_deadline(), pytest.raises(SegmentationConfigError) as error:
+        Segmenter(max_segments=8).segment(
+            parsed,
+            GeneralSegmentationConfig(max_chunk_length=1, overlap=0),
+        )
+
+    assert error.value.code == "SEGMENTATION_LIMIT_EXCEEDED"
+
+
+@pytest.mark.parametrize(
+    "parsed",
+    [
+        parsed_document(*(ParsedBlock("paragraph", "x", {}) for _ in range(9))),
+        parsed_document(ParsedBlock("paragraph", "x" * 9, {})),
+    ],
+)
+def test_segmenter_has_an_independent_source_work_budget(parsed):
+    """Bounded output alone must not allow unbounded source-block or character scanning."""
+    segmenter = Segmenter(max_source_blocks=8, max_source_characters=8)
+
+    with pytest.raises(SegmentationConfigError) as error:
+        segmenter.segment(
+            parsed,
+            GeneralSegmentationConfig(max_chunk_length=8, overlap=0),
+        )
+
+    assert error.value.code == "SEGMENTATION_LIMIT_EXCEEDED"

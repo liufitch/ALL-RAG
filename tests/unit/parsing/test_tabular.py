@@ -1,7 +1,10 @@
 import io
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+import xlwt
+from openpyxl import Workbook
 
 from rag_modules.config.settings import settings
 from rag_modules.parsing.base import ParseContext
@@ -28,6 +31,33 @@ def parser_registry() -> ParserRegistry:
     return ParserRegistry(
         {".xls": XlsParser(), ".xlsx": XlsxParser(), ".csv": CsvParser()}
     )
+
+
+def _xlsx_bytes(configure, *, sheet_xml=None) -> bytes:
+    output = io.BytesIO()
+    workbook = Workbook()
+    configure(workbook)
+    workbook.save(output)
+    if sheet_xml is None:
+        return output.getvalue()
+    patched = io.BytesIO()
+    with ZipFile(io.BytesIO(output.getvalue())) as source, ZipFile(
+        patched, "w", ZIP_DEFLATED
+    ) as target:
+        for info in source.infolist():
+            payload = source.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                payload = sheet_xml(payload)
+            target.writestr(info, payload)
+    return patched.getvalue()
+
+
+def _xls_bytes(configure) -> bytes:
+    output = io.BytesIO()
+    workbook = xlwt.Workbook()
+    configure(workbook)
+    workbook.save(output)
+    return output.getvalue()
 
 
 @pytest.mark.parametrize("fixture_name", ["orders.xls", "orders.xlsx", "orders.csv"])
@@ -252,6 +282,124 @@ def test_xlsx_remote_non_null_cell_uses_its_real_column_for_the_limit(
         )
 
     assert error.value.code == "TABLE_COLUMN_LIMIT_EXCEEDED"
+
+
+def test_xlsx_forged_declared_dimension_never_expands_empty_coordinate_space(
+    monkeypatch,
+):
+    """A forged A1:XFD1048576 dimension must not drive dense row iteration."""
+    monkeypatch.setattr(settings.parser, "max_rows", 2)
+    monkeypatch.setattr(settings.parser, "max_columns", 2)
+
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            setattr(workbook.active, "title", "Data"),
+            workbook.active.append(["列"]),
+            workbook.active.append(["值"]),
+        ),
+        sheet_xml=lambda xml: xml.replace(
+            b'<dimension ref="A1:A2"/>', b'<dimension ref="A1:XFD1048576"/>'
+        ),
+    )
+    parsed = XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "forged.xlsx"))
+
+    assert [block.text for block in parsed.blocks] == ["列：值"]
+
+
+def test_xlsx_rejects_remote_nonempty_row_without_dense_iteration(monkeypatch):
+    """A real distant cell must fail stably without allocating all intervening rows."""
+    monkeypatch.setattr(settings.parser, "max_row_coordinate", 100)
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.append(["列"]),
+            workbook.active.__setitem__("A1048576", "远端"),
+        )
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "remote.xlsx"))
+
+    assert error.value.code == "TABLE_ROW_LIMIT_EXCEEDED"
+
+
+def test_xlsx_enforces_independent_physical_cell_budget(monkeypatch):
+    """Physical OOXML cells are bounded independently from meaningful table rows."""
+    monkeypatch.setattr(settings.parser, "max_physical_cells", 2)
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.append(["列1", "列2"]),
+            workbook.active.append(["值", None]),
+        )
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "cells.xlsx"))
+
+    assert error.value.code == "TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED"
+
+
+def test_xls_and_xlsx_warn_for_hidden_very_hidden_and_nondata_sheets():
+    """Hidden sheets and visible sheets without data rows must be skipped with warnings."""
+    def xlsx_workbook(workbook):
+        visible = workbook.active
+        visible.title = "Data"
+        visible.append(["列"])
+        visible.append(["值"])
+        hidden = workbook.create_sheet("Hidden")
+        hidden.sheet_state = "hidden"
+        hidden.append(["secret"])
+        very_hidden = workbook.create_sheet("VeryHidden")
+        very_hidden.sheet_state = "veryHidden"
+        very_hidden.append(["secret"])
+        workbook.create_sheet("Empty")
+        header = workbook.create_sheet("HeaderOnly")
+        header.append(["列"])
+
+    def xls_workbook(workbook):
+        data = workbook.add_sheet("Data")
+        data.write(0, 0, "列")
+        data.write(1, 0, "值")
+        hidden = workbook.add_sheet("Hidden")
+        hidden.visibility = 1
+        hidden.write(0, 0, "secret")
+        very_hidden = workbook.add_sheet("VeryHidden")
+        very_hidden.visibility = 2
+        very_hidden.write(0, 0, "secret")
+        workbook.add_sheet("Empty")
+        header = workbook.add_sheet("HeaderOnly")
+        header.write(0, 0, "列")
+
+    for parser, payload, filename in (
+        (XlsxParser(), _xlsx_bytes(xlsx_workbook), "sheets.xlsx"),
+        (XlsParser(), _xls_bytes(xls_workbook), "sheets.xls"),
+    ):
+        parsed = parser.parse(io.BytesIO(payload), ParseContext("d", filename))
+        assert [block.text for block in parsed.blocks] == ["列：值"]
+        assert [warning.code for warning in parsed.warnings].count("HIDDEN_SHEET_SKIPPED") == 2
+        assert [warning.code for warning in parsed.warnings].count("EMPTY_SHEET_SKIPPED") == 2
+
+
+def test_xlsx_prefers_real_cached_formula_and_warns_when_cache_is_absent():
+    """Formula text is only a fallback; a genuine OOXML cached value wins."""
+    def workbook_with_formulas(workbook):
+        workbook.active.append(["缓存", "无缓存"])
+        workbook.active.append(["=1+2", "=2+3"])
+
+    payload = _xlsx_bytes(
+        workbook_with_formulas,
+        sheet_xml=lambda xml: xml.replace(
+            b"<f>1+2</f><v></v>", b"<f>1+2</f><v>3</v>"
+        ),
+    )
+    with ZipFile(io.BytesIO(payload)) as archive:
+        xml = archive.read("xl/worksheets/sheet1.xml")
+    assert b"<f>1+2</f><v>3</v>" in xml
+    assert b"<f>2+3</f><v></v>" in xml
+
+    parsed = XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "formula.xlsx"))
+
+    assert [block.text for block in parsed.blocks] == ["缓存：3；无缓存：=2+3"]
+    assert [warning.code for warning in parsed.warnings] == ["FORMULA_CACHE_UNAVAILABLE"]
 
 
 @pytest.mark.parametrize(
