@@ -1,6 +1,6 @@
 import pytest
 
-from rag_modules.config.settings import Settings, UploadSettings
+from rag_modules.config.settings import ParserSettings, Settings, UploadSettings
 
 
 def test_nested_embedding_catalog_and_secrets_are_loaded(monkeypatch):
@@ -49,3 +49,40 @@ def test_indexing_runtime_settings_are_available_with_approved_defaults():
 def test_upload_settings_reject_extensions_outside_approved_formats():
     with pytest.raises(ValueError, match=r"unsupported upload extensions: \.exe"):
         UploadSettings(allowed_extensions=(".txt", ".exe"))
+
+
+def test_spreadsheet_merged_cell_limits_have_approved_defaults():
+    """Changing either merge bound can silently alter accepted XLSX work."""
+    parser = ParserSettings()
+
+    assert parser.max_merged_cell_area == 100_000
+    assert parser.max_total_merged_cell_area == 1_000_000
+
+
+@pytest.mark.parametrize(
+    "field_name", ("max_merged_cell_area", "max_total_merged_cell_area")
+)
+def test_spreadsheet_merged_cell_limits_must_be_positive(field_name):
+    """A non-positive merge bound would make the parser contract nonsensical."""
+    with pytest.raises(ValueError):
+        ParserSettings(**{field_name: 0})
+
+
+def test_total_merged_cell_limit_cannot_be_smaller_than_single_range_limit():
+    """Allowing the total below one legal range creates contradictory limits."""
+    with pytest.raises(ValueError, match="total merged-cell area"):
+        ParserSettings(
+            max_physical_cells=10,
+            max_merged_cell_area=5,
+            max_total_merged_cell_area=4,
+        )
+
+
+def test_total_merged_cell_limit_cannot_exceed_physical_cell_limit():
+    """Merge expansion must stay within the parser's overall materialization cap."""
+    with pytest.raises(ValueError, match="total merged-cell area"):
+        ParserSettings(
+            max_physical_cells=5,
+            max_merged_cell_area=5,
+            max_total_merged_cell_area=6,
+        )

@@ -446,3 +446,72 @@ After every task, append:
 5. RED/GREEN/full-regression commands and results;
 6. commit SHA and independent-review verdict;
 7. remaining or newly discovered risk.
+
+## 7. Safety-hardening implementation records
+
+### SAFE-001 Task 1 — Relationship-resolved XLSX preflight and merge bounds
+
+- **Source and symptoms:** The Task 1 RED fixtures confirmed that filename-glob
+  discovery skipped a relationship-resolved `xl/worksheets/sheet1.XML` member,
+  allowing three physical cells past a limit of two. External relationships,
+  authority/absolute URI targets, `..` traversal, missing members, duplicate
+  relationship IDs, duplicate worksheet targets and a referenced non-worksheet
+  relationship type all reached the fail-fast `load_workbook` hook instead of
+  returning `XLSX_MALFORMED`. A sparse real cell plus `A1:Z100`, several legal
+  ranges exceeding the aggregate limit, and malformed/reversed/out-of-sheet/
+  missing merge references likewise reached OpenPyXL before rejection. Normal
+  mode materialized `MergedCell` placeholders in private `_cells` mappings.
+- **Root cause:** Preflight selected worksheet parts by a lowercase ZIP filename
+  convention rather than resolving the workbook's sheet relationships. It
+  counted `<c>` nodes but ignored `<mergeCell>` declarations, then extraction
+  enumerated OpenPyXL's private mapping directly and used `worksheet.cell()` for
+  cached values, which could create coordinates.
+- **Plan ambiguity and ruling:** The written step said to reject absolute
+  targets, but this repository and current OpenPyXL legitimately encode package
+  targets as `/xl/worksheets/sheet1.xml`. The controller ruled that exactly one
+  leading slash is a valid OPC package-root reference and is canonicalized to
+  the exact case-sensitive member `xl/...`. Authority paths beginning `//`, URI
+  schemes, drive paths, backslashes, query/fragment text, percent escapes, empty
+  or dot segments and package traversal remain invalid. The RED absolute-target
+  case therefore uses an authority/host target, not an OPC package-root target.
+- **Rejected approaches:** Lowercasing member names was rejected because ZIP
+  members and relationship resolution are case-sensitive. Retaining the glob
+  and adding another suffix was rejected because relationships, not filenames,
+  define worksheet identity. Letting OpenPyXL load before validation was
+  rejected because merge placeholders allocate before the safety boundary.
+  Enumerating cached cells with `.cell()` was rejected because lookup can mutate
+  the mapping. Rejecting every leading slash was rejected because it breaks
+  valid packages already produced and consumed by the project.
+- **Final design:** Parse `xl/workbook.xml` and its relationship part with a
+  hardened lxml parser, accept only the exact Transitional or Strict worksheet
+  relationship URI, validate unique internal IDs/targets and resolve exact ZIP
+  members in workbook order. Stream-preflight only those parts into immutable
+  title/part/physical-coordinate records. Validate merge boundaries and XLSX
+  coordinate maxima, enforce 100,000 single-range and 1,000,000 aggregate
+  default areas, and avoid counting duplicate ranges twice. After two bounded
+  OpenPyXL loads, verify sheet title/order and route all private mapping access
+  through one adapter that walks sorted preflight coordinates with `.get()`,
+  skips `MergedCell` placeholders and never calls `.cell()`.
+- **TDD RED evidence:**
+  `.venv/bin/python -m pytest tests/unit/config/test_settings.py
+  tests/unit/parsing/test_tabular.py -k 'merged_cell or relationship or
+  case_varied or external or traversal or missing_target or duplicate_target'
+  -q` produced `12 failed, 31 deselected`: fields/validators were absent and
+  every relationship breach reached the fail-fast loader. Then
+  `.venv/bin/python -m pytest tests/unit/parsing/test_tabular.py -k 'merge or
+  merged or physical_cell_adapter' -q` produced `7 failed, 1 passed, 34
+  deselected`: merge breaches reached the loader and `_physical_cells` did not
+  exist; the legal merged-workbook compatibility case already passed.
+- **GREEN and regression evidence:** The same relationship command produced
+  `12 passed, 31 deselected`; the same merge command produced `8 passed, 34
+  deselected`. The focused Task 1 regression
+  `.venv/bin/python -m pytest tests/unit/config/test_settings.py
+  tests/unit/parsing/test_tabular.py -q` produced `51 passed` with one existing
+  Starlette/httpx deprecation warning.
+- **Fix commit to be created:** `fix: bound xlsx worksheet materialization`.
+- **Residual risk/status:** The adapter deliberately depends on OpenPyXL's
+  private `_cells` mapping contract, but that dependency is isolated and fails
+  closed if its mapping/coordinate/cell-type assumptions change. ZIP payload
+  size protection remains the upstream upload/decompression boundary. Task 2
+  still owns bounded warning aggregation. Implementation is complete pending
+  the full-suite verification, commit and independent review.

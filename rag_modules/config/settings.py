@@ -199,6 +199,20 @@ class ParserSettings(BaseModel):
     max_physical_cells: int = Field(default=1_000_000, ge=1)
     max_row_coordinate: int = Field(default=100_000, ge=1)
     max_column_coordinate: int = Field(default=16_384, ge=1)
+    max_merged_cell_area: int = Field(default=100_000, ge=1)
+    max_total_merged_cell_area: int = Field(default=1_000_000, ge=1)
+
+    @model_validator(mode="after")
+    def validate_merged_cell_limits(self):
+        if self.max_total_merged_cell_area < self.max_merged_cell_area:
+            raise ValueError(
+                "total merged-cell area must be greater than or equal to the single-range limit"
+            )
+        if self.max_total_merged_cell_area > self.max_physical_cells:
+            raise ValueError(
+                "total merged-cell area must be less than or equal to the physical-cell limit"
+            )
+        return self
 
 
 class PreviewSettings(BaseModel):

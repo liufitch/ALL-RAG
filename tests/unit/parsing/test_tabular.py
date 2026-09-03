@@ -4,6 +4,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 import xlwt
+from lxml import etree
 from openpyxl import Workbook
 
 from rag_modules.config.settings import settings
@@ -33,12 +34,18 @@ def parser_registry() -> ParserRegistry:
     )
 
 
-def _xlsx_bytes(configure, *, sheet_xml=None) -> bytes:
+def _xlsx_bytes(
+    configure,
+    *,
+    sheet_xml=None,
+    worksheet_member: str | None = None,
+    workbook_rels_xml=None,
+) -> bytes:
     output = io.BytesIO()
     workbook = Workbook()
     configure(workbook)
     workbook.save(output)
-    if sheet_xml is None:
+    if sheet_xml is None and worksheet_member is None and workbook_rels_xml is None:
         return output.getvalue()
     patched = io.BytesIO()
     with ZipFile(io.BytesIO(output.getvalue())) as source, ZipFile(
@@ -47,9 +54,68 @@ def _xlsx_bytes(configure, *, sheet_xml=None) -> bytes:
         for info in source.infolist():
             payload = source.read(info.filename)
             if info.filename == "xl/worksheets/sheet1.xml":
-                payload = sheet_xml(payload)
+                if sheet_xml is not None:
+                    payload = sheet_xml(payload)
+                if worksheet_member is not None:
+                    target.writestr(worksheet_member, payload)
+                    continue
+            if info.filename == "xl/_rels/workbook.xml.rels":
+                if worksheet_member is not None:
+                    package_target = f"/{worksheet_member}".encode()
+                    relative_target = worksheet_member.removeprefix("xl/").encode()
+                    payload = payload.replace(
+                        b"/xl/worksheets/sheet1.xml", package_target
+                    ).replace(b"worksheets/sheet1.xml", relative_target)
+                if workbook_rels_xml is not None:
+                    payload = workbook_rels_xml(payload)
             target.writestr(info, payload)
     return patched.getvalue()
+
+
+def _modify_first_worksheet_relationship(payload: bytes, **attributes) -> bytes:
+    root = etree.fromstring(payload)
+    relationship = next(
+        child
+        for child in root
+        if child.get("Type", "").endswith("/relationships/worksheet")
+    )
+    for name, value in attributes.items():
+        if value is None:
+            relationship.attrib.pop(name, None)
+        else:
+            relationship.set(name, value)
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _duplicate_worksheet_target(payload: bytes) -> bytes:
+    root = etree.fromstring(payload)
+    worksheet_relationships = [
+        child
+        for child in root
+        if child.get("Type", "").endswith("/relationships/worksheet")
+    ]
+    worksheet_relationships[1].set("Target", worksheet_relationships[0].get("Target"))
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _duplicate_relationship_id(payload: bytes) -> bytes:
+    root = etree.fromstring(payload)
+    root[1].set("Id", root[0].get("Id"))
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def _replace_merge_reference(payload: bytes, reference: str | None) -> bytes:
+    root = etree.fromstring(payload)
+    merge_cell = next(
+        element
+        for element in root.iter()
+        if etree.QName(element).localname == "mergeCell"
+    )
+    if reference is None:
+        merge_cell.attrib.pop("ref", None)
+    else:
+        merge_cell.set("ref", reference)
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
 
 
 def _xls_bytes(configure) -> bytes:
@@ -336,6 +402,271 @@ def test_xlsx_enforces_independent_physical_cell_budget(monkeypatch):
         XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "cells.xlsx"))
 
     assert error.value.code == "TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED"
+
+
+def test_xlsx_case_varied_relationship_target_is_still_preflighted(monkeypatch):
+    """Discovering worksheets by a lowercase filename glob skips referenced parts."""
+    monkeypatch.setattr(settings.parser, "max_physical_cells", 2)
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.append(["列1", "列2"]),
+            workbook.active.append(["值"]),
+        ),
+        worksheet_member="xl/worksheets/sheet1.XML",
+    )
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran before relationship-resolved preflight")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "case-varied.xlsx"))
+
+    assert error.value.code == "TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED"
+
+
+@pytest.mark.parametrize(
+    "workbook_rels_xml",
+    [
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, TargetMode="External"
+            ),
+            id="external-relationship",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="//fileserver/share/sheet1.xml"
+            ),
+            id="absolute-authority-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="../worksheets/sheet1.xml"
+            ),
+            id="traversal-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="worksheets/missing.xml"
+            ),
+            id="missing-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload,
+                Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles",
+            ),
+            id="non-worksheet-relationship",
+        ),
+        pytest.param(_duplicate_relationship_id, id="duplicate-relationship-id"),
+    ],
+)
+def test_xlsx_relationship_corruption_is_rejected_before_openpyxl(
+    monkeypatch, workbook_rels_xml
+):
+    """Untrusted workbook relationships must not reach OpenPyXL construction."""
+    payload = _xlsx_bytes(
+        lambda workbook: workbook.active.append(["列"]),
+        workbook_rels_xml=workbook_rels_xml,
+    )
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran for a malformed relationship package")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "relationships.xlsx"))
+
+    assert error.value.code == "XLSX_MALFORMED"
+    assert error.value.message == "The XLSX file is malformed or unreadable."
+
+
+def test_xlsx_duplicate_worksheet_target_is_rejected_before_openpyxl(monkeypatch):
+    """Two workbook sheets resolving to one part make sheet identity ambiguous."""
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.append(["第一"]),
+            workbook.create_sheet("Second").append(["第二"]),
+        ),
+        workbook_rels_xml=_duplicate_worksheet_target,
+    )
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran for duplicate worksheet targets")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "duplicate-target.xlsx"))
+
+    assert error.value.code == "XLSX_MALFORMED"
+
+
+def test_xlsx_rejects_single_merged_range_area_before_openpyxl(monkeypatch):
+    """One sparse merge declaration must not expand into unbounded placeholders."""
+    monkeypatch.setattr(settings.parser, "max_merged_cell_area", 100)
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.__setitem__("A1", "列"),
+            workbook.active.merge_cells("A1:B2"),
+        ),
+        sheet_xml=lambda xml: _replace_merge_reference(xml, "A1:Z100"),
+    )
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran before the single-merge bound")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "merge-area.xlsx"))
+
+    assert error.value.code == "TABLE_MERGED_CELL_LIMIT_EXCEEDED"
+    assert (
+        error.value.message
+        == "A merged spreadsheet range exceeds the configured area limit."
+    )
+
+
+def test_xlsx_rejects_total_merged_range_area_before_openpyxl(monkeypatch):
+    """Individually legal ranges must not bypass the document-wide merge bound."""
+    monkeypatch.setattr(settings.parser, "max_merged_cell_area", 4)
+    monkeypatch.setattr(settings.parser, "max_total_merged_cell_area", 10)
+
+    def configure(workbook):
+        worksheet = workbook.active
+        for coordinate in ("A1", "C1", "E1"):
+            worksheet[coordinate] = coordinate
+        for reference in ("A1:B2", "C1:D2", "E1:F2"):
+            worksheet.merge_cells(reference)
+
+    payload = _xlsx_bytes(configure)
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran before the aggregate-merge bound")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "merge-total.xlsx"))
+
+    assert error.value.code == "TABLE_TOTAL_MERGED_CELL_LIMIT_EXCEEDED"
+    assert (
+        error.value.message
+        == "The spreadsheet exceeds the configured merged-cell area limit."
+    )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        pytest.param("not-a-range", id="malformed-merge-reference"),
+        pytest.param("B2:A1", id="reversed-merge-reference"),
+        pytest.param("XFE1:XFE1", id="out-of-sheet-merge-reference"),
+        pytest.param(None, id="missing-merge-reference"),
+    ],
+)
+def test_xlsx_rejects_malformed_merged_range_before_openpyxl(
+    monkeypatch, reference
+):
+    """Invalid merge coordinates must fail at the bounded XML boundary."""
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.__setitem__("A1", "列"),
+            workbook.active.merge_cells("A1:B2"),
+        ),
+        sheet_xml=lambda xml: _replace_merge_reference(xml, reference),
+    )
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran for an invalid merge range")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "bad-merge.xlsx"))
+
+    assert error.value.code == "XLSX_MALFORMED"
+    assert error.value.message == "The XLSX file is malformed or unreadable."
+
+
+def test_xlsx_physical_cell_adapter_skips_merged_placeholders_without_growth():
+    """Walking preflight coordinates must not emit or create merge placeholders."""
+    from openpyxl import load_workbook as openpyxl_load_workbook
+
+    from rag_modules.parsing.xlsx_parser import (
+        _physical_cells,
+        _preflight_worksheet_xml,
+    )
+
+    def configure(workbook):
+        worksheet = workbook.active
+        worksheet["A1"] = "分组"
+        worksheet["C1"] = "类别"
+        worksheet.merge_cells("A1:B2")
+        worksheet["A3"] = "值"
+        worksheet["C3"] = "甲"
+
+    payload = _xlsx_bytes(configure)
+    preflight = _preflight_worksheet_xml(payload)[0]
+    formula_workbook = openpyxl_load_workbook(io.BytesIO(payload), data_only=False)
+    cached_workbook = openpyxl_load_workbook(io.BytesIO(payload), data_only=True)
+    formula_sheet = formula_workbook.active
+    cached_sheet = cached_workbook.active
+    before_sizes = (len(formula_sheet._cells), len(cached_sheet._cells))
+    try:
+        physical_cells = list(
+            _physical_cells(
+                formula_sheet,
+                cached_sheet,
+                preflight.physical_coordinates,
+            )
+        )
+    finally:
+        formula_workbook.close()
+        cached_workbook.close()
+
+    assert [(row, column) for row, column, _cell, _cached in physical_cells] == [
+        (1, 1),
+        (1, 3),
+        (3, 1),
+        (3, 3),
+    ]
+    assert all(type(cell).__name__ == "Cell" for _, _, cell, _ in physical_cells)
+    assert (len(formula_sheet._cells), len(cached_sheet._cells)) == before_sizes
+
+
+def test_xlsx_normal_merged_range_emits_only_physical_values():
+    """A legal merge remains parseable without placeholder rows or values."""
+    def configure(workbook):
+        worksheet = workbook.active
+        worksheet["A1"] = "分组"
+        worksheet["C1"] = "类别"
+        worksheet.merge_cells("A1:B2")
+        worksheet["A3"] = "值"
+        worksheet["C3"] = "甲"
+
+    parsed = XlsxParser().parse(
+        io.BytesIO(_xlsx_bytes(configure)), ParseContext("d", "merged.xlsx")
+    )
+
+    assert [block.text for block in parsed.blocks] == ["分组：值；类别：甲"]
+    assert [block.metadata["row"] for block in parsed.blocks] == [3]
 
 
 def test_xls_and_xlsx_warn_for_hidden_very_hidden_and_nondata_sheets():
