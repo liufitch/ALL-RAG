@@ -118,6 +118,17 @@ def _replace_merge_reference(payload: bytes, reference: str | None) -> bytes:
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
 
 
+def _append_hyperlink(payload: bytes, reference: str | None) -> bytes:
+    root = etree.fromstring(payload)
+    namespace = etree.QName(root).namespace
+    hyperlinks = etree.SubElement(root, f"{{{namespace}}}hyperlinks")
+    attributes = {"location": "Sheet!A1"}
+    if reference is not None:
+        attributes["ref"] = reference
+    etree.SubElement(hyperlinks, f"{{{namespace}}}hyperlink", **attributes)
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
 def _xls_bytes(configure) -> bytes:
     output = io.BytesIO()
     workbook = xlwt.Workbook()
@@ -445,6 +456,54 @@ def test_xlsx_case_varied_relationship_target_is_still_preflighted(monkeypatch):
         ),
         pytest.param(
             lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="file:///tmp/sheet1.xml"
+            ),
+            id="uri-scheme-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="C:/tmp/sheet1.xml"
+            ),
+            id="drive-path-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target=r"worksheets\sheet1.xml"
+            ),
+            id="backslash-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="worksheets/sheet1.xml?download=1"
+            ),
+            id="query-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="worksheets/sheet1.xml#fragment"
+            ),
+            id="fragment-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="worksheets/%73heet1.xml"
+            ),
+            id="percent-escape-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="worksheets/./sheet1.xml"
+            ),
+            id="single-dot-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
+                payload, Target="worksheets//sheet1.xml"
+            ),
+            id="empty-segment-target",
+        ),
+        pytest.param(
+            lambda payload: _modify_first_worksheet_relationship(
                 payload, Target="../worksheets/sheet1.xml"
             ),
             id="traversal-target",
@@ -486,6 +545,25 @@ def test_xlsx_relationship_corruption_is_rejected_before_openpyxl(
 
     assert error.value.code == "XLSX_MALFORMED"
     assert error.value.message == "The XLSX file is malformed or unreadable."
+
+
+def test_xlsx_accepts_one_leading_slash_as_a_package_root_target():
+    """Treating an OPC package-root target as a host path rejects normal XLSX files."""
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.append(["列"]),
+            workbook.active.append(["值"]),
+        ),
+        workbook_rels_xml=lambda xml: _modify_first_worksheet_relationship(
+            xml, Target="/xl/worksheets/sheet1.xml"
+        ),
+    )
+
+    parsed = XlsxParser().parse(
+        io.BytesIO(payload), ParseContext("d", "package-root.xlsx")
+    )
+
+    assert [block.text for block in parsed.blocks] == ["列：值"]
 
 
 def test_xlsx_duplicate_worksheet_target_is_rejected_before_openpyxl(monkeypatch):
@@ -667,6 +745,111 @@ def test_xlsx_normal_merged_range_emits_only_physical_values():
 
     assert [block.text for block in parsed.blocks] == ["分组：值；类别：甲"]
     assert [block.metadata["row"] for block in parsed.blocks] == [3]
+
+
+def test_xlsx_rejects_hyperlink_range_materialization_before_openpyxl(monkeypatch):
+    """A hyperlink range must share the physical-cell materialization budget."""
+    monkeypatch.setattr(settings.parser, "max_physical_cells", 4)
+    payload = _xlsx_bytes(
+        lambda workbook: workbook.active.__setitem__("A1", "列"),
+        sheet_xml=lambda xml: _append_hyperlink(xml, "B2:C3"),
+    )
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran before the hyperlink materialization bound")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "hyperlink-limit.xlsx"))
+
+    assert error.value.code == "TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED"
+    assert (
+        error.value.message
+        == "The spreadsheet exceeds the configured physical cell limit."
+    )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        pytest.param("not-a-range", id="malformed-hyperlink-reference"),
+        pytest.param("C3:B2", id="reversed-hyperlink-reference"),
+        pytest.param("XFE1:XFE1", id="out-of-sheet-hyperlink-reference"),
+        pytest.param(None, id="missing-hyperlink-reference"),
+    ],
+)
+def test_xlsx_rejects_malformed_hyperlink_before_openpyxl(
+    monkeypatch, reference
+):
+    """Invalid hyperlink ranges must fail at the bounded XML boundary."""
+    payload = _xlsx_bytes(
+        lambda workbook: workbook.active.__setitem__("A1", "列"),
+        sheet_xml=lambda xml: _append_hyperlink(xml, reference),
+    )
+
+    def fail_if_openpyxl_runs(*args, **kwargs):
+        pytest.fail("load_workbook ran for an invalid hyperlink range")
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook", fail_if_openpyxl_runs
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "bad-hyperlink.xlsx"))
+
+    assert error.value.code == "XLSX_MALFORMED"
+    assert error.value.message == "The XLSX file is malformed or unreadable."
+
+
+def test_xlsx_bounded_hyperlink_range_does_not_become_table_data(monkeypatch):
+    """Bounded hyperlink-created cells are valid but are not physical table values."""
+    monkeypatch.setattr(settings.parser, "max_physical_cells", 6)
+    payload = _xlsx_bytes(
+        lambda workbook: (
+            workbook.active.append(["列"]),
+            workbook.active.append(["值"]),
+        ),
+        sheet_xml=lambda xml: _append_hyperlink(xml, "B2:C3"),
+    )
+
+    parsed = XlsxParser().parse(
+        io.BytesIO(payload), ParseContext("d", "bounded-hyperlink.xlsx")
+    )
+
+    assert [block.text for block in parsed.blocks] == ["列：值"]
+
+
+def test_xlsx_hidden_sheet_mapping_contract_is_validated(monkeypatch):
+    """Skipping hidden extraction must not skip private-mapping validation."""
+    from openpyxl import load_workbook as openpyxl_load_workbook
+
+    def configure(workbook):
+        workbook.active.title = "Data"
+        workbook.active.append(["列"])
+        workbook.active.append(["值"])
+        hidden = workbook.create_sheet("Hidden")
+        hidden.sheet_state = "hidden"
+        hidden["A1"] = "secret"
+
+    payload = _xlsx_bytes(configure)
+
+    def load_with_corrupt_hidden_mapping(*args, **kwargs):
+        workbook = openpyxl_load_workbook(*args, **kwargs)
+        workbook["Hidden"]._cells[(5, 5)] = object()
+        return workbook
+
+    monkeypatch.setattr(
+        "rag_modules.parsing.xlsx_parser.load_workbook",
+        load_with_corrupt_hidden_mapping,
+    )
+
+    with pytest.raises(DocumentParseError) as error:
+        XlsxParser().parse(io.BytesIO(payload), ParseContext("d", "hidden-contract.xlsx"))
+
+    assert error.value.code == "XLSX_MALFORMED"
 
 
 def test_xls_and_xlsx_warn_for_hidden_very_hidden_and_nondata_sheets():

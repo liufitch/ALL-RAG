@@ -515,3 +515,69 @@ After every task, append:
   size protection remains the upstream upload/decompression boundary. Task 2
   still owns bounded warning aggregation. Implementation is complete pending
   the full-suite verification, commit and independent review.
+
+### SAFE-001 Fix Round 1 — Hyperlink materialization and hidden-sheet validation
+
+- **Review symptoms:** Independent review reproduced an XLSX with only physical
+  `A1` plus `<hyperlink ref="B2:C3">`: preflight retained only `(1, 1)`, but
+  each OpenPyXL normal-mode load created real `Cell` entries for `B2`, `C2`,
+  `B3` and `C3`. A near-sheet-sized hyperlink rectangle could therefore force
+  large allocation before any configured limit. Review also found that the
+  hidden-sheet `continue` ran before `_physical_cells`, so a hidden worksheet's
+  formula/cached private mappings were never contract-validated. Finally, the
+  relationship target rejection matrix did not explicitly cover URI schemes,
+  drive paths, backslashes, query strings, fragments, percent escapes,
+  single-dot segments, empty segments or the positive one-leading-slash case.
+- **Root causes:** Worksheet preflight treated only `<c>` and `<mergeCell>` as
+  possible OpenPyXL materializers; SpreadsheetML `<hyperlink ref>` ranges were
+  omitted. Mapping validation was coupled to visible row emission instead of
+  workbook-sheet validation. Target normalization implemented the intended
+  rules, but tests covered only authority/traversal/missing/type cases.
+- **Ruling and final design:** Keep `_WorksheetPreflight.physical_coordinates`
+  strictly equal to actual XML `<c>` coordinates. Validate every hyperlink ref
+  before either workbook load with the same range syntax and XLSX coordinate
+  maxima used for merges. Conservatively charge physical `<c>` count plus each
+  unique merge/hyperlink rectangle against the existing
+  `max_physical_cells`; retain the merge-specific single/aggregate limits and
+  errors. Exact duplicate materializing rectangles within a sheet count once;
+  distinct overlaps and physical cells inside rectangles may be overcounted,
+  which is deliberately fail-safe and avoids building a second potentially
+  million-coordinate union. Over-budget hyperlinks reuse
+  `TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED`; malformed refs use `XLSX_MALFORMED`.
+  Consume `_physical_cells` once for every formula/cached sheet pair before a
+  hidden sheet is skipped. Both mappings may contain nonphysical extras only
+  when each extra is a `MergedCell` or a real `Cell` with preserved hyperlink
+  evidence; only actual preflight physical coordinates are yielded as table
+  data.
+- **Rejected approaches:** A new hyperlink-specific setting/error was rejected
+  because the existing physical materialization budget and safe error fully
+  express this bound. Adding hyperlink coordinates to `physical_coordinates`
+  was rejected because it would violate the interface and risk treating
+  relationship/location text as table data. Expanding rectangle unions during
+  preflight was rejected because the safety check itself could allocate up to
+  the configured million-cell bound. Rejecting every multi-cell hyperlink was
+  unnecessary because current OpenPyXL preserves hyperlink evidence on each
+  generated formula and cached `Cell`. Validating hidden mappings after the
+  visibility branch was rejected because it preserves the bypass.
+- **TDD RED and characterization evidence:** Before production changes,
+  `.venv/bin/python -m pytest tests/unit/parsing/test_tabular.py -k 'hyperlink
+  or hidden_sheet_mapping_contract or relationship_corruption or package_root'
+  -q` produced `7 failed, 15 passed, 36 deselected`. The seven failures proved
+  over-budget/malformed hyperlinks reached the fail-fast loader, a safe bounded
+  hyperlink was rejected after loading, and a corrupt hidden mapping was
+  skipped. All 15 target normalization/package-root cases passed against the
+  old production code and are recorded as characterization rather than
+  fabricated RED evidence.
+- **GREEN and regression evidence:** The same focused command produced `22
+  passed, 36 deselected`. The amended settings/tabular suite produced `67
+  passed`. The full suite produced `277 passed, 1 skipped` with the existing
+  Starlette/httpx deprecation warning. Compilation and `git diff --check`
+  exited zero.
+- **Fix commit to be created:** `fix: preflight xlsx hyperlink materialization`.
+- **Residual risk/status:** Conservative overlap accounting may reject a
+  workbook whose true materialized-coordinate union fits exactly under the
+  budget; this is an intentional safety/complexity tradeoff. The accepted extra
+  cells still rely on OpenPyXL preserving per-cell hyperlink evidence in both
+  normal-mode workbooks, and fail closed if that private behavior changes. No
+  new public setting or error code was introduced. Implementation is complete
+  pending commit and re-review.

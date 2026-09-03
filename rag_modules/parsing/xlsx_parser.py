@@ -103,14 +103,20 @@ class XlsxParser:
             ):
                 raise _malformed_xlsx_error()
             for preflight, worksheet, cached_worksheet in worksheet_triples:
+                physical_cells = _physical_cells(
+                    worksheet,
+                    cached_worksheet,
+                    preflight.physical_coordinates,
+                )
                 if worksheet.sheet_state != "visible":
+                    for _physical_cell in physical_cells:
+                        pass
                     warnings.append(_hidden_sheet_warning(worksheet.title))
                     continue
                 sheet_blocks = table_blocks(
                     _worksheet_rows(
                         worksheet,
-                        cached_worksheet,
-                        preflight.physical_coordinates,
+                        physical_cells,
                         warnings,
                     ),
                     worksheet.title,
@@ -146,12 +152,14 @@ def _preflight_worksheet_xml(payload: bytes) -> tuple[_WorksheetPreflight, ...]:
     nodes = 0
     cells = 0
     total_merged_area = 0
+    possible_materialized_cells = 0
     preflights: list[_WorksheetPreflight] = []
     try:
         with ZipFile(io.BytesIO(payload)) as archive:
             for title, part_name in _worksheet_parts(archive):
                 physical_coordinates: set[tuple[int, int]] = set()
                 merged_ranges: set[tuple[int, int, int, int]] = set()
+                materializing_ranges: set[tuple[int, int, int, int]] = set()
                 with archive.open(part_name) as worksheet_xml:
                     for _event, element in etree.iterparse(
                         worksheet_xml,
@@ -169,17 +177,21 @@ def _preflight_worksheet_xml(payload: bytes) -> tuple[_WorksheetPreflight, ...]:
                         localname = etree.QName(element).localname
                         if localname == "c":
                             cells += 1
-                            if cells > settings.parser.max_physical_cells:
-                                raise DocumentParseError(
-                                    "TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED",
-                                    "The spreadsheet exceeds the configured physical cell limit.",
-                                )
+                            possible_materialized_cells += 1
+                            _enforce_physical_cell_limit(cells)
+                            _enforce_physical_cell_limit(possible_materialized_cells)
                             physical_coordinates.add(
                                 _validate_physical_cell_coordinate(element)
                             )
                         elif localname == "mergeCell":
-                            total_merged_area += _merged_range_area(
-                                element, merged_ranges
+                            boundaries, area = _validated_range(element)
+                            if area > settings.parser.max_merged_cell_area:
+                                raise DocumentParseError(
+                                    "TABLE_MERGED_CELL_LIMIT_EXCEEDED",
+                                    "A merged spreadsheet range exceeds the configured area limit.",
+                                )
+                            total_merged_area += _unique_range_area(
+                                boundaries, area, merged_ranges
                             )
                             if (
                                 total_merged_area
@@ -189,6 +201,16 @@ def _preflight_worksheet_xml(payload: bytes) -> tuple[_WorksheetPreflight, ...]:
                                     "TABLE_TOTAL_MERGED_CELL_LIMIT_EXCEEDED",
                                     "The spreadsheet exceeds the configured merged-cell area limit.",
                                 )
+                            possible_materialized_cells += _unique_range_area(
+                                boundaries, area, materializing_ranges
+                            )
+                            _enforce_physical_cell_limit(possible_materialized_cells)
+                        elif localname == "hyperlink":
+                            boundaries, area = _validated_range(element)
+                            possible_materialized_cells += _unique_range_area(
+                                boundaries, area, materializing_ranges
+                            )
+                            _enforce_physical_cell_limit(possible_materialized_cells)
                         if localname not in {"f", "v", "t", "is"}:
                             element.clear()
                 preflights.append(
@@ -317,10 +339,7 @@ def _validate_physical_cell_coordinate(element: Any) -> tuple[int, int]:
     return row, column
 
 
-def _merged_range_area(
-    element: Any,
-    merged_ranges: set[tuple[int, int, int, int]],
-) -> int:
+def _validated_range(element: Any) -> tuple[tuple[int, int, int, int], int]:
     reference = element.get("ref")
     if not reference:
         raise _malformed_xlsx_error()
@@ -340,15 +359,26 @@ def _merged_range_area(
     ):
         raise _malformed_xlsx_error()
     area = (max_column - min_column + 1) * (max_row - min_row + 1)
-    if area > settings.parser.max_merged_cell_area:
-        raise DocumentParseError(
-            "TABLE_MERGED_CELL_LIMIT_EXCEEDED",
-            "A merged spreadsheet range exceeds the configured area limit.",
-        )
-    if boundaries in merged_ranges:
+    return boundaries, area
+
+
+def _unique_range_area(
+    boundaries: tuple[int, int, int, int],
+    area: int,
+    accounted_ranges: set[tuple[int, int, int, int]],
+) -> int:
+    if boundaries in accounted_ranges:
         return 0
-    merged_ranges.add(boundaries)
+    accounted_ranges.add(boundaries)
     return area
+
+
+def _enforce_physical_cell_limit(possible_materialized_cells: int) -> None:
+    if possible_materialized_cells > settings.parser.max_physical_cells:
+        raise DocumentParseError(
+            "TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED",
+            "The spreadsheet exceeds the configured physical cell limit.",
+        )
 
 
 def _physical_cell_has_content(element: Any) -> bool:
@@ -363,15 +393,12 @@ def _physical_cell_has_content(element: Any) -> bool:
 
 def _worksheet_rows(
     worksheet: Any,
-    cached_worksheet: Any,
-    physical_coordinates: frozenset[tuple[int, int]],
+    physical_cells: Iterator[tuple[int, int, Any, Any]],
     warnings: list[ParserWarning],
 ) -> Iterator[tuple[int, tuple[Any, ...]]]:
     """Yield sparse physical rows, never the rectangular declared dimension."""
     rows: dict[int, dict[int, Any]] = {}
-    for source_row, source_column, cell, cached_cell in _physical_cells(
-        worksheet, cached_worksheet, physical_coordinates
-    ):
+    for source_row, source_column, cell, cached_cell in physical_cells:
         value = cell.value
         if cell.data_type == "f":
             cached = cached_cell.value if cached_cell is not None else None
@@ -410,7 +437,13 @@ def _physical_cells(
                 raise _malformed_xlsx_error()
             if coordinate not in physical_coordinates:
                 unexpected_cell = cell_mapping.get(coordinate)
-                if not isinstance(unexpected_cell, MergedCell):
+                if not (
+                    isinstance(unexpected_cell, MergedCell)
+                    or (
+                        isinstance(unexpected_cell, Cell)
+                        and unexpected_cell.hyperlink is not None
+                    )
+                ):
                     raise _malformed_xlsx_error()
     for row, column in sorted(physical_coordinates):
         cell = formula_cells.get((row, column))
