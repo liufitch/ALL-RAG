@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-03
 
-**Status:** Proposed remediation design for the residual findings after the
+**Status:** Approved remediation design for the residual findings after the
 Parsing, Segmentation, and Preview phase review.
 
 **Parent specification:**
@@ -83,6 +83,10 @@ It must:
 5. Use the resolved part list for every worksheet preflight. ZIP member lookup
    must use the exact relationship target; filename case cannot bypass the
    preflight.
+6. Return immutable preflight records in workbook sheet order. Each record
+   contains the sheet title, exact package part and the bounded set of physical
+   cell coordinates discovered in that part. After OpenPyXL loads the file, its
+   sheet titles and order must match these records before any values are read.
 
 OpenPyXL must not be invoked until all resolved worksheet parts pass preflight.
 
@@ -114,8 +118,10 @@ member content is returned to clients.
 After preflight, the parser may continue using paired formula and `data_only`
 OpenPyXL workbooks with `keep_links=False`. Access to private `_cells` must be
 isolated behind one small adapter function and guarded by a compatibility test;
-the adapter must iterate only coordinates backed by a physical cell in the
-formula view. Merged placeholders must never be treated as source values.
+the adapter must iterate only coordinates present in the preflight record and
+backed by a physical cell in the formula view. Merged placeholders must never
+be treated as source values. Accessing the cached view must use bounded mapping
+lookup and must not create new cells.
 
 Formula execution remains forbidden. A cached value is preferred; otherwise
 the formula text is retained.
@@ -147,10 +153,17 @@ backend exception messages.
 ### 6.1 Preflight projection
 
 Before splitting a source of length `L`, maximum chunk length `M`, and overlap
-`O`, compute the minimum guaranteed advance `A = M - O`. Configuration validation
-already requires `M > O`.
+`O`, compute `hard_advance = M - O` and a minimum accepted advancement
+`A = max(1, ceil(hard_advance / 2))`. Configuration validation already requires
+`M > O`.
 
-The worst-case number of iterations for a hard-boundary fallback is:
+A preferred boundary is used only if the next start produced by that boundary
+advances by at least `A`; otherwise the splitter uses the hard maximum. This
+preserves late natural boundaries while preventing a sequence of early
+delimiters from reducing progress to one character unless the configured hard
+advance itself is one or two characters.
+
+The resulting worst-case number of iterations is:
 
 ```text
 1                              if L <= M
@@ -192,11 +205,13 @@ when a neighboring nonblank parent has capacity:
   stays within the parent maximum.
 - Otherwise prefix it to the following nonblank source if that stays within the
   maximum.
-- If neither side can contain the delimiter, split/attach delimiter characters
-  only as part of a chunk that also contains nonblank source text.
+- If neither non-atomic side can contain the delimiter, split/attach delimiter
+  characters only as part of a chunk that also contains nonblank source text.
+- Never modify or split an otherwise fitting code/table atomic source solely to
+  retain a delimiter.
 - Only when the configured maximum makes any nonblank delimiter-bearing chunk
-  impossible may the synthetic delimiter be omitted, accompanied by a stable
-  fidelity warning.
+  impossible without violating the fitting-atomic rule may the synthetic
+  delimiter be omitted, accompanied by a stable fidelity warning.
 
 For ordinary limits, concatenating parent contents must reproduce the original
 combined source exactly. Code and table blocks that already fit the maximum
@@ -254,6 +269,8 @@ Every fix follows RED-GREEN TDD against commit `8fb64f4`.
 
 - Extreme `M=1_000_000, O=999_999` is rejected by preflight without calling
   `_boundary_end()` repeatedly.
+- Early preferred delimiters that would advance less than `A` fall back to the
+  hard maximum; ordinary late Chinese/English/custom boundaries still win.
 - Cumulative boundary-scan accounting rejects work before its cap.
 - Normal Chinese/English boundaries, custom separators, overlap reconstruction,
   hard splitting and parent-child links remain unchanged.
@@ -289,4 +306,3 @@ The remediation is complete only when:
    Critical or Important issue.
 7. The full backend test suite, compile check and whitespace check pass on the
    final commit.
-
