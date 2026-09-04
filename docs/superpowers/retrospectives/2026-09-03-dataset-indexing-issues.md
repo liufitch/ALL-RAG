@@ -898,3 +898,54 @@ After every task, append:
   structure, and parser timeout/work limits bound that traversal. Other parsers
   were not wrapped broadly and retain their existing producer-specific warning
   strategies. No public parser model or warning schema changed.
+
+### SAFE-008 Final integration review and fresh phase verification (executed 2026-09-04)
+
+- **Review outcome:** Task-scoped review found and fixed two previously missed
+  cross-layer XLSX conditions (hyperlink-range materialization and hidden-sheet
+  mapping validation), one delimiter-capacity contention case, and the final
+  cross-parser PDF/XLS warning-cap gap. Each Critical/Important finding received
+  a separate fix commit and scoped re-review. The final W1 re-review found the
+  PDF/XLS warning cap addressed with no new Critical or Important breakage.
+- **Implementation commit chain after plan start `70c4e92`:** `e95360e` bounded
+  relationship-resolved XLSX worksheet materialization; `60092d1` preflighted
+  hyperlink materialization and validated hidden sheets; `68cba8e` bounded
+  parser/preview warnings and aggregated formula warnings; `3eee2ac` bounded
+  segmentation work and restored delimiters; `196f082` resolved joint delimiter
+  allocation contention; `2cc45a4` preflighted Markdown front matter; and
+  `c74d502` enforced PDF/XLS parser warning caps.
+- **Fresh phase command:** `.venv/bin/python -m pytest
+  tests/unit/config/test_settings.py tests/unit/parsing tests/unit/segmentation
+  tests/unit/services/test_preview_service.py
+  tests/api/test_indexing_preview_api.py tests/unit/object_storage
+  tests/unit/repositories/test_document_repository.py -q` exited zero with `250
+  passed, 1 warning in 5.26s`.
+- **Fresh complete-suite command:** `.venv/bin/python -m pytest -q` exited zero
+  with `330 passed, 1 skipped, 1 warning in 5.73s`. The one warning in both test
+  runs is the pre-existing `StarletteDeprecationWarning` from FastAPI's
+  `testclient.py` concerning the httpx compatibility package; no new parser,
+  segmentation, preview, storage, repository, or API warning appeared.
+- **Static and repository gates:** `.venv/bin/python -m compileall -q rag_modules
+  main.py tests`, `git diff --check`, and `git status --short` each exited zero;
+  the first two produced no output and the status was empty before this final
+  documentation append. After this append, the documentation-only commit and a
+  second diff/status check close the repository gate without changing runtime
+  code.
+- **Process problems and ruling:** The approved SDD workflow exposed two
+  execution-process issues worth retaining for future work. First, a Task 4
+  implementation turn remained in final self-review after all required gates
+  were green; the controller interrupted it and resumed a narrowly scoped
+  commit/report turn. Second, a new final-review agent could not be created
+  because the session thread limit was reached. The controller therefore reused
+  a read-only task reviewer in a new whole-branch review turn, then reused a
+  different read-only reviewer as the fresh W1 implementer. No controller
+  product-code edit, destructive action, merge, push, or external deployment was
+  performed.
+- **Final residual risks:** OpenPyXL `_cells` and hyperlink evidence remain
+  isolated fail-closed private-API dependencies that must be revalidated on an
+  OpenPyXL upgrade. XLSX rectangle-overlap accounting and segmentation
+  projection deliberately favor safe over-rejection. Accepted YAML front matter
+  receives three bounded passes. Warning producers construct bounded-lifetime
+  transient objects to retain exact omission counts. These risks are documented,
+  finite, and do not reopen the reviewed resource, disclosure, fidelity, or
+  response-cardinality boundaries.
