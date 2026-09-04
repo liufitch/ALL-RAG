@@ -9,7 +9,9 @@ from minio.error import InvalidResponseError, S3Error
 from urllib3.exceptions import HTTPError
 
 from main import app
+from rag_modules.config.settings import settings
 from rag_modules.object_storage import MinioObjectStorage
+from rag_modules.vector_stores.milvus import MilvusVectorStore
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -69,3 +71,32 @@ def minio_store(minio_test_prefix: str) -> Iterator[MinioObjectStorage]:
             # Do not obscure the test's primary, explicit storage failure when
             # a failed connection prevents cleanup from even listing the prefix.
             pass
+
+
+@pytest.fixture
+def real_milvus_store() -> MilvusVectorStore:
+    """Provide a localhost Milvus adapter only when integration is explicitly enabled."""
+    run_integration = os.getenv("RUN_INTEGRATION")
+    if run_integration is None:
+        pytest.skip("set RUN_INTEGRATION=1 to run Milvus integration tests")
+    if run_integration != "1":
+        pytest.fail("RUN_INTEGRATION must be exactly '1' when it is set")
+
+    config = settings.vector_store.model_copy(
+        update={
+            "enabled": True,
+            "host": "localhost",
+            "port": 19530,
+            "database": "default",
+            "uri": "",
+            "user": "",
+            "password": "",
+            "token": "",
+            "extra_params": {},
+            "connect_timeout": 10,
+            "batch_size": 10,
+            "consistency_poll_attempts": 20,
+            "consistency_poll_interval_seconds": 0.25,
+        }
+    )
+    return MilvusVectorStore(config=config)
