@@ -1075,3 +1075,58 @@ After every task, append:
   defines sequential lifecycle behavior; callers must still coordinate a close
   racing with active `embed()` operations. No secret, input, backend response, or
   vector is included in the lifecycle failure.
+
+### IDX-001 Phase 4 Task 2 — deterministic economy keywords (executed 2026-09-04)
+
+- **Problem and impact:** Economy indexing required a local, retry-stable keyword
+  path without an Embedding, Milvus, Celery, network, or logging dependency. The
+  repository had `jieba` pinned but no indexing package or keyword contract, so
+  later economy indexing could otherwise drift into nondeterministic token order,
+  case-split English terms, lossy identifier handling, or unbounded caller output.
+- **Design and rulings:** `KeywordExtractor.extract(text, limit=15)` rejects
+  non-string text with `TypeError`, returns `[]` for blank text, rejects boolean
+  or non-integer limits with `TypeError`, and rejects non-positive limits with
+  `ValueError`. Contiguous Han spans are owned only by a private per-extractor
+  `jieba.Tokenizer` with HMM disabled; non-Han Unicode word spans are owned only
+  by a Unicode regex. This disjoint ownership prevents a mixed token such as
+  `A001` from being counted once by each tokenizer. Explicit immutable English
+  and Chinese stopword sets are filtered. Ordinary words lowercase; an ASCII
+  alphanumeric identifier containing both a letter and a digit canonicalizes to
+  uppercase while preserving internal `.`, `_`, or `-` (for example `a001` to
+  `A001`). Rank is descending frequency plus a fixed identifier bonus, then the
+  normalized term's lexical order; slicing guarantees output never exceeds the
+  requested positive limit.
+- **Resource and isolation ruling:** The input is scanned once, raw tokens are
+  streamed, and the counter retains one entry per accepted distinct term, giving
+  linear token-processing and distinct-term memory rather than materializing a
+  second full token list. The implementation does not configure jieba globals,
+  add dynamic dictionary entries, write a user dictionary, import external index
+  clients, or perform I/O.
+- **Rejected approaches:** Applying regex extraction to the whole input in
+  addition to jieba was rejected because it double-counts mixed-script spans.
+  Keeping jieba's default shared tokenizer or mutating its dictionary/log level
+  was rejected to avoid global behavior changes. First-seen or tokenizer-native
+  ordering was rejected because it can make equal-score results retry-dependent.
+  Unicode locale-sensitive casing and preserving raw ID spelling were rejected
+  because `a001` and `A001` must have one exact canonical representation.
+- **TDD RED evidence:** Before production files existed, `.venv/bin/python -m
+  pytest tests/unit/indexing/test_keywords.py -v` failed collection with
+  `ModuleNotFoundError: rag_modules.indexing`. The system `python` lacked pytest,
+  so the project `.venv` command is the recorded test runner. The first GREEN
+  candidate had one assertion correction: `客户` and `订单` were tied and the
+  approved lexical tie-break correctly ranked `客户` first; no production change
+  was required for that test expectation.
+- **GREEN and verification evidence:** Focused tests passed `17 passed`; keyword,
+  embedding, and segmentation regression passed `102 passed`; and a fresh full
+  suite passed `393 passed, 1 skipped` in 6.63 seconds. Each command emitted only
+  the repository's existing FastAPI/Starlette httpx deprecation warning and the
+  dependency's `pkg_resources` deprecation warning from jieba. `compileall` for
+  `rag_modules/indexing` also exited successfully.
+- **Commit:** `feat: extract economy index keywords` (base `0cbdbc3`).
+- **Residual risk/status:** Chinese semantic token boundaries necessarily follow
+  the pinned jieba dictionary; final extractor ranking is nevertheless owned and
+  tested independently of jieba emission order. Very large inputs still require
+  linear work and memory proportional to their distinct accepted terms, which is
+  deliberate for this pure local extractor; upstream parsing and segmentation
+  limits bound document-sized production calls. No external/vector/orchestration
+  behavior was added.
