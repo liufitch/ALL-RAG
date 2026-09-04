@@ -164,6 +164,7 @@ def _service(
     objects,
     *,
     max_chunks=100,
+    max_warnings=100,
     registry=None,
     segmenter=None,
     embedding_settings=None,
@@ -177,6 +178,7 @@ def _service(
         preview_settings=PreviewSettings(
             max_documents=20,
             max_chunks=max_chunks,
+            max_warnings=max_warnings,
             timeout_seconds=2,
         ),
         upload_settings=UploadSettings(),
@@ -412,6 +414,83 @@ async def test_preview_serializes_parser_and_segmentation_warnings_and_metadata(
         "metadata": {"line": 4},
     }
     assert response.warnings[1].code == "SEGMENT_WARNING"
+
+
+@pytest.mark.asyncio
+async def test_preview_caps_warnings_in_document_order_and_folds_parser_summaries():
+    """Chunk truncation must stay independent from bounded warning serialization."""
+    class WarningRegistry:
+        def parse(self, extension, stream, context):
+            prefix = context.document_id.upper()
+            warnings = [
+                ParserWarning(f"{prefix}_SOURCE_1", "source warning 1"),
+                ParserWarning(f"{prefix}_SOURCE_2", "source warning 2"),
+            ]
+            if context.document_id == "doc-a":
+                warnings.insert(
+                    1,
+                    ParserWarning(
+                        "WARNINGS_TRUNCATED",
+                        "Additional warnings were omitted.",
+                        {"omitted_count": 2},
+                    ),
+                )
+            return ParsedDocument(
+                context.document_id,
+                context.filename,
+                "text",
+                (ParsedBlock("paragraph", stream.read().decode(), {"line_start": 1}),),
+                {"encoding": "utf-8"},
+                tuple(warnings),
+            )
+
+    class WarningSegmenter(RecordingSegmenter):
+        def segment(self, parsed, config):
+            result = super().segment(parsed, config)
+            warning = ParserWarning(
+                f"{parsed.document_id.upper()}_SEGMENT", "segment warning"
+            )
+            return type(result)(result.segments, (warning,))
+
+    first = _record("doc-a", name="a.txt")
+    second = _record("doc-b", name="b.txt")
+    service = _service(
+        [second, first],
+        {
+            first.data_source_info["object_key"]: b"A",
+            second.data_source_info["object_key"]: b"B",
+        },
+        max_chunks=1,
+        max_warnings=5,
+        registry=WarningRegistry(),
+        segmenter=WarningSegmenter(),
+    )
+
+    response = await service.preview(
+        "dataset-1", ["doc-a", "doc-b"], _request("doc-a", "doc-b")
+    )
+
+    assert [warning.code for warning in response.warnings] == [
+        "DOC-A_SOURCE_1",
+        "DOC-A_SOURCE_2",
+        "DOC-A_SEGMENT",
+        "DOC-B_SOURCE_1",
+        "WARNINGS_TRUNCATED",
+    ]
+    assert response.warnings[-1].model_dump() == {
+        "document_id": "",
+        "filename": "",
+        "code": "WARNINGS_TRUNCATED",
+        "message": "Additional warnings were omitted.",
+        "metadata": {"omitted_count": 4},
+    }
+    assert [document.document_id for document in response.documents] == [
+        "doc-a",
+        "doc-b",
+    ]
+    assert response.total_chunks == 2
+    assert len(response.chunks) == 1
+    assert response.truncated is True
 
 
 @pytest.mark.asyncio

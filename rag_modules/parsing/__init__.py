@@ -8,6 +8,7 @@ from rag_modules.parsing.models import (
     ParserWarning,
 )
 from rag_modules.parsing.registry import ParserRegistry
+from rag_modules.parsing.warnings import BoundedWarningCollector, WarningLike
 
 __all__ = [
     "DocumentParseError",
@@ -17,4 +18,6 @@ __all__ = [
     "Parser",
     "ParserRegistry",
     "ParserWarning",
+    "BoundedWarningCollector",
+    "WarningLike",
 ]

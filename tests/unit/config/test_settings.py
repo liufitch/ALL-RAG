@@ -1,6 +1,11 @@
 import pytest
 
-from rag_modules.config.settings import ParserSettings, Settings, UploadSettings
+from rag_modules.config.settings import (
+    ParserSettings,
+    PreviewSettings,
+    Settings,
+    UploadSettings,
+)
 
 
 def test_nested_embedding_catalog_and_secrets_are_loaded(monkeypatch):
@@ -57,6 +62,31 @@ def test_spreadsheet_merged_cell_limits_have_approved_defaults():
 
     assert parser.max_merged_cell_area == 100_000
     assert parser.max_total_merged_cell_area == 1_000_000
+
+
+def test_warning_limits_have_approved_defaults():
+    parser = ParserSettings()
+    preview = PreviewSettings()
+
+    assert parser.max_warnings_per_document == 100
+    assert parser.max_formula_warning_samples == 5
+    assert preview.max_warnings == 100
+
+
+@pytest.mark.parametrize(
+    ("settings_type", "field_name", "value"),
+    (
+        (ParserSettings, "max_warnings_per_document", 0),
+        (ParserSettings, "max_formula_warning_samples", 0),
+        (ParserSettings, "max_formula_warning_samples", 101),
+        (PreviewSettings, "max_warnings", 0),
+    ),
+)
+def test_warning_limits_reject_values_outside_their_safe_bounds(
+    settings_type, field_name, value
+):
+    with pytest.raises(ValueError):
+        settings_type(**{field_name: value})
 
 
 @pytest.mark.parametrize(

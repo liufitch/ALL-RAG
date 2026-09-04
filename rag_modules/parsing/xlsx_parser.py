@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO
@@ -20,6 +20,7 @@ from rag_modules.config.settings import settings
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import DocumentParseError, ParsedDocument, ParserWarning
 from rag_modules.parsing.tabular import TableRowBudget, table_blocks
+from rag_modules.parsing.warnings import BoundedWarningCollector
 
 
 _WORKBOOK_PART = "xl/workbook.xml"
@@ -48,6 +49,12 @@ class _WorksheetPreflight:
     title: str
     part_name: str
     physical_coordinates: frozenset[tuple[int, int]]
+
+
+@dataclass
+class _FormulaWarningAggregate:
+    count: int = 0
+    sample_cells: list[str] = field(default_factory=list)
 
 
 class XlsxParser:
@@ -83,7 +90,10 @@ class XlsxParser:
 
         try:
             blocks = []
-            warnings: list[ParserWarning] = []
+            warnings = BoundedWarningCollector[ParserWarning](
+                settings.parser.max_warnings_per_document,
+                _warnings_truncated,
+            )
             budget = TableRowBudget()
             formula_worksheets = formula_workbook.worksheets
             cached_worksheets = cached_workbook.worksheets
@@ -111,19 +121,24 @@ class XlsxParser:
                 if worksheet.sheet_state != "visible":
                     for _physical_cell in physical_cells:
                         pass
-                    warnings.append(_hidden_sheet_warning(worksheet.title))
+                    warnings.add(_hidden_sheet_warning(worksheet.title))
                     continue
+                formula_warnings = _FormulaWarningAggregate()
                 sheet_blocks = table_blocks(
                     _worksheet_rows(
                         worksheet,
                         physical_cells,
-                        warnings,
+                        formula_warnings,
                     ),
                     worksheet.title,
                     budget,
                 )
+                if formula_warnings.count:
+                    warnings.add(
+                        _formula_cache_warning(worksheet.title, formula_warnings)
+                    )
                 if not sheet_blocks:
-                    warnings.append(_empty_sheet_warning(worksheet.title))
+                    warnings.add(_empty_sheet_warning(worksheet.title))
                 blocks.extend(sheet_blocks)
         except DocumentParseError:
             raise
@@ -143,7 +158,7 @@ class XlsxParser:
             source_type=self.source_type,
             blocks=tuple(blocks),
             metadata={},
-            warnings=tuple(warnings),
+            warnings=warnings.result(),
         )
 
 
@@ -394,7 +409,7 @@ def _physical_cell_has_content(element: Any) -> bool:
 def _worksheet_rows(
     worksheet: Any,
     physical_cells: Iterator[tuple[int, int, Any, Any]],
-    warnings: list[ParserWarning],
+    formula_warnings: _FormulaWarningAggregate,
 ) -> Iterator[tuple[int, tuple[Any, ...]]]:
     """Yield sparse physical rows, never the rectangular declared dimension."""
     rows: dict[int, dict[int, Any]] = {}
@@ -406,13 +421,11 @@ def _worksheet_rows(
                 value = cached
             else:
                 value = value if str(value).startswith("=") else f"={value}"
-                warnings.append(
-                    ParserWarning(
-                        "FORMULA_CACHE_UNAVAILABLE",
-                        "A formula had no cached value; its formula text was retained.",
-                        {"sheet": worksheet.title, "cell": cell.coordinate},
-                    )
-                )
+                formula_warnings.count += 1
+                if len(formula_warnings.sample_cells) < (
+                    settings.parser.max_formula_warning_samples
+                ):
+                    formula_warnings.sample_cells.append(cell.coordinate)
         if value is not None:
             rows.setdefault(source_row, {})[source_column] = value
     for source_row in sorted(rows):
@@ -484,6 +497,28 @@ def _empty_sheet_warning(sheet: str) -> ParserWarning:
         "EMPTY_SHEET_SKIPPED",
         "A worksheet without data rows was skipped.",
         {"sheet": sheet},
+    )
+
+
+def _formula_cache_warning(
+    sheet: str, aggregate: _FormulaWarningAggregate
+) -> ParserWarning:
+    return ParserWarning(
+        "FORMULA_CACHE_UNAVAILABLE",
+        "Some formulas had no cached values; their formula text was retained.",
+        {
+            "sheet": sheet,
+            "count": aggregate.count,
+            "sample_cells": list(aggregate.sample_cells),
+        },
+    )
+
+
+def _warnings_truncated(omitted_count: int) -> ParserWarning:
+    return ParserWarning(
+        "WARNINGS_TRUNCATED",
+        "Additional warnings were omitted.",
+        {"omitted_count": omitted_count},
     )
 
 

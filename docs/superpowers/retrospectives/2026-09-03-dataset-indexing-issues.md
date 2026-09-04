@@ -581,3 +581,74 @@ After every task, append:
   normal-mode workbooks, and fail closed if that private behavior changes. No
   new public setting or error code was introduced. Implementation is complete
   pending commit and re-review.
+
+### SAFE-004 Task 2 — Bounded parser and preview warnings
+
+- **Source, reproduction and symptoms:** The collector RED could not import
+  `rag_modules.parsing.warnings` because no bounded warning abstraction existed.
+  A generated visible XLSX sheet containing a header and 1,000 formulas without
+  cached values produced 1,000 `FORMULA_CACHE_UNAVAILABLE` objects instead of
+  one aggregate. A two-sheet workbook produced one warning for every formula
+  plus an empty-sheet warning without a document cap. Preview preserved a
+  parser `WARNINGS_TRUNCATED` object as an ordinary document warning and then
+  appended every later parser/segmenter warning, returning seven warnings where
+  the configured response limit was five.
+- **Impact and root cause:** Parser memory and preview serialization grew with
+  source-controlled formula/warning cardinality even though preview chunks were
+  independently bounded. XLSX appended warnings inside the physical-cell loop,
+  and preview eagerly extended a list. Neither layer reserved space for a safe
+  truncation summary or folded a lower-layer omission count.
+- **Ruling:** A limit includes its summary slot. Fewer than `N` ordinary
+  warnings retain all; reaching `N` retains the first `N - 1` and summarizes
+  the remainder. A preexisting summary folds only when `omitted_count` is a
+  positive non-boolean integer. Missing, zero, negative, boolean and string
+  counts are suppressed and deterministically contribute one omission, without
+  retaining or reproducing their metadata. Visible-sheet formula aggregation
+  occurs after its row generator is fully consumed and keeps only the first
+  configured coordinates. Hidden sheets retain Task 1 mapping validation but
+  are not extracted and do not emit formula warnings.
+- **Rejected approaches:** Retaining the first `N` warnings and appending a
+  summary was rejected because it violates the configured cap. Replacing the
+  `N`th retained warning only after overflow was rejected because it retains an
+  object/metadata that never belongs in the result. Nesting lower-layer
+  summaries was rejected because it obscures the total and can preserve unsafe
+  metadata. Adding formula text to aggregate metadata was rejected as needless
+  source disclosure. Skipping hidden-sheet iteration was rejected because it
+  reopens the private-mapping validation bypass fixed by Task 1. A broader lazy
+  preview API was rejected as out of scope; the exact generic collector API
+  means each overflow parser warning is briefly converted to a `PreviewWarning`,
+  but the collector immediately releases it and retains no omitted object or
+  metadata.
+- **Final implementation and compatibility cost:** Added generic
+  `BoundedWarningCollector[T]` over a small `WarningLike` protocol, plus positive
+  parser/preview settings with defaults of 100 warnings and five formula
+  samples. XLSX now accumulates count and ordered coordinate samples per visible
+  sheet, emits one aggregate after row consumption, and routes hidden, empty,
+  formula and summary warnings through the document collector. Preview routes
+  document-qualified parser and segmenter warnings through the same collector
+  and emits a neutral empty-document summary. Existing ordinary-warning order,
+  source blocks, documents, chunks and `total_chunks` are unchanged; clients now
+  receive bounded warnings and the aggregate formula metadata replaces the old
+  per-cell `cell` shape.
+- **TDD RED evidence:** `.venv/bin/python -m pytest
+  tests/unit/parsing/test_warning_collector.py -q` failed during collection with
+  `ModuleNotFoundError: rag_modules.parsing.warnings`. After adding only the
+  collector/settings, `.venv/bin/python -m pytest
+  tests/unit/parsing/test_tabular.py -k 'formula and warning' -q` produced `2
+  failed, 58 deselected`: 1,000 warnings remained and the two-sheet result was
+  unbounded. After XLSX GREEN, `.venv/bin/python -m pytest
+  tests/unit/services/test_preview_service.py -k 'warning' -q` produced `1
+  failed, 1 passed, 19 deselected`: the unbounded nested response did not match
+  the five-slot folded result.
+- **GREEN and regression evidence:** Collector/settings produced `29 passed`.
+  Formula warning tests produced `3 passed, 58 deselected`, including hidden
+  formula-sheet behavior. Preview warning tests produced `2 passed, 19
+  deselected`. The final focused Task 2 regression produced `97 passed`. The
+  fresh full suite produced `301 passed, 1 skipped`. Confirmed runs contained
+  only the repository's existing Starlette/httpx deprecation warning.
+- **Fix commit to be created:** `fix: bound parser and preview warnings`.
+- **Residual risk/status:** Preview conversion of omitted warnings is transient
+  allocation rather than retained growth; changing that would require an API
+  outside this task. The collector assumes producers expose the documented
+  `code` and mapping-shaped `metadata`. Implementation is complete pending final
+  verification, commit and independent review.

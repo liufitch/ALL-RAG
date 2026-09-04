@@ -916,6 +916,88 @@ def test_xlsx_prefers_real_cached_formula_and_warns_when_cache_is_absent():
     assert [warning.code for warning in parsed.warnings] == ["FORMULA_CACHE_UNAVAILABLE"]
 
 
+def test_xlsx_aggregates_formula_warnings_per_sheet_with_bounded_coordinate_samples(
+    monkeypatch,
+):
+    """One missing-cache warning per cell would retain formula-scale metadata."""
+    monkeypatch.setattr(settings.parser, "max_formula_warning_samples", 5)
+
+    def workbook_with_many_formulas(workbook):
+        sheet = workbook.active
+        sheet.title = "Calculations"
+        sheet.append(["结果"])
+        for index in range(1_000):
+            sheet.append([f"={index}+1"])
+
+    parsed = XlsxParser().parse(
+        io.BytesIO(_xlsx_bytes(workbook_with_many_formulas)),
+        ParseContext("d", "many-formulas.xlsx"),
+    )
+
+    assert len(parsed.warnings) == 1
+    warning = parsed.warnings[0]
+    assert warning.code == "FORMULA_CACHE_UNAVAILABLE"
+    assert warning.metadata == {
+        "sheet": "Calculations",
+        "count": 1_000,
+        "sample_cells": ["A2", "A3", "A4", "A5", "A6"],
+    }
+    assert "=" not in repr(warning.metadata)
+    assert len(parsed.warnings) <= settings.parser.max_warnings_per_document
+
+
+def test_xlsx_formula_warnings_are_per_sheet_and_share_the_document_warning_cap(
+    monkeypatch,
+):
+    """Sheet aggregation must still leave one deterministic document-level bound."""
+    monkeypatch.setattr(settings.parser, "max_warnings_per_document", 3)
+
+    def workbook_with_two_formula_sheets(workbook):
+        first = workbook.active
+        first.title = "First"
+        first.append(["结果"])
+        first.append(["=1+1"])
+        first.append(["=2+2"])
+        second = workbook.create_sheet("Second")
+        second.append(["=3+3"])
+
+    parsed = XlsxParser().parse(
+        io.BytesIO(_xlsx_bytes(workbook_with_two_formula_sheets)),
+        ParseContext("d", "two-formula-sheets.xlsx"),
+    )
+
+    assert [warning.code for warning in parsed.warnings] == [
+        "FORMULA_CACHE_UNAVAILABLE",
+        "FORMULA_CACHE_UNAVAILABLE",
+        "WARNINGS_TRUNCATED",
+    ]
+    assert [warning.metadata["sheet"] for warning in parsed.warnings[:2]] == [
+        "First",
+        "Second",
+    ]
+    assert [warning.metadata["count"] for warning in parsed.warnings[:2]] == [2, 1]
+    assert parsed.warnings[-1].metadata == {"omitted_count": 1}
+
+
+def test_xlsx_hidden_formula_sheet_has_only_the_hidden_sheet_warning():
+    """Hidden content is validated but not extracted or reported as visible formulas."""
+    def workbook_with_hidden_formula(workbook):
+        visible = workbook.active
+        visible.title = "Visible"
+        visible.append(["列"])
+        visible.append(["值"])
+        hidden = workbook.create_sheet("Hidden")
+        hidden.sheet_state = "hidden"
+        hidden.append(["=1+1"])
+
+    parsed = XlsxParser().parse(
+        io.BytesIO(_xlsx_bytes(workbook_with_hidden_formula)),
+        ParseContext("d", "hidden-formula.xlsx"),
+    )
+
+    assert [warning.code for warning in parsed.warnings] == ["HIDDEN_SHEET_SKIPPED"]
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "limit_name", "limit", "expected_code"),
     [

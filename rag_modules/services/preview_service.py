@@ -23,6 +23,7 @@ from rag_modules.config.settings import (
 )
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import DocumentParseError, ParserWarning
+from rag_modules.parsing.warnings import BoundedWarningCollector
 from rag_modules.segmentation.models import (
     GeneralSegmentationConfig,
     ParentChildSegmentationConfig,
@@ -97,7 +98,10 @@ class PreviewService:
                     )
 
                 chunks: list[PreviewChunk] = []
-                warnings: list[PreviewWarning] = []
+                warnings = BoundedWarningCollector[PreviewWarning](
+                    self.preview_settings.max_warnings,
+                    _preview_warnings_truncated,
+                )
                 documents: list[PreviewDocument] = []
                 total_chunks = 0
                 config = _segmentation_config(request.segmentation)
@@ -135,7 +139,11 @@ class PreviewService:
                     )
                     warnings.extend(
                         _warning(document_id, filename, warning)
-                        for warning in (*parsed.warnings, *segmented.warnings)
+                        for warning in parsed.warnings
+                    )
+                    warnings.extend(
+                        _warning(document_id, filename, warning)
+                        for warning in segmented.warnings
                     )
                     total_chunks += len(segmented.segments)
                     available = self.preview_settings.max_chunks - len(chunks)
@@ -149,7 +157,7 @@ class PreviewService:
                     chunks=chunks,
                     total_chunks=total_chunks,
                     truncated=total_chunks > len(chunks),
-                    warnings=warnings,
+                    warnings=list(warnings.result()),
                     documents=documents,
                 )
         except TimeoutError as error:
@@ -307,6 +315,16 @@ def _warning(document_id: str, filename: str, warning: ParserWarning) -> Preview
         code=warning.code,
         message=warning.message,
         metadata=warning.metadata,
+    )
+
+
+def _preview_warnings_truncated(omitted_count: int) -> PreviewWarning:
+    return PreviewWarning(
+        document_id="",
+        filename="",
+        code="WARNINGS_TRUNCATED",
+        message="Additional warnings were omitted.",
+        metadata={"omitted_count": omitted_count},
     )
 
 

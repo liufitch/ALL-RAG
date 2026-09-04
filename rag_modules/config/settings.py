@@ -201,6 +201,8 @@ class ParserSettings(BaseModel):
     max_column_coordinate: int = Field(default=16_384, ge=1)
     max_merged_cell_area: int = Field(default=100_000, ge=1)
     max_total_merged_cell_area: int = Field(default=1_000_000, ge=1)
+    max_warnings_per_document: int = Field(default=100, ge=1)
+    max_formula_warning_samples: int = Field(default=5, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_merged_cell_limits(self):
@@ -218,6 +220,7 @@ class ParserSettings(BaseModel):
 class PreviewSettings(BaseModel):
     max_documents: int = Field(default=20, ge=1)
     max_chunks: int = Field(default=100, ge=1)
+    max_warnings: int = Field(default=100, ge=1)
     timeout_seconds: int = Field(default=30, ge=1)
 
 
