@@ -1599,3 +1599,84 @@ After every task, append:
   deadlines, transaction/failure mapping, compensation, and activation.
 - **Fix commit:** `fix: bound indexing batches and cancellation` (SHA is recorded
   in the fix-round handoff after Git creates the commit).
+
+### IDX-003 Phase 4 Task 6 — live Milvus 2.5.14 compatibility verification (2026-09-04)
+
+- **Scope and environment:** Task 6 exercised the existing Compose
+  `milvusdb/milvus:v2.5.14` standalone service through the project virtualenv
+  (`Python 3.11.15`, resolved `pymilvus 3.0.1`). The shell-default Python was
+  3.14.6 and had no PyMilvus installed; that was an interpreter-selection
+  condition, not an adapter failure. The declared dependency remains
+  `pymilvus>=2.5.0`; no pin or downgrade was made.
+- **Compose preflight and rejected cleanup:** Compose interpolates the complete
+  file before selecting services. Without a worktree `.env`,
+  `docker compose config --services` initially required unrelated RabbitMQ,
+  Neo4j, and PostgreSQL variables. Process-only benign integration placeholders
+  for those required interpolations plus dedicated MinIO credentials allowed
+  config expansion; no `.env` or credential values were persisted. The plan was
+  to start only `etcd`, `minio`, and `standalone`. Direct sandbox Docker access
+  was denied at `/Users/fitch/.docker/run/docker.sock`, so elevated Docker
+  access was requested rather than bypassed. Startup then found fixed container
+  name `milvus-etcd` already owned by the primary-worktree Compose project.
+  Removing, renaming, stopping, pruning, `down -v`, or touching shared volumes
+  was rejected. Targeted inspection instead established that the existing
+  `graph-rag` containers were `milvus-etcd` (v3.5.18, Up/healthy),
+  `milvus-standalone` (v2.5.14, Up/healthy), and `milvus-minio`
+  (RELEASE.2024-05-28T17-19-04Z, Up/unhealthy). An elevated localhost health
+  probe returned `OK` from standalone. Sandbox-localhost isolation initially
+  made both port 19530 and health port 9091 unreachable; elevated test execution
+  was required to reach the already-running service. MinIO was neither used nor
+  changed by this test; its unhealthy state is a residual environment concern.
+- **Isolated test and skip evidence:** Added an opt-in `RUN_INTEGRATION=1`
+  fixture with explicit safe localhost/default-database configuration and a
+  unique `test_<uuid>` collection per test. With integration disabled,
+  `tests/integration/test_milvus_index.py -v` reported `2 skipped, 1 warning`.
+  The main test creates/revalidates the exact schema and HNSW/COSINE index,
+  repeats a stable-ID upsert, checks count one, deletes it, checks count zero,
+  and drops only its own collection in `finally`. A second test deliberately
+  raises an assertion inside its body and proves the same owned-collection
+  `finally` cleanup path. No broad fixture enumerates or drops collections.
+- **Schema compatibility RED/root cause/fix:** The first elevated live run
+  reached Milvus but failed on the second `ensure_collection`: the adapter
+  rejected the schema it had just created. A fresh owned diagnostic collection
+  (dropped in `finally`, `cleanup_exists=False`) showed the real server/SDK
+  response omits `nullable` for every non-nullable field while retaining
+  `nullable=True` for `parent_id`. The prior strict comparison required an
+  explicit `False`. A focused unit regression first failed (`1 failed,
+  50 deselected`), then passed after normalizing only a missing nullable value
+  to the Milvus non-nullable default. Explicit invalid values and missing
+  nullable metadata for `parent_id` still fail schema validation. Pinning or
+  downgrading PyMilvus and weakening all schema checks were rejected.
+- **Logical-count compatibility RED/root cause/fix:** After the schema fix,
+  repeated same-primary-key upserts produced physical
+  `get_collection_stats().row_count == 2`, while a same-ID query returned one
+  logical row. A second owned diagnostic confirmed
+  `query(output_fields=['count(*)'])` returns logical count one even after the
+  duplicate physical/tombstone statistic; it and a return-wrapper probe each
+  ended with `cleanup_exists=False`. PyMilvus 3.0.1 returns a
+  `HybridExtraList` that is iterable/indexable as one `{'count(*)': N}` mapping.
+  The focused logical-count TDD regression first failed (`1 failed,
+  50 deselected`) because the old stats path returned zero in the fake, then
+  passed after the adapter kept its existing flush/two-equal-observations
+  polling but read and validates the one-row logical aggregate query instead.
+  Retaining physical `row_count`, treating it as an upsert-idempotency oracle,
+  or adding arbitrary sleeps were rejected: physical records include replaced
+  versions and the adapter already uses bounded condition polling.
+- **GREEN/live and cleanup evidence:** The focused schema/count/mismatch suite
+  passed `14 passed, 37 deselected, 1 warning`. Controller-run fresh live
+  verification of the approved command reported schema subset `8 passed,
+  43 deselected` and `RUN_INTEGRATION=1` integration `2 passed, 1 warning in
+  13.96s`. The successful test exercises its own `finally` drop; the separate
+  failure-path test passed. Each diagnostic used a generated `test_<uuid>` name
+  and separately proved only that owned name absent afterward; this does not
+  claim an inventory of arbitrary shared collections. Output and durable notes
+  intentionally contain no tokens, passwords, or raw backend exception
+  payloads.
+- **Residual risks:** Live coverage is one local existing service stack, not a
+  clean Compose lifecycle test, because fixed shared names prevented a second
+  stack and scope prohibited destructive resolution. The MinIO healthcheck is
+  unhealthy but outside this vector-only test. Future PyMilvus response shapes
+  can change, though the observed omitted-default and aggregate wrapper shapes
+  now have focused regressions. Collection-wide logical count is appropriate to
+  this adapter API; Task 5 continues to use per-document acknowledged upsert
+  counts for concurrent document validation.

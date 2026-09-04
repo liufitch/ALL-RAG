@@ -103,11 +103,13 @@ class RecordingMilvusClient:
         existing: bool = False,
         description=None,
         stats: list[object] | None = None,
+        query_counts: list[object] | None = None,
         nested_index: bool = False,
     ) -> None:
         self.existing = existing
         self.description = description or collection_description()
         self.stats = list(stats or [{"row_count": 0}, {"row_count": 0}])
+        self.query_counts = list(query_counts or [{"count(*)": 0}, {"count(*)": 0}])
         self.nested_index = nested_index
         self.schema: RecordingSchema | None = None
         self.index_params: RecordingIndexParams | None = None
@@ -120,6 +122,7 @@ class RecordingMilvusClient:
         self.has_calls = 0
         self.describe_calls = 0
         self.stats_calls = 0
+        self.query_calls: list[dict] = []
         self.fail_with: MilvusException | None = None
 
     def create_schema(self, *, auto_id: bool, enable_dynamic_field: bool) -> RecordingSchema:
@@ -184,6 +187,10 @@ class RecordingMilvusClient:
     def get_collection_stats(self, *, collection_name: str, timeout: int):
         self.stats_calls += 1
         return self.stats.pop(0)
+
+    def query(self, **kwargs):
+        self.query_calls.append(kwargs)
+        return [self.query_counts.pop(0)]
 
     def drop_collection(self, *, collection_name: str, timeout: int) -> None:
         self.dropped.append(collection_name)
@@ -260,6 +267,19 @@ def test_existing_collection_accepts_documented_pymilvus_shapes_and_revalidates(
 
     assert client.describe_calls == 2
     assert client.loaded == ["collection", "collection"]
+
+
+def test_existing_collection_accepts_server_metadata_omitting_non_nullable_defaults():
+    """PyMilvus 3.0.1 omits nullable=False returned by Milvus 2.5.14."""
+    description = collection_description()
+    for field in description["fields"]:
+        if field["name"] != "parent_id":
+            field.pop("nullable")
+    client = RecordingMilvusClient(existing=True, description=description)
+
+    make_store(client).ensure_collection("collection", 3)
+
+    assert client.loaded == ["collection"]
 
 
 @pytest.mark.parametrize(
@@ -487,8 +507,11 @@ def test_delete_document_requires_uuid_and_uses_escaped_equality_filter(document
     assert client.deleted_filters == [f'document_id == "{document_id}"']
 
 
-def test_count_flushes_and_returns_only_after_two_equal_observations():
-    client = RecordingMilvusClient(existing=True, stats=[{"row_count": "2"}, {"row_count": 3}, {"row_count": "3"}])
+def test_count_flushes_and_returns_only_after_two_equal_logical_count_observations():
+    client = RecordingMilvusClient(
+        existing=True,
+        query_counts=[{"count(*)": "2"}, {"count(*)": 3}, {"count(*)": "3"}],
+    )
     sleeps: list[float] = []
     store = MilvusVectorStore(
         config=VectorStoreSettings(consistency_poll_attempts=5, consistency_poll_interval_seconds=0.25),
@@ -498,11 +521,22 @@ def test_count_flushes_and_returns_only_after_two_equal_observations():
 
     assert store.count("collection") == 3
     assert client.flushes == ["collection"]
+    assert client.query_calls == [
+        {
+            "collection_name": "collection",
+            "filter": "",
+            "output_fields": ["count(*)"],
+            "timeout": 5,
+        }
+    ] * 3
     assert sleeps == [0.25, 0.25]
 
 
 def test_count_raises_retryable_safe_error_when_observations_never_stabilize():
-    client = RecordingMilvusClient(existing=True, stats=[{"row_count": 1}, {"row_count": 2}, {"row_count": 3}])
+    client = RecordingMilvusClient(
+        existing=True,
+        query_counts=[{"count(*)": 1}, {"count(*)": 2}, {"count(*)": 3}],
+    )
     store = make_store(client, consistency_poll_attempts=3)
     private_collection_name = "private_collection_name"
 
@@ -517,7 +551,7 @@ def test_count_raises_retryable_safe_error_when_observations_never_stabilize():
 def test_count_treats_invalid_observations_as_unstable_and_never_uses_last_value():
     client = RecordingMilvusClient(
         existing=True,
-        stats=[{"row_count": True}, {}, {"row_count": -1}],
+        query_counts=[{"count(*)": True}, {}, {"count(*)": -1}],
     )
     sleeps: list[float] = []
     store = MilvusVectorStore(
@@ -532,7 +566,7 @@ def test_count_treats_invalid_observations_as_unstable_and_never_uses_last_value
     with pytest.raises(VectorConsistencyError):
         store.count("collection")
 
-    assert client.stats_calls == 3
+    assert len(client.query_calls) == 3
     assert client.flushes == ["collection"]
     assert sleeps == [0.25, 0.25]
 
@@ -540,7 +574,7 @@ def test_count_treats_invalid_observations_as_unstable_and_never_uses_last_value
 def test_count_treats_huge_decimal_observations_as_unstable_with_bounded_polling():
     client = RecordingMilvusClient(
         existing=True,
-        stats=[{"row_count": HUGE_DECIMAL}] * 3,
+        query_counts=[{"count(*)": HUGE_DECIMAL}] * 3,
     )
     sleeps: list[float] = []
     store = MilvusVectorStore(
@@ -555,7 +589,7 @@ def test_count_treats_huge_decimal_observations_as_unstable_with_bounded_polling
     with pytest.raises(VectorConsistencyError):
         store.count("collection")
 
-    assert client.stats_calls == 3
+    assert len(client.query_calls) == 3
     assert client.flushes == ["collection"]
     assert sleeps == [0.25, 0.25]
 

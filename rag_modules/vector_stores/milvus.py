@@ -152,9 +152,11 @@ class MilvusVectorStore:
             )
             previous: int | None = None
             for attempt in range(self._config.consistency_poll_attempts):
-                observation = _row_count(
-                    client.get_collection_stats(
+                observation = _logical_count(
+                    client.query(
                         collection_name=collection_name,
+                        filter="",
+                        output_fields=["count(*)"],
                         timeout=self._config.connect_timeout,
                     )
                 )
@@ -392,8 +394,10 @@ def _result_count(response: Any, key: str) -> int:
     return value
 
 
-def _row_count(stats: Any) -> int | None:
-    value = stats.get("row_count") if isinstance(stats, Mapping) else None
+def _logical_count(rows: Any) -> int | None:
+    if not isinstance(rows, (list, tuple)) or len(rows) != 1:
+        return None
+    value = rows[0].get("count(*)") if isinstance(rows[0], Mapping) else None
     if type(value) is int:
         return value if value >= 0 else None
     return _bounded_ascii_decimal(value)
@@ -421,7 +425,7 @@ def _schema_dimension(description: Any) -> int:
         field = by_name[name]
         if _field_datatype(field) != int(datatype):
             raise VectorSchemaMismatch()
-        if _member(field, "nullable") is not nullable:
+        if _member(field, "nullable", False) is not nullable:
             raise VectorSchemaMismatch()
         is_primary = _member(field, "is_primary", False)
         if is_primary is not primary:
