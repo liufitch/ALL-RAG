@@ -1743,7 +1743,8 @@ After every task, append:
   neither preserves the approved contract. A single expanded `IN` clause and
   per-row queries were rejected. The conservative constant avoids dependence on
   current column-count arithmetic but adds bounded database round trips: a full
-  10,000-row stage uses twenty inserts and twenty reload statements.
+  10,000-row stage uses twenty inserts, twenty existence-read statements, and
+  twenty post-insert reload statements.
 - **C — lifecycle symptom, root cause, and ruling:** Exact retry comparison
   previously ignored `status`, deletion, and embedding state, so terminal,
   activated, deleted, or cross-technique rows could be treated as mutable
