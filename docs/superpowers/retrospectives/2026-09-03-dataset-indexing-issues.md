@@ -949,3 +949,90 @@ After every task, append:
   transient objects to retain exact omission counts. These risks are documented,
   finite, and do not reopen the reviewed resource, disclosure, fidelity, or
   response-cardinality boundaries.
+
+### EMB-001 Phase 4 Task 1 — OpenAI-compatible embedding boundary (executed 2026-09-04)
+
+- **Problem and impact:** Phase 4 required a real high-quality indexing boundary
+  that could call an OpenAI-compatible embedding service without trusting its
+  response order or shape, leaking private inputs or backend details, retrying
+  permanent failures, or returning mutable vectors. The repository had embedding
+  configuration and public model discovery but no embedding client or typed
+  result/error contract.
+- **Root cause and design:** Added `EmbeddingBatch`, `EmbeddingError`, and
+  `OpenAICompatibleEmbeddingClient`. The client resolves only enabled configured
+  model IDs, validates all input before I/O, posts the configured backend model
+  name and text batch to a normalized `/embeddings` endpoint, applies the model's
+  per-request timeout, and reuses one `httpx.AsyncClient`. Each response is
+  validated and reordered by its local indexes before immutable float tuples are
+  appended in original global input order. An injected HTTP client remains owned
+  by its caller; `aclose` and async context exit close only an internally created
+  client.
+- **Stable safe errors:** Unknown or disabled models use
+  `EMBEDDING_MODEL_UNAVAILABLE` / `Embedding model is unavailable.`; empty,
+  blank, non-string, or over-limit input uses `EMBEDDING_INPUT_INVALID` /
+  `Embedding input is invalid.`; 401/403 uses `EMBEDDING_AUTH_FAILED` /
+  `Embedding authentication failed.`; transport and HTTP failures use
+  `EMBEDDING_REQUEST_FAILED` / `Embedding request failed.`; malformed count,
+  indexes, vector shapes, JSON, types, or non-finite values use
+  `EMBEDDING_RESPONSE_INVALID` / `Embedding response is invalid.`; and
+  within-response, adaptive-child, or later-batch dimensional disagreements use
+  `EMBEDDING_DIMENSION_MISMATCH` / `Embedding dimensions do not match.`. Only an
+  exhausted timeout/network or 429/502/503/504 error is marked retryable. These
+  errors never include model configuration exceptions, API keys, input text,
+  response bodies, transport details, or vectors.
+- **Boundary rulings and edge cases:** An empty text sequence is rejected before
+  I/O because no truthful positive dimension can be returned. Empty or
+  whitespace-only elements are rejected consistently. Response data must have
+  the exact batch count and indexes exactly `0..n-1`; boolean indexes and vector
+  values are rejected even though Python treats booleans as integers. Vectors
+  must be non-empty JSON lists of finite JSON integers or floats. Extremely large
+  integers that overflow float conversion are also sanitized as invalid
+  responses. Dimension consistency is enforced within one response, across 413
+  child requests, and across configured batches in one `embed` run.
+- **Retry and adaptive-batch ruling:** An initial request plus at most
+  `max_retries` transient retries uses bounded exponential delays and never sleeps
+  after its final attempt. HTTP 413 is the sole adaptive-size signal: it is not
+  retried at the failing size, splits the batch into smaller ordered halves, and
+  terminates as a non-retryable request error at size one. HTTP 400 was not used
+  as a split signal because no trusted machine-readable backend contract exists.
+  Authentication, other permanent HTTP failures, invalid input, model lookup,
+  and malformed responses never cause a split.
+- **Rejected approaches:** Creating a new HTTP client per request was rejected
+  because it forfeits pooling and makes lifecycle ownership unclear. Closing an
+  injected client was rejected because that resource belongs to its caller.
+  Returning backend order or mutable lists was rejected because both violate the
+  consumer contract. Using exception strings, response text, or configuration
+  errors in public failures was rejected as a disclosure risk. Retrying 413 at
+  the same size or treating every 400 as evidence of an oversized batch was
+  rejected as wasteful or unsafe. Accepting empty input with dimension zero was
+  rejected because downstream collection setup requires a discovered positive
+  dimension.
+- **TDD RED evidence:** Before production files existed, `.venv/bin/python -m
+  pytest tests/unit/embeddings/test_openai_compatible.py -q --tb=short` failed
+  collection with `ModuleNotFoundError: rag_modules.embeddings`, proving the new
+  protocol suite exercised an absent feature. The first implementation run had
+  `37 passed, 4 failed`; all four failures identified test-fixture assumptions
+  (`httpx.Request` has no `.json()` helper and httpx's response JSON encoder
+  refuses NaN/Infinity), which were corrected by decoding request bytes and
+  supplying raw non-finite JSON. A later valid-JSON huge-integer test failed with
+  an escaping `OverflowError` while 11 sibling malformed-response cases passed;
+  the narrow float-conversion guard made it GREEN. A separate dimension-code
+  test failed with `EMBEDDING_RESPONSE_INVALID` instead of
+  `EMBEDDING_DIMENSION_MISMATCH`; the classification was then corrected.
+- **GREEN and verification evidence:** The complete embedding protocol suite
+  finished with `43 passed, 1` pre-existing warning. Embedding plus configuration
+  regression finished with `57 passed, 1` pre-existing warning. A fresh complete
+  backend run finished with `373 passed, 1 skipped, 1` pre-existing warning in
+  6.19 seconds. The warning remains FastAPI's existing Starlette/httpx test-client
+  deprecation warning.
+- **Commit:** Base `28b3cb0`; task commit subject `feat: add openai compatible
+  embeddings`.
+- **Residual risk/status:** Backoff is deliberately deterministic and capped at
+  two seconds; it does not interpret provider-specific retry headers or add
+  jitter. Recursive 413 subdivision is bounded by the configured maximum batch
+  size of 512 and terminates at one item. The client does not impose a separate
+  response-byte ceiling, so deployment transport/proxy limits remain responsible
+  for bounding a maliciously large body. Callers that do not inject a shared
+  client must close the wrapper or use its async context manager. No logging,
+  PostgreSQL vector persistence, Milvus operation, indexing orchestration, or
+  Celery behavior was added.
