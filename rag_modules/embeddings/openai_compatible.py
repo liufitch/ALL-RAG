@@ -26,6 +26,11 @@ _AUTH_ERROR = (
     False,
     "Embedding authentication failed.",
 )
+_CLOSED_ERROR = (
+    "EMBEDDING_CLIENT_CLOSED",
+    False,
+    "Embedding client is closed.",
+)
 _REQUEST_ERROR = "EMBEDDING_REQUEST_FAILED", "Embedding request failed."
 _RESPONSE_ERROR = (
     "EMBEDDING_RESPONSE_INVALID",
@@ -65,6 +70,7 @@ class OpenAICompatibleEmbeddingClient:
         self._settings = settings
         self._http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
+        self._closed = False
         self._sleep = sleep
         self._endpoint = f"{settings.base_url.rstrip('/')}/embeddings"
 
@@ -73,6 +79,8 @@ class OpenAICompatibleEmbeddingClient:
         model_id: str,
         texts: Sequence[str],
     ) -> EmbeddingBatch:
+        if self._closed:
+            raise EmbeddingError(*_CLOSED_ERROR)
         definition = self._resolve_model(model_id)
         normalized_texts = self._validate_texts(texts, definition)
 
@@ -92,6 +100,9 @@ class OpenAICompatibleEmbeddingClient:
         return EmbeddingBatch(vectors=tuple(vectors), dimension=dimension)
 
     async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         if self._owns_http_client:
             await self._http_client.aclose()
 

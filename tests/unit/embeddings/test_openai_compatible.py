@@ -556,6 +556,15 @@ async def test_injected_http_client_is_reused_and_not_closed():
         await client.embed("bge-m3", ["one"])
         await client.embed("bge-m3", ["two"])
 
+    with pytest.raises(EmbeddingError) as captured:
+        await client.embed("bge-m3", ["private input"])
+
+    assert_safe_error(
+        captured.value,
+        code="EMBEDDING_CLIENT_CLOSED",
+        retryable=False,
+        message="Embedding client is closed.",
+    )
     assert len(requests) == 2
     assert http_client.is_closed is False
     await http_client.aclose()
@@ -579,4 +588,64 @@ async def test_internally_created_http_client_is_closed(monkeypatch):
         result = await client.embed("bge-m3", ["one"])
 
     assert result.vectors == ((1.0,),)
+    assert http_client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_embed_after_direct_close_fails_with_safe_lifecycle_error():
+    client = make_client(api_key="private-api-key")
+    await client.aclose()
+
+    with pytest.raises(EmbeddingError) as captured:
+        await client.embed("bge-m3", ["private input"])
+
+    assert_safe_error(
+        captured.value,
+        code="EMBEDDING_CLIENT_CLOSED",
+        retryable=False,
+        message="Embedding client is closed.",
+    )
+    assert "private input" not in str(captured.value)
+    assert "private-api-key" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_embed_after_context_exit_fails_before_model_resolution():
+    client = make_client(api_key="private-api-key")
+    async with client:
+        pass
+
+    with pytest.raises(EmbeddingError) as captured:
+        await client.embed("private-missing-model", ["private input"])
+
+    assert_safe_error(
+        captured.value,
+        code="EMBEDDING_CLIENT_CLOSED",
+        retryable=False,
+        message="Embedding client is closed.",
+    )
+    assert "private-missing-model" not in str(captured.value)
+    assert "private input" not in str(captured.value)
+    assert "private-api-key" not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_repeated_close_is_harmless_and_closes_owned_transport_once(monkeypatch):
+    from rag_modules.embeddings import openai_compatible
+
+    class CountingAsyncClient(httpx.AsyncClient):
+        close_calls = 0
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            await super().aclose()
+
+    http_client = CountingAsyncClient()
+    monkeypatch.setattr(openai_compatible.httpx, "AsyncClient", lambda: http_client)
+    client = OpenAICompatibleEmbeddingClient(make_settings())
+
+    await client.aclose()
+    await client.aclose()
+
+    assert http_client.close_calls == 1
     assert http_client.is_closed is True

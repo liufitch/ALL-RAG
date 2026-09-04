@@ -1036,3 +1036,42 @@ After every task, append:
   client must close the wrapper or use its async context manager. No logging,
   PostgreSQL vector persistence, Milvus operation, indexing orchestration, or
   Celery behavior was added.
+
+### EMB-002 Task 1 Fix Round 1 — closed-client lifecycle guard (executed 2026-09-04)
+
+- **Review finding and impact:** Calling `embed` after closing an internally owned
+  client reached `httpx.AsyncClient.post` and leaked httpx's raw `RuntimeError`.
+  Closing an injected wrapper did not prevent later calls at all, and repeated
+  owned closure delegated twice to the transport. This violated the typed safe
+  failure boundary and left wrapper lifetime dependent on transport ownership.
+- **Root cause:** `aclose()` delegated resource cleanup but did not record wrapper
+  lifecycle state. `embed()` therefore had no state guard before model resolution,
+  input validation, or I/O. Its deliberately narrow `httpx.RequestError` handler
+  correctly did not catch an unrelated `RuntimeError`, exposing the missing state
+  transition rather than an exception-classification problem.
+- **Ruling and implementation:** Wrapper lifetime is now independent of transport
+  ownership. `aclose()` first transitions any wrapper to closed, is idempotent,
+  and physically closes an internally owned HTTP client exactly once. It never
+  closes an injected HTTP client. After direct close or async-context exit,
+  `embed()` checks the wrapper state before model lookup, input processing, and
+  network use and raises non-retryable `EMBEDDING_CLIENT_CLOSED` with the stable
+  message `Embedding client is closed.` No broad `RuntimeError` catch was added.
+- **TDD RED evidence:** Before the production edit, the lifecycle selector had
+  `3 failed, 1 passed`: direct owned reuse leaked `RuntimeError: Cannot send a
+  request, as the client has been closed.`, an injected wrapper remained usable,
+  and repeated owned close called the transport twice. The context-exit test was
+  also run directly and failed because `EMBEDDING_MODEL_UNAVAILABLE` won before
+  the required closed-client error, proving the guard-order defect.
+- **GREEN and regression evidence:** The complete lifecycle selector produced `5
+  passed, 41 deselected`. Embedding plus configuration produced `60 passed`; the
+  fresh complete backend suite produced `376 passed, 1 skipped` in 6.04 seconds.
+  Each run contained only the repository's existing Starlette/httpx deprecation
+  warning.
+- **Fix commit:** `fix: guard closed embedding clients` (separate from `23a725a`).
+- **Rejected approaches and residual risk:** Broadly catching `RuntimeError` was
+  rejected because it could conceal unrelated programming or transport defects.
+  Treating injected-wrapper `aclose()` as a no-op was rejected because identical
+  wrapper APIs would then have ownership-dependent reuse semantics. The guard
+  defines sequential lifecycle behavior; callers must still coordinate a close
+  racing with active `embed()` operations. No secret, input, backend response, or
+  vector is included in the lifecycle failure.
