@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
+import traceback
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import create_engine, event, func, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, OperationalError, ProgrammingError
 
 from rag_modules.common import utcnow
 from rag_modules.db.models import DocumentSegmentRecord
 from rag_modules.indexing.ids import segment_content_hash, stable_segment_id
 from rag_modules.indexing.models import SegmentStagingCommand
+import rag_modules.repositories.segment_repository as segment_repository_module
 from rag_modules.repositories.segment_repository import SegmentPersistenceError, SegmentRepository
 from rag_modules.segmentation.models import PreviewSegment
 
@@ -125,12 +131,148 @@ def _insert_interloper_on_first_segment_insert(
             connection.execute(DocumentSegmentRecord.__table__.insert(), record)
 
 
-def test_segment_id_is_stable_and_sensitive_to_index_version():
-    first = stable_segment_id("index-1", "doc-1", None, 0, "hash")
+class _RecordedScalars:
+    def __init__(self, records: list[DocumentSegmentRecord]) -> None:
+        self._records = records
 
-    assert first == stable_segment_id("index-1", "doc-1", None, 0, "hash")
-    assert first != stable_segment_id("index-2", "doc-1", None, 0, "hash")
-    assert len(first) == 32
+    def scalars(self):
+        return tuple(self._records)
+
+
+class _RecordingPostgresqlSession:
+    """Compile real PostgreSQL statements while keeping the scale test local."""
+
+    _INSERT_COLUMNS = (
+        "id",
+        "dataset_id",
+        "dataset_index_id",
+        "document_id",
+        "indexing_job_id",
+        "parent_id",
+        "position",
+        "content",
+        "content_hash",
+        "source_metadata",
+        "status",
+        "index_type",
+        "embedding_status",
+        "created_at",
+    )
+
+    def __init__(self) -> None:
+        self._dialect = postgresql.dialect()
+        self._records: dict[str, DocumentSegmentRecord] = {}
+        self.insert_row_counts: list[int] = []
+        self.insert_bind_counts: list[int] = []
+        self.select_bind_counts: list[int] = []
+        self.insert_sql: list[str] = []
+
+    def get_bind(self):
+        return SimpleNamespace(dialect=self._dialect)
+
+    async def execute(self, statement):
+        compiled = statement.compile(
+            dialect=self._dialect,
+            compile_kwargs={"render_postcompile": True},
+        )
+        parameters = compiled.params
+        sql = str(compiled)
+        if sql.lstrip().upper().startswith("INSERT INTO DOCUMENT_SEGMENTS"):
+            row_indexes = sorted(
+                int(name.removeprefix("id_m"))
+                for name in parameters
+                if name.startswith("id_m")
+            )
+            self.insert_row_counts.append(len(row_indexes))
+            self.insert_bind_counts.append(len(parameters))
+            self.insert_sql.append(sql)
+            for row_index in row_indexes:
+                values = {
+                    column: parameters[f"{column}_m{row_index}"]
+                    for column in self._INSERT_COLUMNS
+                }
+                self._records[values["id"]] = DocumentSegmentRecord(**values)
+            return _RecordedScalars([])
+
+        requested = {
+            value
+            for value in parameters.values()
+            if isinstance(value, str) and value in self._records
+        }
+        self.select_bind_counts.append(len(parameters))
+        return _RecordedScalars(
+            [self._records[identifier] for identifier in requested]
+        )
+
+
+def _database_failure(error_type, private_content: str, private_metadata: str):
+    statement = "INSERT INTO document_segments (content, source_metadata) VALUES (?, ?)"
+    parameters = {
+        "content": private_content,
+        "source_metadata": {"marker": private_metadata},
+    }
+    original = RuntimeError(private_metadata)
+    if error_type is DBAPIError:
+        return DBAPIError(
+            statement,
+            parameters,
+            original,
+            connection_invalidated=True,
+        )
+    return error_type(statement, parameters, original)
+
+
+def _assert_safe_storage_failure(
+    error: BaseException,
+    *,
+    retryable: bool,
+    private_values: tuple[str, str],
+) -> None:
+    expected_code = (
+        "SEGMENT_STORAGE_UNAVAILABLE" if retryable else "SEGMENT_STORAGE_FAILED"
+    )
+    expected_message = (
+        "Segment storage is temporarily unavailable."
+        if retryable
+        else "Segment storage operation failed."
+    )
+    storage_error_type = getattr(
+        segment_repository_module, "SegmentStorageError", object()
+    )
+
+    assert error.__class__ is storage_error_type
+    assert getattr(error, "code", None) == expected_code
+    assert getattr(error, "retryable", None) is retryable
+    assert getattr(error, "safe_message", None) == expected_message
+    assert str(error) == expected_message
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
+    surfaces = (str(error), repr(error), rendered)
+    for private_value in private_values:
+        assert all(private_value not in surface for surface in surfaces)
+
+
+def test_segment_id_is_stable_and_sensitive_to_index_version():
+    baseline_arguments = ("index-1", "doc-1", None, 0, "hash-1")
+    baseline = stable_segment_id(*baseline_arguments)
+    independent_changes = (
+        ("index-2", "doc-1", None, 0, "hash-1"),
+        ("index-1", "doc-2", None, 0, "hash-1"),
+        ("index-1", "doc-1", "parent-1", 0, "hash-1"),
+        ("index-1", "doc-1", None, 1, "hash-1"),
+        ("index-1", "doc-1", None, 0, "hash-2"),
+    )
+
+    parsed = UUID(hex=baseline)
+
+    assert baseline == stable_segment_id(*baseline_arguments)
+    assert all(stable_segment_id(*changed) != baseline for changed in independent_changes)
+    assert len(baseline) == 32
+    assert parsed.hex == baseline
+    assert parsed.version == 5
 
 
 def test_content_hash_canonicalizes_newlines_unicode_and_metadata_key_order():
@@ -574,3 +716,277 @@ async def test_stage_rejects_a_conflicting_id_race_and_keeps_the_outer_transacti
     assert await repository.session.scalar(
         select(func.count()).select_from(DocumentSegmentRecord)
     ) == 2
+
+
+@pytest.mark.asyncio
+async def test_stage_chunks_ten_thousand_postgresql_inserts_and_reloads_without_large_binds():
+    session = _RecordingPostgresqlSession()
+    repository = SegmentRepository(session)  # type: ignore[arg-type]
+    previews = tuple(
+        general_preview_segment(content=f"bounded row {position}", position=position)
+        for position in range(10_000)
+    )
+
+    records = await repository.stage(command(segmentation_mode="general"), previews)
+
+    assert len(records) == 10_000
+    assert session.insert_row_counts == [500] * 20
+    assert max(session.insert_bind_counts) == 7_000
+    assert len(session.select_bind_counts) == 40
+    assert max(session.select_bind_counts) <= 500
+    assert all("ON CONFLICT (id) DO NOTHING" in sql for sql in session.insert_sql)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "retryable"),
+    (
+        (OperationalError, True),
+        (DBAPIError, True),
+        (IntegrityError, False),
+        (DataError, False),
+        (ProgrammingError, False),
+    ),
+)
+async def test_stage_sanitizes_sqlalchemy_failures_and_classifies_retryability(
+    error_type, retryable
+):
+    private_content = f"content-{uuid4().hex}"
+    private_metadata = f"metadata-{uuid4().hex}"
+    database_error = _database_failure(
+        error_type, private_content, private_metadata
+    )
+
+    class FailingSession:
+        async def execute(self, _statement):
+            raise database_error
+
+    repository = SegmentRepository(FailingSession())  # type: ignore[arg-type]
+    caught: BaseException
+    try:
+        await repository.stage(
+            command(segmentation_mode="general"),
+            (general_preview_segment(content=private_content),),
+        )
+    except BaseException as error:
+        caught = error
+    else:  # pragma: no cover - assertion branch
+        pytest.fail("expected storage failure")
+
+    _assert_safe_storage_failure(
+        caught,
+        retryable=retryable,
+        private_values=(private_content, private_metadata),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "activate_document_segments",
+        "update_keywords",
+        "mark_embeddings_completed",
+        "soft_delete_previous_segments",
+    ),
+)
+async def test_every_repository_mutation_sanitizes_execute_failures(operation):
+    private_content = f"content-{uuid4().hex}"
+    private_metadata = f"metadata-{uuid4().hex}"
+    database_error = _database_failure(
+        OperationalError, private_content, private_metadata
+    )
+
+    class FailingSession:
+        async def execute(self, _statement):
+            raise database_error
+
+    repository = SegmentRepository(FailingSession())  # type: ignore[arg-type]
+    if operation == "activate_document_segments":
+        awaitable = repository.activate_document_segments(
+            dataset_id="dataset-1",
+            dataset_index_id="index-1",
+            document_id="doc-1",
+        )
+    elif operation == "update_keywords":
+        awaitable = repository.update_keywords(
+            dataset_index_id="index-1",
+            document_id="doc-1",
+            keywords_by_segment_id={"segment-1": ("bounded",)},
+        )
+    elif operation == "mark_embeddings_completed":
+        awaitable = repository.mark_embeddings_completed(
+            dataset_index_id="index-1",
+            document_id="doc-1",
+            segment_ids=("segment-1",),
+        )
+    else:
+        awaitable = repository.soft_delete_previous_segments(
+            dataset_id="dataset-1",
+            previous_dataset_index_id="index-1",
+            document_id="doc-1",
+        )
+
+    try:
+        await awaitable
+    except BaseException as error:
+        caught = error
+    else:  # pragma: no cover - assertion branch
+        pytest.fail("expected storage failure")
+
+    _assert_safe_storage_failure(
+        caught,
+        retryable=True,
+        private_values=(private_content, private_metadata),
+    )
+
+
+@pytest.mark.asyncio
+async def test_repository_sanitizes_flush_failures_after_in_memory_validation():
+    private_content = f"content-{uuid4().hex}"
+    private_metadata = f"metadata-{uuid4().hex}"
+    database_error = _database_failure(
+        IntegrityError, private_content, private_metadata
+    )
+    record = DocumentSegmentRecord(
+        id="segment-1",
+        dataset_id="dataset-1",
+        dataset_index_id="index-1",
+        document_id="doc-1",
+        indexing_job_id="job-1",
+        parent_id=None,
+        position=0,
+        content=private_content,
+        content_hash="f" * 64,
+        source_metadata={"marker": private_metadata},
+        status="indexing",
+        index_type="general",
+        embedding_status="not_required",
+    )
+
+    class FlushFailingSession:
+        async def execute(self, _statement):
+            return _RecordedScalars([record])
+
+        async def flush(self):
+            raise database_error
+
+    repository = SegmentRepository(FlushFailingSession())  # type: ignore[arg-type]
+    try:
+        await repository.update_keywords(
+            dataset_index_id="index-1",
+            document_id="doc-1",
+            keywords_by_segment_id={"segment-1": ("bounded",)},
+        )
+    except BaseException as error:
+        caught = error
+    else:  # pragma: no cover - assertion branch
+        pytest.fail("expected storage failure")
+
+    _assert_safe_storage_failure(
+        caught,
+        retryable=False,
+        private_values=(private_content, private_metadata),
+    )
+
+
+@pytest.mark.asyncio
+async def test_repository_preserves_non_sqlalchemy_programmer_errors():
+    defect = RuntimeError("programmer defect")
+
+    class FailingSession:
+        async def execute(self, _statement):
+            raise defect
+
+    repository = SegmentRepository(FailingSession())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError) as caught:
+        await repository.stage(
+            command(segmentation_mode="general"),
+            (general_preview_segment(),),
+        )
+
+    assert caught.value is defect
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "deleted", "embedding_status"),
+    (
+        ("completed", False, "waiting"),
+        ("indexing", True, "waiting"),
+        ("indexing", False, "not_required"),
+    ),
+)
+async def test_stage_rejects_lifecycle_ineligible_high_quality_exact_retry(
+    segment_repository, status, deleted, embedding_status
+):
+    preview = (general_preview_segment(),)
+    first = await segment_repository.stage(command(segmentation_mode="general"), preview)
+    first[0].status = status
+    first[0].embedding_status = embedding_status
+    first[0].deleted_at = utcnow() if deleted else None
+    await segment_repository.session.flush()
+
+    with pytest.raises(SegmentPersistenceError):
+        await segment_repository.stage(command(segmentation_mode="general"), preview)
+
+
+@pytest.mark.asyncio
+async def test_stage_allows_partially_completed_high_quality_exact_retry_without_reattribution(
+    segment_repository,
+):
+    previews = (
+        general_preview_segment(content="already ready", position=0),
+        general_preview_segment(content="still waiting", position=1),
+    )
+    first = await segment_repository.stage(command(segmentation_mode="general"), previews)
+    first[0].embedding_status = "completed"
+    await segment_repository.session.flush()
+
+    retry = await segment_repository.stage(
+        replace(command(segmentation_mode="general"), indexing_job_id="retry-job"),
+        previews,
+    )
+
+    assert [record.embedding_status for record in retry] == ["completed", "waiting"]
+    assert [record.indexing_job_id for record in retry] == ["job-1", "job-1"]
+
+
+@pytest.mark.asyncio
+async def test_stage_allows_completed_child_but_requires_not_required_parent_on_retry(
+    segment_repository,
+):
+    previews = parent_child_preview_segments()
+    first = await segment_repository.stage(command(), previews)
+    parent = next(record for record in first if record.index_type == "parent")
+    child = next(record for record in first if record.index_type == "child")
+    child.embedding_status = "completed"
+    await segment_repository.session.flush()
+
+    retry = await segment_repository.stage(command(indexing_job_id="retry-job"), previews)
+
+    assert [record.embedding_status for record in retry] == [
+        "not_required",
+        "completed",
+    ]
+    parent.embedding_status = "waiting"
+    await segment_repository.session.flush()
+    with pytest.raises(SegmentPersistenceError):
+        await segment_repository.stage(command(indexing_job_id="retry-job"), previews)
+
+
+@pytest.mark.asyncio
+async def test_stage_requires_not_required_economy_state_on_exact_retry(
+    segment_repository,
+):
+    economy_command = command(
+        indexing_technique="economy", segmentation_mode="general"
+    )
+    preview = (general_preview_segment(),)
+    first = await segment_repository.stage(economy_command, preview)
+    first[0].embedding_status = "waiting"
+    await segment_repository.session.flush()
+
+    with pytest.raises(SegmentPersistenceError):
+        await segment_repository.stage(economy_command, preview)

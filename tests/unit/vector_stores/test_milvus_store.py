@@ -31,6 +31,7 @@ FIELD_NAMES = {
     "position",
 }
 HUGE_DECIMAL = "9" * 5_000
+INT64_MAX = 9_223_372_036_854_775_807
 
 
 class RecordingSchema:
@@ -102,13 +103,11 @@ class RecordingMilvusClient:
         *,
         existing: bool = False,
         description=None,
-        stats: list[object] | None = None,
         query_counts: list[object] | None = None,
         nested_index: bool = False,
     ) -> None:
         self.existing = existing
         self.description = description or collection_description()
-        self.stats = list(stats or [{"row_count": 0}, {"row_count": 0}])
         self.query_counts = list(query_counts or [{"count(*)": 0}, {"count(*)": 0}])
         self.nested_index = nested_index
         self.schema: RecordingSchema | None = None
@@ -121,7 +120,6 @@ class RecordingMilvusClient:
         self.dropped: list[str] = []
         self.has_calls = 0
         self.describe_calls = 0
-        self.stats_calls = 0
         self.query_calls: list[dict] = []
         self.fail_with: MilvusException | None = None
 
@@ -183,10 +181,6 @@ class RecordingMilvusClient:
 
     def flush(self, *, collection_name: str, timeout: int) -> None:
         self.flushes.append(collection_name)
-
-    def get_collection_stats(self, *, collection_name: str, timeout: int):
-        self.stats_calls += 1
-        return self.stats.pop(0)
 
     def query(self, **kwargs):
         self.query_calls.append(kwargs)
@@ -592,6 +586,28 @@ def test_count_treats_huge_decimal_observations_as_unstable_with_bounded_polling
     assert len(client.query_calls) == 3
     assert client.flushes == ["collection"]
     assert sleeps == [0.25, 0.25]
+
+
+def test_count_accepts_signed_int64_maximum_from_direct_integer_observations():
+    client = RecordingMilvusClient(
+        existing=True,
+        query_counts=[{"count(*)": INT64_MAX}, {"count(*)": INT64_MAX}],
+    )
+
+    assert make_store(client).count("collection") == INT64_MAX
+
+
+def test_count_rejects_equal_direct_integer_observations_above_signed_int64():
+    client = RecordingMilvusClient(
+        existing=True,
+        query_counts=[{"count(*)": INT64_MAX + 1}] * 3,
+    )
+    store = make_store(client, consistency_poll_attempts=3)
+
+    with pytest.raises(VectorConsistencyError):
+        store.count("collection")
+
+    assert len(client.query_calls) == 3
 
 
 def test_existing_collection_rejects_huge_decimal_schema_numeric_metadata():

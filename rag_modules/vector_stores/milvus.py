@@ -399,7 +399,7 @@ def _logical_count(rows: Any) -> int | None:
         return None
     value = rows[0].get("count(*)") if isinstance(rows[0], Mapping) else None
     if type(value) is int:
-        return value if value >= 0 else None
+        return value if 0 <= value <= _INT64_MAX else None
     return _bounded_ascii_decimal(value)
 
 

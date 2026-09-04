@@ -6,6 +6,7 @@ from fastapi import Depends
 pg_engine =create_async_engine(
     settings.postgres_url,
     echo=settings.echo,
+    hide_parameters=True,
     pool_size=settings.POSTGRES_DATABASE_POOL_SIZE,
     max_overflow=settings.POSTGRES_DATABASE_MAX_OVERFLOW,  # 流量高峰，最多额外扩容 20 个临时连接。
     pool_timeout=settings.POSTGRES_DATABASE_POOL_TIMEOUT,
@@ -22,4 +23,3 @@ async def get_pg_engine() -> AsyncSession:
         yield session #把 session 对象**交出给 FastAPI 接口函数使用**。
 #Annotated[真实类型, 附加元数据] 等价db: AsyncSession = Depends(get_db)
 pgDbSession = Annotated[AsyncSession,Depends(get_pg_engine)]
-

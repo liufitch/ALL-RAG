@@ -7,6 +7,7 @@ from typing import Annotated
 engine = create_async_engine(
     settings.MYSQL_DATABASE_URI,
     echo=settings.debug,#debug=True 时打印完整 SQL 日志；生产关闭。
+    hide_parameters=True,
     pool_size=settings.MYSQL_DATABASE_POOL_SIZE,
     max_overflow=settings.MYSQL_DATABASE_MAX_OVERFLOW, #流量高峰，最多额外扩容 20 个临时连接。
     pool_timeout=settings.MYSQL_DATABASE_POOL_TIMEOUT,

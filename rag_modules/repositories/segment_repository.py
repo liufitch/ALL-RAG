@@ -9,6 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+    SQLAlchemyError,
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 
 from rag_modules.common import utcnow
 from rag_modules.db.models import DocumentSegmentRecord
@@ -18,12 +26,26 @@ from rag_modules.indexing.ids import (
     segment_content_hash,
     stable_segment_id,
 )
+from rag_modules.indexing.constants import MAX_KEYWORD_LENGTH
 from rag_modules.indexing.models import SegmentStagingCommand
 from rag_modules.segmentation.models import PreviewSegment
 
 
+SEGMENT_STATEMENT_CHUNK_SIZE = 500
+
+
 class SegmentPersistenceError(ValueError):
     """A safe validation/conflict failure raised before unsafe segment mutation."""
+
+
+class SegmentStorageError(Exception):
+    """A fixed, content-free database failure safe for job error persistence."""
+
+    def __init__(self, code: str, retryable: bool, safe_message: str) -> None:
+        super().__init__(safe_message)
+        self.code = code
+        self.retryable = retryable
+        self.safe_message = safe_message
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +87,8 @@ class SegmentRepository:
         if not missing:
             return records
 
-        await self.session.execute(self._insert_missing_statement(command, missing))
+        for batch in self._chunks(missing):
+            await self._execute(self._insert_missing_statement(command, batch))
         existing_by_id = await self._load_by_id(candidates)
         records = self._exact_existing_records(command, candidates, existing_by_id)
         if len(records) != len(candidates):  # pragma: no cover - conflict writes are statement-visible
@@ -86,7 +109,7 @@ class SegmentRepository:
         for record in records:
             record.status = "completed"
             record.updated_at = timestamp
-        await self.session.flush()
+        await self._flush()
         return records
 
     async def update_keywords(
@@ -115,7 +138,7 @@ class SegmentRepository:
                 or any(
                     not isinstance(keyword, str)
                     or not keyword
-                    or len(keyword) > 255
+                    or len(keyword) > MAX_KEYWORD_LENGTH
                     for keyword in keywords
                 )
             ):
@@ -125,7 +148,7 @@ class SegmentRepository:
         for record in records:
             record.keywords = validated[record.id]
             record.updated_at = timestamp
-        await self.session.flush()
+        await self._flush()
 
     async def mark_embeddings_completed(
         self,
@@ -154,7 +177,7 @@ class SegmentRepository:
                 continue
             record.embedding_status = "completed"
             record.updated_at = timestamp
-        await self.session.flush()
+        await self._flush()
 
     async def soft_delete_previous_segments(
         self, *, dataset_id: str, document_id: str, previous_dataset_index_id: str
@@ -170,7 +193,7 @@ class SegmentRepository:
         for record in records:
             record.deleted_at = timestamp
             record.updated_at = timestamp
-        await self.session.flush()
+        await self._flush()
         return records
 
     async def _records_for_scope(
@@ -189,7 +212,7 @@ class SegmentRepository:
         ]
         if status is not None:
             filters.append(DocumentSegmentRecord.status == status)
-        result = await self.session.execute(
+        result = await self._execute(
             select(DocumentSegmentRecord)
             .where(*filters)
             .order_by(DocumentSegmentRecord.position.asc(), DocumentSegmentRecord.id.asc())
@@ -212,27 +235,81 @@ class SegmentRepository:
             )
         ):
             raise SegmentPersistenceError("Segment mutation scope is invalid.")
-        result = await self.session.execute(
-            select(DocumentSegmentRecord).where(
-                DocumentSegmentRecord.dataset_index_id == dataset_index_id,
-                DocumentSegmentRecord.document_id == document_id,
-                DocumentSegmentRecord.id.in_(requested),
-                DocumentSegmentRecord.status == "indexing",
-                DocumentSegmentRecord.deleted_at.is_(None),
+        by_id: dict[str, DocumentSegmentRecord] = {}
+        for batch in self._chunks(segment_ids):
+            result = await self._execute(
+                select(DocumentSegmentRecord).where(
+                    DocumentSegmentRecord.dataset_index_id == dataset_index_id,
+                    DocumentSegmentRecord.document_id == document_id,
+                    DocumentSegmentRecord.id.in_(batch),
+                    DocumentSegmentRecord.status == "indexing",
+                    DocumentSegmentRecord.deleted_at.is_(None),
+                )
             )
-        )
-        records = list(result.scalars())
-        if {record.id for record in records} != requested:
+            for record in result.scalars():
+                by_id[record.id] = record
+        if set(by_id) != requested:
             raise SegmentPersistenceError("Segment mutation scope is invalid.")
-        return records
+        return [by_id[identifier] for identifier in segment_ids]
 
     async def _load_by_id(self, candidates: list[_Candidate]) -> dict[str, DocumentSegmentRecord]:
-        result = await self.session.execute(
-            select(DocumentSegmentRecord).where(
-                DocumentSegmentRecord.id.in_([candidate.id for candidate in candidates])
+        records: dict[str, DocumentSegmentRecord] = {}
+        for batch in self._chunks(candidates):
+            result = await self._execute(
+                select(DocumentSegmentRecord).where(
+                    DocumentSegmentRecord.id.in_(
+                        [candidate.id for candidate in batch]
+                    )
+                )
             )
+            for record in result.scalars():
+                records[record.id] = record
+        return records
+
+    async def _execute(self, statement):
+        storage_error: SegmentStorageError
+        try:
+            return await self.session.execute(statement)
+        except SQLAlchemyError as error:
+            storage_error = self._storage_error(error)
+        raise storage_error from None
+
+    async def _flush(self) -> None:
+        storage_error: SegmentStorageError
+        try:
+            await self.session.flush()
+            return
+        except SQLAlchemyError as error:
+            storage_error = self._storage_error(error)
+        raise storage_error from None
+
+    @staticmethod
+    def _storage_error(error: SQLAlchemyError) -> SegmentStorageError:
+        retryable = isinstance(
+            error,
+            (
+                OperationalError,
+                InterfaceError,
+                DisconnectionError,
+                SQLAlchemyTimeoutError,
+            ),
+        ) or (isinstance(error, DBAPIError) and error.connection_invalidated)
+        if retryable:
+            return SegmentStorageError(
+                "SEGMENT_STORAGE_UNAVAILABLE",
+                True,
+                "Segment storage is temporarily unavailable.",
+            )
+        return SegmentStorageError(
+            "SEGMENT_STORAGE_FAILED",
+            False,
+            "Segment storage operation failed.",
         )
-        return {record.id: record for record in result.scalars()}
+
+    @staticmethod
+    def _chunks(values: Sequence, size: int = SEGMENT_STATEMENT_CHUNK_SIZE):
+        for start in range(0, len(values), size):
+            yield values[start : start + size]
 
     def _insert_missing_statement(
         self, command: SegmentStagingCommand, missing: list[_Candidate]
@@ -411,4 +488,11 @@ class SegmentRepository:
             and existing.content_hash == candidate.content_hash
             and existing.content == candidate.content
             and existing.source_metadata == candidate.source_metadata
+            and existing.status == "indexing"
+            and existing.deleted_at is None
+            and (
+                existing.embedding_status in {"waiting", "completed"}
+                if candidate.embedding_status == "waiting"
+                else existing.embedding_status == "not_required"
+            )
         )

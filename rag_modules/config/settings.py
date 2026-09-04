@@ -79,7 +79,10 @@ class DatabaseSettings(BaseModel):
 
     @property
     def engine_options(self) -> dict[str, Any]:
-        options: dict[str, Any] = {"echo": self.echo}
+        options: dict[str, Any] = {
+            "echo": self.echo,
+            "hide_parameters": True,
+        }
         if self.type != "sqlite":
             options.update(
                 pool_size=self.pool_size,

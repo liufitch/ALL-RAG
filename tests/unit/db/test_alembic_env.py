@@ -9,6 +9,7 @@ import tomllib
 
 from alembic import context
 from alembic.config import Config
+import sqlalchemy.ext.asyncio
 
 from rag_modules.config.settings import DatabaseSettings
 
@@ -54,3 +55,48 @@ def test_alembic_env_escapes_encoded_database_url_for_config_parser(monkeypatch)
 
     assert alembic_config.get_main_option("sqlalchemy.url") == database_uri
     assert configured["url"] == database_uri
+
+
+def test_online_migration_engine_hides_bound_parameters(monkeypatch):
+    alembic_config = Config()
+    engine_arguments: dict[str, object] = {}
+
+    class FakeConnection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def run_sync(self, _operation):
+            return None
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+        async def dispose(self):
+            return None
+
+    def fake_async_engine_from_config(configuration, **kwargs):
+        engine_arguments.update(kwargs)
+        return FakeEngine()
+
+    monkeypatch.setattr(
+        sqlalchemy.ext.asyncio,
+        "async_engine_from_config",
+        fake_async_engine_from_config,
+    )
+    monkeypatch.setattr(
+        "rag_modules.config.settings.settings",
+        SimpleNamespace(sqlalchemy_database_uri="sqlite+aiosqlite:///:memory:"),
+    )
+    monkeypatch.setattr(context, "config", alembic_config, raising=False)
+    monkeypatch.setattr(context, "is_offline_mode", lambda: False)
+
+    runpy.run_path(
+        str(PROJECT_ROOT / "migrations" / "env.py"),
+        run_name="__test_online_alembic_env__",
+    )
+
+    assert engine_arguments["hide_parameters"] is True

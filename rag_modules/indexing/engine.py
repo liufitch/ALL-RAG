@@ -51,7 +51,9 @@ _SAFE_WARNING_CODES = frozenset(
 )
 _MAX_WARNINGS = 50
 _MAX_COLLECTION_DIMENSION = 32_768
-_MAX_BATCH_SIZE = 1_024
+_MAX_ENGINE_STREAM_BATCH_SIZE = 1_024
+_MAX_EMBEDDING_BATCH_SIZE = 512
+_MAX_VECTOR_BATCH_SIZE = 10_000
 _MAX_KEYWORD_LIMIT = 100
 _T = TypeVar("_T")
 
@@ -129,7 +131,7 @@ class DocumentIndexingEngine:
             command.staging, segmented.segments
         )
         await self._update(progress, "stage", 45, processed_segments)
-        indexable = self._indexable_records(command.staging, records)
+        indexable = self._validated_indexable_records(command.staging, records)
 
         warnings = self._safe_warnings(parsed.warnings, "parse")
         warnings += self._safe_warnings(segmented.warnings, "split")
@@ -173,7 +175,7 @@ class DocumentIndexingEngine:
         progress: ProgressReporter,
     ) -> int:
         updates: dict[str, tuple[str, ...]] = {}
-        batches = tuple(self._batches(records, command.embedding_batch_size))
+        batches = tuple(self._batches(records, self._effective_batch_size(command)))
         if not batches:
             await self._update(progress, "embed-or-keywords", 70, 0)
         for batch_index, batch in enumerate(batches, start=1):
@@ -219,15 +221,25 @@ class DocumentIndexingEngine:
                 "The document produced no indexable segments.",
             )
 
-        total_batches = (
-            len(records) + command.embedding_batch_size - 1
-        ) // command.embedding_batch_size
+        waiting_records = [
+            record for record in records if record.embedding_status == "waiting"
+        ]
+        completed_count = len(records) - len(waiting_records)
+        if not waiting_records:
+            await self._update(
+                progress, "embed-or-keywords", 70, completed_count
+            )
+            await self._update(progress, "vector-upsert", 95, completed_count)
+            return completed_count, completed_count
+
+        batch_size = self._effective_batch_size(command)
+        total_batches = (len(waiting_records) + batch_size - 1) // batch_size
         target = self._command_target(command)
         locked_dimension: int | None = target.dimension if target else None
-        vector_count = 0
-        processed_segments = 0
+        vector_count = completed_count
+        processed_segments = completed_count
         for batch_index, batch in enumerate(
-            self._batches(records, command.embedding_batch_size), start=1
+            self._batches(waiting_records, batch_size), start=1
         ):
             await self._check_cancelled(progress)
             result = await self._embedding.embed(
@@ -255,7 +267,9 @@ class DocumentIndexingEngine:
                 )
 
             if batch_index == 1:
-                await self._update(progress, "embed-or-keywords", 70, 0)
+                await self._update(
+                    progress, "embed-or-keywords", 70, processed_segments
+                )
             await self._check_cancelled(progress)
 
             entities = tuple(
@@ -333,7 +347,13 @@ class DocumentIndexingEngine:
         if (
             isinstance(command.embedding_batch_size, bool)
             or not isinstance(command.embedding_batch_size, int)
-            or not 1 <= command.embedding_batch_size <= _MAX_BATCH_SIZE
+            or not 1 <= command.embedding_batch_size <= _MAX_EMBEDDING_BATCH_SIZE
+        ):
+            cls._invalid_command()
+        if (
+            isinstance(command.vector_batch_size, bool)
+            or not isinstance(command.vector_batch_size, int)
+            or not 1 <= command.vector_batch_size <= _MAX_VECTOR_BATCH_SIZE
         ):
             cls._invalid_command()
         if (
@@ -387,14 +407,50 @@ class DocumentIndexingEngine:
             target = VectorTarget(command.collection_name, command.expected_dimension or 0)
             cls._validate_target(target, "INDEX_COMMAND_INVALID")
 
-    @staticmethod
-    def _indexable_records(
+    @classmethod
+    def _validated_indexable_records(
+        cls,
         staging: SegmentStagingCommand, records: Sequence[IndexSegmentRecord]
     ) -> list[IndexSegmentRecord]:
+        invalid = False
         if staging.indexing_technique == "economy":
-            return [record for record in records if record.index_type == "general"]
-        expected_type = "child" if staging.segmentation_mode == "parent_child" else "general"
-        return [record for record in records if record.index_type == expected_type]
+            invalid = any(
+                record.status != "indexing"
+                or record.deleted_at is not None
+                or record.index_type != "general"
+                or record.embedding_status != "not_required"
+                for record in records
+            )
+            indexable = list(records)
+        elif staging.segmentation_mode == "parent_child":
+            invalid = any(
+                record.status != "indexing"
+                or record.deleted_at is not None
+                or record.index_type not in {"parent", "child"}
+                or (
+                    record.embedding_status != "not_required"
+                    if record.index_type == "parent"
+                    else record.embedding_status not in {"waiting", "completed"}
+                )
+                for record in records
+            )
+            indexable = [record for record in records if record.index_type == "child"]
+        else:
+            invalid = any(
+                record.status != "indexing"
+                or record.deleted_at is not None
+                or record.index_type != "general"
+                or record.embedding_status not in {"waiting", "completed"}
+                for record in records
+            )
+            indexable = list(records)
+        if invalid:
+            raise DocumentIndexingError(
+                "STAGED_SEGMENT_STATE_INVALID",
+                False,
+                "Staged segment state was invalid for indexing.",
+            )
+        return indexable
 
     @staticmethod
     def _validate_embedding_batch(result: Any, expected_count: int) -> None:
@@ -462,6 +518,14 @@ class DocumentIndexingEngine:
     def _batches(values: Sequence[_T], size: int) -> Iterable[Sequence[_T]]:
         for start in range(0, len(values), size):
             yield values[start : start + size]
+
+    @staticmethod
+    def _effective_batch_size(command: IndexDocumentCommand) -> int:
+        return min(
+            _MAX_ENGINE_STREAM_BATCH_SIZE,
+            command.embedding_batch_size,
+            command.vector_batch_size,
+        )
 
     @staticmethod
     def _batch_progress(start: int, end: int, current: int, total: int) -> int:

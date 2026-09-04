@@ -123,3 +123,13 @@ def test_keywords_never_exceed_requested_limit():
     words = KeywordExtractor().extract("delta gamma beta alpha", limit=2)
 
     assert words == ["alpha", "beta"]
+
+
+@pytest.mark.parametrize("length", (256, 1_024))
+def test_keywords_omit_overlong_tokens_without_truncation_or_collision(length):
+    overlong = "X" * length
+
+    words = KeywordExtractor().extract(f"{overlong} bounded bounded", limit=5)
+
+    assert words == ["bounded"]
+    assert all(len(word) <= 255 for word in words)

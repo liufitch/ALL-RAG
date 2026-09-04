@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 import gc
 from io import BytesIO
 import threading
@@ -10,9 +10,13 @@ from typing import Any
 import weakref
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from rag_modules.embeddings import EmbeddingBatch
+from rag_modules.db.models import DocumentSegmentRecord
 from rag_modules.indexing.engine import DocumentIndexingEngine, DocumentIndexingError
+from rag_modules.indexing.keywords import KeywordExtractor
 from rag_modules.indexing.models import (
     IndexDocumentCommand,
     SegmentStagingCommand,
@@ -29,6 +33,7 @@ from rag_modules.segmentation import (
     ParentChildSegmentationConfig,
     Segmenter,
 )
+from rag_modules.repositories.segment_repository import SegmentRepository
 from rag_modules.vector_stores.base import VectorStoreError
 
 
@@ -43,6 +48,8 @@ class FakeRecord:
     content: str
     index_type: str
     embedding_status: str
+    status: str = "indexing"
+    deleted_at: object | None = None
     keywords: list[str] | None = None
 
 
@@ -369,6 +376,7 @@ def high_quality_command(
     building: bool = False,
     parent_child: bool = False,
     batch_size: int = 2,
+    vector_batch_size: int | None = None,
 ) -> IndexDocumentCommand:
     config = (
         ParentChildSegmentationConfig(
@@ -380,7 +388,7 @@ def high_quality_command(
         if parent_child
         else GeneralSegmentationConfig(max_chunk_length=100)
     )
-    return IndexDocumentCommand(
+    arguments = dict(
         staging=staging_command(mode="parent_child" if parent_child else "general"),
         object_key="datasets/dataset-1/documents/doc-1/source.txt",
         filename="source.txt",
@@ -391,10 +399,15 @@ def high_quality_command(
         collection_name=None if building else "collection_existing",
         expected_dimension=None if building else 3,
     )
+    if "vector_batch_size" in {field.name for field in fields(IndexDocumentCommand)}:
+        arguments["vector_batch_size"] = (
+            batch_size if vector_batch_size is None else vector_batch_size
+        )
+    return IndexDocumentCommand(**arguments)
 
 
 def economy_command() -> IndexDocumentCommand:
-    return IndexDocumentCommand(
+    arguments = dict(
         staging=staging_command(technique="economy", mode="general"),
         object_key="datasets/dataset-1/documents/doc-1/source.txt",
         filename="source.txt",
@@ -406,6 +419,9 @@ def economy_command() -> IndexDocumentCommand:
         expected_dimension=None,
         keyword_limit=15,
     )
+    if "vector_batch_size" in {field.name for field in fields(IndexDocumentCommand)}:
+        arguments["vector_batch_size"] = 2
+    return IndexDocumentCommand(**arguments)
 
 
 @dataclass
@@ -493,6 +509,17 @@ def make_engine(
     return engine, deps
 
 
+def mutate_staged_records(repository: FakeSegmentRepository, mutation) -> None:
+    original_stage = repository.stage
+
+    async def stage(command, segments):
+        records = await original_stage(command, segments)
+        mutation(records)
+        return records
+
+    repository.stage = stage
+
+
 @pytest.mark.asyncio
 async def test_high_quality_indexes_general_segments_and_keeps_vectors_out_of_postgres():
     engine, deps = make_engine()
@@ -546,6 +573,64 @@ async def test_economy_persists_bounded_keywords_and_forbids_embedding_resolver_
 
 
 @pytest.mark.asyncio
+async def test_economy_engine_with_real_repository_omits_overlong_keyword(tmp_path):
+    overlong_token = "X" * 1_024
+    blocks = (
+        ParsedBlock(
+            block_type="code",
+            text=f"{overlong_token} bounded bounded",
+            metadata={"line": 1},
+        ),
+    )
+    engine, deps = make_engine(blocks=blocks, forbidden_high_quality=True)
+    database_engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'economy-keywords.db'}"
+    )
+    async with database_engine.begin() as connection:
+        await connection.run_sync(DocumentSegmentRecord.__table__.create)
+    factory = async_sessionmaker(database_engine, expire_on_commit=False)
+
+    try:
+        async with factory() as session:
+            repository = SegmentRepository(session)
+            real_engine = DocumentIndexingEngine(
+                object_storage=deps.storage,
+                parser_registry=deps.parser,
+                segmenter=deps.segmenter,
+                segment_repository=repository,
+                embedding=deps.embedding,
+                vector_target_resolver=deps.resolver,
+                vector_store=deps.vector_store,
+                keyword_extractor=KeywordExtractor(),
+            )
+            command = replace(
+                economy_command(),
+                segmentation_config=GeneralSegmentationConfig(
+                    max_chunk_length=2_000
+                ),
+            )
+
+            result = await real_engine.run(command, RecordingProgress())
+            persisted = list(
+                (
+                    await session.execute(
+                        select(DocumentSegmentRecord).order_by(
+                            DocumentSegmentRecord.position
+                        )
+                    )
+                ).scalars()
+            )
+
+            assert result.vector_count == 0
+            assert [record.keywords for record in persisted] == [["bounded"]]
+            assert deps.embedding.calls == []
+            assert deps.resolver.calls == []
+            assert deps.vector_store.batches == []
+    finally:
+        await database_engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_existing_target_uses_command_snapshot_without_resolving():
     engine, deps = make_engine()
     deps.resolver.forbidden = True
@@ -587,6 +672,114 @@ async def test_later_embedding_dimension_mismatch_rejects_before_mismatched_batc
         "completed",
         "waiting",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda records: setattr(records[0], "status", "completed"),
+        lambda records: setattr(records[0], "deleted_at", object()),
+        lambda records: setattr(records[0], "embedding_status", "not_required"),
+    ),
+    ids=("terminal-status", "soft-deleted", "technique-incompatible-state"),
+)
+async def test_lifecycle_ineligible_staged_rows_fail_before_vector_dependencies(mutation):
+    engine, deps = make_engine()
+    mutate_staged_records(deps.repository, mutation)
+
+    with pytest.raises(DocumentIndexingError) as caught:
+        await engine.run(high_quality_command(), RecordingProgress())
+
+    assert caught.value.code == "STAGED_SEGMENT_STATE_INVALID"
+    assert caught.value.retryable is False
+    assert deps.embedding.calls == []
+    assert deps.resolver.calls == []
+    assert deps.vector_store.batches == []
+
+
+@pytest.mark.asyncio
+async def test_partial_high_quality_retry_skips_completed_rows_and_counts_total_ready_rows():
+    engine, deps = make_engine()
+    mutate_staged_records(
+        deps.repository,
+        lambda records: setattr(records[0], "embedding_status", "completed"),
+    )
+
+    result = await engine.run(high_quality_command(batch_size=3), RecordingProgress())
+
+    assert result.total_indexable_segments == 3
+    assert result.vector_count == 3
+    assert deps.embedding.calls == [
+        ("model-1", ("Segment 1 searchable text", "Segment 2 searchable text"))
+    ]
+    assert [batch_ids for _, batch_ids in deps.vector_store.batches] == [
+        ("rec-1", "rec-2")
+    ]
+    assert deps.repository.embedding_flushes == [("rec-1", "rec-2")]
+    assert [record.embedding_status for record in deps.repository.records] == [
+        "completed",
+        "completed",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_effective_physical_batch_uses_embedding_and_vector_snapshot_bounds():
+    assert "vector_batch_size" in {
+        field.name for field in fields(IndexDocumentCommand)
+    }
+    engine, deps = make_engine(blocks=source_blocks(1_001))
+    progress = RecordingProgress(cancel_after_batch=("vector-upsert", 1))
+
+    with pytest.raises(asyncio.CancelledError):
+        await engine.run(
+            high_quality_command(
+                building=True,
+                batch_size=512,
+                vector_batch_size=500,
+            ),
+            progress,
+        )
+
+    assert [len(texts) for _, texts in deps.embedding.calls] == [500]
+    assert [len(batch_ids) for _, batch_ids in deps.vector_store.batches] == [500]
+    assert [len(batch_ids) for batch_ids in deps.repository.embedding_flushes] == [500]
+    assert deps.resolver.calls == [("index-1", 3)]
+    assert deps.events.index("embed") < deps.events.index("resolve")
+    assert deps.events.index("resolve") < deps.events.index("vector-upsert")
+    assert deps.events.index("vector-upsert") < deps.events.index("embedding-completed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("snapshot", "value"),
+    (
+        ("embedding", 513),
+        ("vector", True),
+        ("vector", 0),
+        ("vector", 10_001),
+    ),
+)
+async def test_embedding_and_vector_batch_snapshots_reject_invalid_bounds_before_io(
+    snapshot, value
+):
+    engine, deps = make_engine()
+    deps.storage.forbidden = True
+    if snapshot == "embedding":
+        command = replace(high_quality_command(), embedding_batch_size=value)
+    else:
+        assert "vector_batch_size" in {
+            field.name for field in fields(IndexDocumentCommand)
+        }
+        command = high_quality_command(vector_batch_size=value)
+
+    with pytest.raises(DocumentIndexingError) as caught:
+        await engine.run(command, RecordingProgress())
+
+    assert caught.value.code == "INDEX_COMMAND_INVALID"
+    assert caught.value.retryable is False
+    assert deps.events == []
 
 
 @pytest.mark.asyncio

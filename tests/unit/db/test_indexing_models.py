@@ -1,5 +1,6 @@
-from sqlalchemy import JSON
-from sqlalchemy.dialects import postgresql
+from sqlalchemy import ARRAY, JSON, Text
+from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.schema import CreateIndex
 
 from rag_modules.db.models import (
     DatasetIndexRecord,
@@ -50,3 +51,23 @@ def test_new_json_columns_use_jsonb_on_postgresql_with_generic_fallback():
     for column in json_columns:
         assert isinstance(column.type, JSON)
         assert isinstance(column.type.dialect_impl(postgresql.dialect()), postgresql.JSONB)
+
+
+def test_segment_keywords_keep_postgresql_text_array_and_gin_with_sqlite_json_variant():
+    keywords = DocumentSegmentRecord.__table__.c.keywords
+    postgresql_type = keywords.type.dialect_impl(postgresql.dialect())
+    sqlite_type = keywords.type.dialect_impl(sqlite.dialect())
+    keyword_index = next(
+        index
+        for index in DocumentSegmentRecord.__table__.indexes
+        if index.name == "ix_document_segments_keywords_gin"
+    )
+    postgresql_ddl = str(CreateIndex(keyword_index).compile(dialect=postgresql.dialect()))
+
+    assert isinstance(postgresql_type, ARRAY)
+    assert isinstance(postgresql_type.item_type, Text)
+    assert isinstance(sqlite_type, JSON)
+    assert postgresql_ddl == (
+        "CREATE INDEX ix_document_segments_keywords_gin "
+        "ON document_segments USING gin (keywords)"
+    )

@@ -1,15 +1,19 @@
-"""Local primitives used by the document indexing pipeline."""
+"""Lazy public exports for dependency-light indexing primitives."""
 
-from .engine import DocumentIndexingEngine, DocumentIndexingError
-from .keywords import KeywordExtractor
-from .models import (
-    IndexDocumentCommand,
-    IndexDocumentResult,
-    ProgressReporter,
-    SegmentStagingCommand,
-    VectorTarget,
-    VectorTargetResolver,
-)
+from importlib import import_module
+
+
+_EXPORTS = {
+    "DocumentIndexingEngine": (".engine", "DocumentIndexingEngine"),
+    "DocumentIndexingError": (".engine", "DocumentIndexingError"),
+    "IndexDocumentCommand": (".models", "IndexDocumentCommand"),
+    "IndexDocumentResult": (".models", "IndexDocumentResult"),
+    "KeywordExtractor": (".keywords", "KeywordExtractor"),
+    "ProgressReporter": (".models", "ProgressReporter"),
+    "SegmentStagingCommand": (".models", "SegmentStagingCommand"),
+    "VectorTarget": (".models", "VectorTarget"),
+    "VectorTargetResolver": (".models", "VectorTargetResolver"),
+}
 
 __all__ = [
     "DocumentIndexingEngine",
@@ -22,3 +26,17 @@ __all__ = [
     "VectorTarget",
     "VectorTargetResolver",
 ]
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute_name = _EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+    value = getattr(import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

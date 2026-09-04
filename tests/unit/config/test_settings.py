@@ -1,6 +1,7 @@
 import pytest
 
 from rag_modules.config.settings import (
+    DatabaseSettings,
     ParserSettings,
     PreviewSettings,
     Settings,
@@ -59,6 +60,36 @@ def test_vector_store_batching_and_consistency_defaults_are_bounded():
     assert vector_store.consistency_poll_attempts == 5
     assert vector_store.consistency_poll_interval_seconds == 0.05
     assert vector_store.connect_timeout == 5
+
+
+def test_database_engine_options_always_hide_bound_parameters():
+    sqlite_options = DatabaseSettings(type="sqlite", echo=True).engine_options
+    postgresql_options = DatabaseSettings(
+        type="postgresql",
+        host="database.internal",
+        port=5432,
+        echo=True,
+        pool_size=7,
+        max_overflow=11,
+        pool_timeout=13,
+        pool_recycle=17,
+    ).engine_options
+
+    assert sqlite_options == {"echo": True, "hide_parameters": True}
+    assert postgresql_options == {
+        "echo": True,
+        "hide_parameters": True,
+        "pool_size": 7,
+        "max_overflow": 11,
+        "pool_timeout": 13,
+        "pool_recycle": 17,
+    }
+
+
+def test_application_async_engine_is_configured_to_hide_bound_parameters():
+    from rag_modules.db.session import engine
+
+    assert engine.sync_engine.hide_parameters is True
 
 
 @pytest.mark.parametrize(

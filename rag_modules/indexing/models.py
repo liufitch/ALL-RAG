@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import AsyncContextManager, BinaryIO, Literal, Protocol, TypeAlias
 
 from rag_modules.embeddings import EmbeddingBatch
@@ -54,6 +55,7 @@ class IndexDocumentCommand:
     segmentation_config: SegmentationConfig
     embedding_model: str | None
     embedding_batch_size: int
+    vector_batch_size: int
     collection_name: str | None
     expected_dimension: int | None
     keyword_limit: int = 15
@@ -61,7 +63,7 @@ class IndexDocumentCommand:
 
 @dataclass(frozen=True, slots=True)
 class IndexDocumentResult:
-    """Content-free summary of one successfully validated document build."""
+    """Content-free summary whose vector count is total ready indexable rows."""
 
     total_segments: int
     total_indexable_segments: int
@@ -79,6 +81,8 @@ class IndexSegmentRecord(Protocol):
     content: str
     index_type: Literal["general", "parent", "child"]
     embedding_status: Literal["waiting", "completed", "not_required"]
+    status: str
+    deleted_at: datetime | None
     keywords: list[str] | None
 
 

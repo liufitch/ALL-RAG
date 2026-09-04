@@ -13,6 +13,8 @@ import threading
 
 import jieba
 
+from .constants import MAX_KEYWORD_LENGTH
+
 _CJK_CHARACTERS = (
     r"\u3400-\u4dbf"  # Extension A
     r"\u4e00-\u9fff"  # Unified Ideographs
@@ -198,7 +200,11 @@ class KeywordExtractor:
         identifiers: set[str] = set()
         for raw_token in self._iter_raw_tokens(text):
             normalized, is_identifier = self._normalize(raw_token)
-            if not normalized or normalized in _STOPWORDS:
+            if (
+                not normalized
+                or len(normalized) > MAX_KEYWORD_LENGTH
+                or normalized in _STOPWORDS
+            ):
                 continue
             frequencies[normalized] += 1
             if is_identifier:
