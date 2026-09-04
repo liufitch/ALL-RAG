@@ -4,11 +4,30 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterator
+from hashlib import md5
+import marshal
+import os
 import re
+import tempfile
+import threading
 
 import jieba
 
-_CJK_CHARACTERS = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+_CJK_CHARACTERS = (
+    r"\u3400-\u4dbf"  # Extension A
+    r"\u4e00-\u9fff"  # Unified Ideographs
+    r"\uf900-\ufaff"  # Compatibility Ideographs
+    r"\U00020000-\U0002a6df"  # Extension B
+    r"\U0002a700-\U0002b73f"  # Extension C
+    r"\U0002b740-\U0002b81f"  # Extension D
+    r"\U0002b820-\U0002ceaf"  # Extension E
+    r"\U0002ceb0-\U0002ebef"  # Extension F
+    r"\U0002ebf0-\U0002ee5f"  # Extension I
+    r"\U0002f800-\U0002fa1f"  # Compatibility Ideographs Supplement
+    r"\U00030000-\U0003134f"  # Extension G
+    r"\U00031350-\U000323af"  # Extension H
+    r"\U000323b0-\U0003347f"  # Extension J
+)
 _TOKEN_PATTERN = re.compile(
     rf"(?P<cjk>[{_CJK_CHARACTERS}]+)"
     rf"|(?P<word>[^\W_{_CJK_CHARACTERS}]+(?:[._-][^\W_{_CJK_CHARACTERS}]+)*)",
@@ -69,6 +88,90 @@ _CHINESE_STOPWORDS = frozenset(
 )
 _STOPWORDS = _ENGLISH_STOPWORDS | _CHINESE_STOPWORDS
 _IDENTIFIER_BONUS = 2
+_JIEBA_INITIALIZATION_ATTRIBUTES = frozenset(
+    {"DEFAULT_DICT", "DICT_WRITING", "_get_abs_path"}
+)
+
+
+class _QuietTokenizer(jieba.Tokenizer):
+    """Private jieba tokenizer that preserves initialization without its logs.
+
+    The supported jieba API exposes no instance logger. Its inherited initializer
+    writes four records through the module-global logger, so this private override
+    retains its cache and lock behavior while omitting only those calls. It never
+    changes the shared logger, handler, level, or propagation state. Required
+    jieba internals are checked explicitly so an incompatible upgrade fails
+    visibly and receives a compatibility review instead of silently diverging.
+    """
+
+    def __init__(self) -> None:
+        if not all(
+            hasattr(jieba, name) for name in _JIEBA_INITIALIZATION_ATTRIBUTES
+        ):
+            raise RuntimeError("jieba tokenizer initialization API is unsupported")
+        super().__init__()
+
+    def initialize(self, dictionary: str | None = None) -> None:
+        if dictionary:
+            abs_path = jieba._get_abs_path(dictionary)
+            if self.dictionary == abs_path and self.initialized:
+                return
+            self.dictionary = abs_path
+            self.initialized = False
+        else:
+            abs_path = self.dictionary
+
+        with self.lock:
+            try:
+                with jieba.DICT_WRITING[abs_path]:
+                    pass
+            except KeyError:
+                pass
+            if self.initialized:
+                return
+
+            if self.cache_file:
+                cache_file = self.cache_file
+            elif abs_path == jieba.DEFAULT_DICT:
+                cache_file = "jieba.cache"
+            else:
+                cache_file = "jieba.u%s.cache" % md5(
+                    abs_path.encode("utf-8", "replace")
+                ).hexdigest()
+            cache_file = os.path.join(self.tmp_dir or tempfile.gettempdir(), cache_file)
+            cache_directory = os.path.dirname(cache_file)
+
+            loaded_from_cache = False
+            if os.path.isfile(cache_file) and (
+                abs_path == jieba.DEFAULT_DICT
+                or os.path.getmtime(cache_file) > os.path.getmtime(abs_path)
+            ):
+                try:
+                    with open(cache_file, "rb") as cache_handle:
+                        self.FREQ, self.total = marshal.load(cache_handle)
+                    loaded_from_cache = True
+                except (EOFError, OSError, ValueError):
+                    pass
+
+            if not loaded_from_cache:
+                write_lock = jieba.DICT_WRITING.get(abs_path, threading.RLock())
+                jieba.DICT_WRITING[abs_path] = write_lock
+                with write_lock:
+                    self.FREQ, self.total = self.gen_pfdict(self.get_dict_file())
+                    try:
+                        descriptor, temporary_path = tempfile.mkstemp(dir=cache_directory)
+                        with os.fdopen(descriptor, "wb") as cache_handle:
+                            marshal.dump((self.FREQ, self.total), cache_handle)
+                        os.replace(temporary_path, cache_file)
+                    except OSError:
+                        pass
+
+                try:
+                    del jieba.DICT_WRITING[abs_path]
+                except KeyError:
+                    pass
+
+            self.initialized = True
 
 
 class KeywordExtractor:
@@ -83,7 +186,7 @@ class KeywordExtractor:
 
     def __init__(self) -> None:
         """Keep tokenizer state private instead of changing jieba globals."""
-        self._tokenizer = jieba.Tokenizer()
+        self._tokenizer = _QuietTokenizer()
 
     def extract(self, text: str, limit: int = 15) -> list[str]:
         """Return at most ``limit`` keywords, sorted by score then term."""

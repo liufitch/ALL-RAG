@@ -1130,3 +1130,56 @@ After every task, append:
   deliberate for this pure local extractor; upstream parsing and segmentation
   limits bound document-sized production calls. No external/vector/orchestration
   behavior was added.
+
+### IDX-002 Task 2 Fix Round 1 — astral Han ownership and quiet initialization (executed 2026-09-04)
+
+- **Review findings and impact:** The initial Han range covered only BMP code
+  points. An astral Extension B character (`U+20000`) or CJK Compatibility
+  Ideographs Supplement character (`U+2F800`) adjacent to `A001` was consumed by
+  the non-Han word regex, producing `𠀀a001` or `丽a001` and losing the required
+  canonical identifier. Separately, the private tokenizer's first Han extraction
+  invoked jieba's lazy initializer, which emitted four debug records and stderr
+  lines. Both defects violated the pure, deterministic local boundary.
+- **Root causes and ruling:** The explicit class omitted astral Unified
+  Ideographs Extensions B through H and the compatibility supplement. Inspection
+  of the installed jieba 0.42.1 (within the declared `jieba>=0.42,<1` range)
+  showed `Tokenizer.initialize()` accepts no instance logger and writes directly
+  to `jieba.default_logger`; redirecting stderr alone would leave log records,
+  while changing the shared logger's level, handlers, or propagation would leak
+  behavior to concurrent consumers. The extractor now
+  explicitly owns Unified Ideographs, Extensions A through J, and both
+  compatibility ranges; it still does not use Unicode category/locale guesses
+  that would absorb unrelated scripts. A private `_QuietTokenizer` mirrors only
+  the observed initializer's dictionary-cache and lock behavior while omitting its
+  initializer logging calls. It does not mutate global logger configuration and
+  preserves shared dictionary-cache locking for concurrent initialization.
+- **Rejected fixes:** Widening the regex to every Unicode letter/word character
+  was rejected because it would merge unrelated scripts. Using a global
+  `jieba.setLogLevel`, adding/removing logger handlers or filters, monkeypatching
+  `jieba.default_logger`, and broad stdout/stderr redirection were rejected as
+  global, observable, or concurrency-unsafe. Calling the shared default
+  tokenizer was rejected because it would restore shared mutable state and its
+  initializer chatter.
+- **TDD RED evidence:** The new selected test run reported `3 failed, 17
+  deselected`: both astral inputs returned a merged lowercase word instead of
+  separate `A001`, and the capture test recorded four `jieba` initializer debug
+  records (and matching stderr output). The expected values are literal external
+  behavior, not derived from extractor helpers.
+- **GREEN and verification evidence:** After the narrow repair, the selector
+  reported `3 passed, 17 deselected`; the full keyword suite reported `20 passed`;
+  `compileall` completed; and the final fresh full suite reported `397 passed, 1
+  skipped` in 6.68 seconds. The only warnings were FastAPI/Starlette's existing
+  httpx deprecation and jieba dependency's import-time `pkg_resources`
+  deprecation; the new capture test verifies no runtime initializer output or
+  jieba log record from the operation.
+- **Fix commit:** `fix: handle unicode keywords quietly` (separate from
+  `dcfd768`; recorded after commit).
+- **Residual risk/status:** `_QuietTokenizer` deliberately tracks the
+  initialization/cache behavior observed in jieba 0.42.1 but the project permits
+  `jieba>=0.42,<1`; a public CJK initialization/tokenization regression and an
+  explicit required-internal-attribute guard make an incompatible upgrade fail
+  visibly, and any upgrade still requires a narrow compatibility re-review.
+  Character ownership intentionally covers only named CJK Unified Ideograph and
+  compatibility blocks, not radicals, strokes, or unrelated East Asian scripts.
+  No Embedding, Milvus, Celery, network, application logging, or user-dictionary
+  behavior was added.

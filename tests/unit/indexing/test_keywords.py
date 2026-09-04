@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from rag_modules.indexing import KeywordExtractor
@@ -18,6 +20,36 @@ def test_mixed_token_pipeline_counts_identifier_once_per_occurrence():
     words = KeywordExtractor().extract("订单A001 beta beta beta beta", limit=3)
 
     assert words == ["beta", "A001", "订单"]
+
+
+@pytest.mark.parametrize("cjk_character", ["\U00020000", "\U0002f800"])
+def test_astral_cjk_characters_do_not_merge_with_adjacent_identifiers(cjk_character):
+    """Missing astral Han ownership would turn `A001` into an unsearchable word."""
+    words = KeywordExtractor().extract(
+        f"{cjk_character}A001 beta beta beta beta",
+        limit=3,
+    )
+
+    assert words == ["beta", "A001", cjk_character]
+
+
+def test_first_han_extraction_does_not_emit_jieba_initializer_output(capsys, caplog):
+    """Library initialization chatter would leak from an otherwise local operation."""
+    caplog.set_level(logging.DEBUG, logger="jieba")
+
+    assert KeywordExtractor().extract("订单") == ["订单"]
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert [record for record in caplog.records if record.name == "jieba"] == []
+
+
+def test_private_tokenizer_initializes_and_tokenizes_representative_cjk():
+    """An incompatible jieba upgrade must fail visibly, not skip CJK extraction."""
+    words = KeywordExtractor().extract("订单 客户", limit=2)
+
+    assert words == ["客户", "订单"]
 
 
 def test_keywords_normalize_case_and_keep_canonical_business_identifiers():
