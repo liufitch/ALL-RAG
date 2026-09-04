@@ -793,3 +793,63 @@ After every task, append:
   source block rather than constant memory, within the pre-existing source-block
   bound. Existing pathological source-internal whitespace caveats remain; no CPU
   budget, public API, warning schema, or fitting-atomic behavior changed.
+
+### SAFE-006 Task 4 — YAML event preflight and stable recursion fallback (executed 2026-09-04)
+
+- **Issue and reproduction:** Front matter containing 1,500 nested block
+  sequences (`- ` repeated on one line) or 1,500 nested flow sequences contained
+  no aliases or anchors and stayed below the 65,536-character raw limit, but both
+  escaped `MarkdownParser.parse()` as `RecursionError` from PyYAML composition.
+  A shallow 10,000-item sequence also produced more than 10,000 parser events
+  while remaining below the raw-character limit and reached value construction.
+- **Root cause and impact:** The existing YAML token scan rejected aliases and
+  anchors, while `_normalize_front_matter` bounded depth and nodes only after
+  `_BoundedSafeLoader` had recursively composed and constructed the complete
+  value. That post-construction check was too late to protect the Python stack or
+  limit parser-event work. The fallback caught YAML, type and value errors but
+  omitted recursion failures, so malformed metadata could prevent otherwise
+  ordinary Markdown body blocks from being returned.
+- **Ruling and final design:** Stream `yaml.parse(raw, Loader=yaml.SafeLoader)`
+  before `_BoundedSafeLoader` construction, `yaml.load`, and normalization. Count
+  every event against the existing 10,000-node constant and collection starts
+  against the existing depth constant of 20; reject aliases, an anchor on any
+  event, negative depth, nonzero final depth and parser errors. Retain the token
+  scan as defense in depth. Keep scanning, loading and normalization inside the
+  existing front-matter-only fallback boundary, adding only `RecursionError` to
+  its `TypeError`, `ValueError` and `yaml.YAMLError` tuple. Preserve body parsing
+  outside that boundary, and let `MemoryError`, cancellation, other
+  `BaseException` subclasses and unrelated programmer errors propagate.
+- **Rejected approaches:** Relying on normalization alone was rejected because
+  it requires constructing the dangerous graph first. Catching recursion only
+  around `yaml.load` was rejected because event scanning and normalization can
+  also recurse. Replacing the event stream with a second constructed node tree
+  or overriding PyYAML parser internals was rejected as either too late or
+  coupled to private state. Removing the token scan was rejected because the
+  event pass is an additional preflight, not a replacement. Catching
+  `Exception`, `BaseException`, or wrapping the entire Markdown parse was
+  rejected because memory exhaustion, cancellation and body-parser defects are
+  not recoverable malformed-metadata conditions.
+- **TDD RED evidence:** Before production changes, `.venv/bin/python -m pytest
+  tests/unit/parsing/test_text_markdown.py -k 'deep or recursion or event_budget'
+  -q --tb=short` produced `6 failed, 30 deselected`: both real deep fixtures
+  leaked recursion, the event flood reached a fail-fast `yaml.load` patch,
+  `yaml.parse` was never called, and recursion from load and normalization
+  escaped. The direct preflight/narrow-catch selector produced `5 failed, 36
+  deselected`: the interface was absent for scalar-anchor, alias, negative-depth
+  and unbalanced-depth cases, and a patched `yaml.parse` `MemoryError` was never
+  reached.
+- **GREEN and regression evidence:** The prescribed selector produced `6
+  passed, 35 deselected`; the direct event-invariant and memory-exhaustion
+  selector produced `5 passed, 36 deselected`. Markdown plus registry produced
+  `48 passed`; the phase regression produced `245 passed`; and the final complete
+  backend suite produced `327 passed, 1 skipped`. Runs contained only the
+  repository's existing Starlette/httpx deprecation warning.
+- **Fix commit to be created:** `fix: preflight markdown front matter`.
+- **Residual risk/status:** Safe token scanning, safe event parsing and safe
+  loading make up to three bounded passes over accepted front matter, trading a
+  small deterministic CPU cost for defense in depth. Event counting is
+  intentionally conservative because stream/document/scalar events share the
+  10,000 budget with collection events. PyYAML may still raise an allowed
+  recursion or parse exception before the configured threshold on a different
+  runtime, but the same bounded-raw fallback handles it without exposing source
+  text beyond 65,536 characters. No public parser or registry contract changed.

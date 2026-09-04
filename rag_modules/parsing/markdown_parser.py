@@ -6,6 +6,7 @@ from typing import Any, BinaryIO
 
 import yaml
 from markdown_it import MarkdownIt
+from yaml.events import AliasEvent, CollectionEndEvent, CollectionStartEvent
 from yaml.tokens import AliasToken, AnchorToken
 
 from rag_modules.parsing.base import ParseContext
@@ -74,6 +75,28 @@ _MAX_FRONT_MATTER_DEPTH = 20
 _MAX_FRONT_MATTER_NODES = 10_000
 
 
+def _preflight_front_matter(raw: str) -> None:
+    """Reject unsafe YAML syntax and shape before constructing Python values."""
+    depth = 0
+    event_count = 0
+    for event in yaml.parse(raw, Loader=yaml.SafeLoader):
+        event_count += 1
+        if event_count > _MAX_FRONT_MATTER_NODES:
+            raise ValueError("front matter event count exceeds configured limits")
+        if isinstance(event, AliasEvent) or getattr(event, "anchor", None) is not None:
+            raise ValueError("YAML aliases and anchors are not supported")
+        if isinstance(event, CollectionStartEvent):
+            depth += 1
+            if depth > _MAX_FRONT_MATTER_DEPTH:
+                raise ValueError("front matter depth exceeds configured limits")
+        elif isinstance(event, CollectionEndEvent):
+            depth -= 1
+            if depth < 0:
+                raise ValueError("front matter collection depth is invalid")
+    if depth != 0:
+        raise ValueError("front matter collection depth is unbalanced")
+
+
 def _extract_front_matter(text: str) -> tuple[str, dict[str, Any] | None, int]:
     lines = text.split("\n")
     if not lines or lines[0] != "---":
@@ -95,13 +118,14 @@ def _extract_front_matter(text: str) -> tuple[str, dict[str, Any] | None, int]:
                 for token in yaml.scan(raw_front_matter, Loader=yaml.SafeLoader)
             ):
                 raise ValueError("YAML aliases and anchors are not supported")
+            _preflight_front_matter(raw_front_matter)
             normalized = _normalize_front_matter(yaml.load(raw_front_matter, Loader=_BoundedSafeLoader))
             return (
                 "\n".join(lines[index + 1 :]),
                 {"front_matter": normalized},
                 index + 1,
             )
-        except (TypeError, ValueError, yaml.YAMLError):
+        except (RecursionError, TypeError, ValueError, yaml.YAMLError):
             return (
                 "\n".join(lines[index + 1 :]),
                 {"front_matter_raw": bounded_raw},

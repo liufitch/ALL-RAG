@@ -2,7 +2,9 @@ import io
 import json
 
 import pytest
+from yaml.events import SequenceEndEvent, SequenceStartEvent
 
+from rag_modules.parsing import markdown_parser
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.markdown_parser import MarkdownParser
 from rag_modules.parsing.models import DocumentParseError
@@ -257,6 +259,16 @@ deployment:
     assert parsed.blocks[0].metadata["line_start"] == 12
 
 
+def test_markdown_parser_normalizes_yaml_dates_as_json_strings():
+    """Preflight must not reject SafeLoader dates that normalization can serialize."""
+    source = b"---\npublished: 2026-09-04\n---\n# Release\n"
+
+    parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "release.md"))
+
+    assert parsed.metadata["front_matter"] == {"published": "2026-09-04"}
+    assert [block.text for block in parsed.blocks] == ["Release"]
+
+
 def test_markdown_parser_preserves_malformed_front_matter_as_raw_metadata():
     """Discarding malformed YAML after removing it from the body must fail."""
     source = b"---\ntitle: [unterminated\n---\n\n# Install\n"
@@ -266,6 +278,19 @@ def test_markdown_parser_preserves_malformed_front_matter_as_raw_metadata():
     assert parsed.metadata["front_matter_raw"] == "title: [unterminated"
     assert [block.text for block in parsed.blocks] == ["Install"]
     assert parsed.blocks[0].metadata["line_start"] == 5
+
+
+def test_markdown_parser_preserves_duplicate_yaml_keys_as_raw_metadata():
+    """Preflight must not bypass duplicate-key rejection during construction."""
+    front_matter = "title: First\ntitle: Second"
+    parsed = MarkdownParser().parse(
+        io.BytesIO(f"---\n{front_matter}\n---\n# Release\n".encode()),
+        ParseContext("doc-1", "duplicate-keys.md"),
+    )
+
+    assert "front_matter" not in parsed.metadata
+    assert parsed.metadata["front_matter_raw"] == front_matter
+    assert [block.text for block in parsed.blocks] == ["Release"]
 
 
 def test_markdown_parser_keeps_ambiguous_unclosed_delimiter_in_body():
@@ -342,3 +367,138 @@ def test_markdown_parser_bounds_front_matter_shape(front_matter):
     assert "front_matter" not in parsed.metadata
     assert len(parsed.metadata["front_matter_raw"]) <= 65_536
     assert json.loads(json.dumps(parsed.metadata)) == parsed.metadata
+
+
+@pytest.mark.parametrize(
+    "front_matter",
+    [
+        "- " * 1_500 + "leaf",
+        "[" * 1_500 + "leaf" + "]" * 1_500,
+    ],
+    ids=["deep-block-sequences", "deep-flow-sequences"],
+)
+def test_markdown_parser_falls_back_safely_for_deep_yaml(front_matter):
+    """Constructing deeply nested YAML must not leak a RecursionError."""
+    parsed = MarkdownParser().parse(
+        io.BytesIO(f"---\n{front_matter}\n---\n# Body\n\nStill parsed.\n".encode()),
+        ParseContext("doc-1", "deep.md"),
+    )
+
+    assert [(block.block_type, block.text) for block in parsed.blocks] == [
+        ("heading", "Body"),
+        ("paragraph", "Still parsed."),
+    ]
+    assert "front_matter" not in parsed.metadata
+    assert parsed.metadata["front_matter_raw"] == front_matter
+    assert len(parsed.metadata["front_matter_raw"]) <= 65_536
+
+
+def test_markdown_parser_rejects_yaml_event_budget_before_loading(monkeypatch):
+    """A shallow event flood must stop before the value-constructing loader."""
+    front_matter = "items:\n" + "  - x\n" * 9_999 + "  - x"
+
+    def fail_if_loaded(*args, **kwargs):
+        raise AssertionError("event preflight must run before yaml.load")
+
+    monkeypatch.setattr(markdown_parser.yaml, "load", fail_if_loaded)
+
+    parsed = MarkdownParser().parse(
+        io.BytesIO(f"---\n{front_matter}\n---\n# Body\n".encode()),
+        ParseContext("doc-1", "event-budget.md"),
+    )
+
+    assert [block.text for block in parsed.blocks] == ["Body"]
+    assert "front_matter" not in parsed.metadata
+    assert parsed.metadata["front_matter_raw"] == front_matter
+    assert len(parsed.metadata["front_matter_raw"]) <= 65_536
+
+
+def test_markdown_parser_falls_back_on_yaml_parse_recursion(monkeypatch):
+    """A parser recursion failure must remain inside the metadata boundary."""
+    def recurse(*args, **kwargs):
+        raise RecursionError("synthetic yaml.parse recursion")
+
+    monkeypatch.setattr(markdown_parser.yaml, "parse", recurse)
+
+    parsed = MarkdownParser().parse(
+        io.BytesIO(b"---\ntitle: Safe\n---\n# Body\n"),
+        ParseContext("doc-1", "parse-recursion.md"),
+    )
+
+    assert [block.text for block in parsed.blocks] == ["Body"]
+    assert parsed.metadata["front_matter_raw"] == "title: Safe"
+
+
+def test_markdown_parser_falls_back_on_yaml_load_recursion(monkeypatch):
+    """A loader recursion failure must remain inside the metadata boundary."""
+    def recurse(*args, **kwargs):
+        raise RecursionError("synthetic yaml.load recursion")
+
+    monkeypatch.setattr(markdown_parser.yaml, "load", recurse)
+
+    parsed = MarkdownParser().parse(
+        io.BytesIO(b"---\ntitle: Safe\n---\n# Body\n"),
+        ParseContext("doc-1", "load-recursion.md"),
+    )
+
+    assert [block.text for block in parsed.blocks] == ["Body"]
+    assert parsed.metadata["front_matter_raw"] == "title: Safe"
+
+
+def test_markdown_parser_falls_back_on_yaml_normalization_recursion(monkeypatch):
+    """A normalization recursion failure must remain inside the metadata boundary."""
+    def recurse(value):
+        raise RecursionError("synthetic normalization recursion")
+
+    monkeypatch.setattr(markdown_parser, "_normalize_front_matter", recurse)
+
+    parsed = MarkdownParser().parse(
+        io.BytesIO(b"---\ntitle: Safe\n---\n# Body\n"),
+        ParseContext("doc-1", "normalization-recursion.md"),
+    )
+
+    assert [block.text for block in parsed.blocks] == ["Body"]
+    assert parsed.metadata["front_matter_raw"] == "title: Safe"
+
+
+@pytest.mark.parametrize(
+    "front_matter",
+    ["value: &scalar_anchor anchored", "value: *missing_alias"],
+    ids=["scalar-anchor", "alias"],
+)
+def test_yaml_event_preflight_rejects_anchors_and_aliases(front_matter):
+    """Removing all-event anchor checks must admit unsafe YAML graph syntax."""
+    with pytest.raises(ValueError):
+        markdown_parser._preflight_front_matter(front_matter)
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [SequenceEndEvent()],
+        [SequenceStartEvent(anchor=None, tag=None, implicit=True, flow_style=False)],
+    ],
+    ids=["negative-depth", "unbalanced-depth"],
+)
+def test_yaml_event_preflight_rejects_invalid_collection_depth(monkeypatch, events):
+    """Malformed event streams must not bypass the collection-depth invariant."""
+    monkeypatch.setattr(
+        markdown_parser.yaml, "parse", lambda *args, **kwargs: iter(events)
+    )
+
+    with pytest.raises(ValueError):
+        markdown_parser._preflight_front_matter("ignored")
+
+
+def test_markdown_parser_does_not_swallow_yaml_preflight_memory_error(monkeypatch):
+    """Memory exhaustion is not a recoverable malformed-metadata condition."""
+    def exhaust_memory(*args, **kwargs):
+        raise MemoryError("synthetic exhaustion")
+
+    monkeypatch.setattr(markdown_parser.yaml, "parse", exhaust_memory)
+
+    with pytest.raises(MemoryError, match="synthetic exhaustion"):
+        MarkdownParser().parse(
+            io.BytesIO(b"---\ntitle: Safe\n---\n# Body\n"),
+            ParseContext("doc-1", "memory-error.md"),
+        )
