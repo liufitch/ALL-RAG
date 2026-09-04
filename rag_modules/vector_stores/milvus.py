@@ -35,6 +35,8 @@ _EXPECTED_FIELDS = {
     "parent_id": (DataType.VARCHAR, True, False, 36),
     "position": (DataType.INT64, False, False, None),
 }
+_INT64_MAX = 9_223_372_036_854_775_807
+_INT64_DECIMAL_DIGITS = 19
 _MISSING = object()
 
 
@@ -394,9 +396,7 @@ def _row_count(stats: Any) -> int | None:
     value = stats.get("row_count") if isinstance(stats, Mapping) else None
     if type(value) is int:
         return value if value >= 0 else None
-    if isinstance(value, str) and value.isdecimal():
-        return int(value)
-    return None
+    return _bounded_ascii_decimal(value)
 
 
 def _schema_dimension(description: Any) -> int:
@@ -458,17 +458,29 @@ def _validate_index(index: Any) -> None:
     if _member(index, "field_name") != "embedding":
         raise VectorSchemaMismatch()
     nested = _member(index, "index_param")
-    source = nested if nested is not _MISSING else index
-    if _member(source, "index_type") != "HNSW":
-        raise VectorSchemaMismatch()
-    if _member(source, "metric_type") != "COSINE":
-        raise VectorSchemaMismatch()
-    params = _member(source, "params") if nested is not _MISSING else source
-    if (
-        _positive_int(_member(params, "M")) != 16
-        or _positive_int(_member(params, "efConstruction")) != 200
+    if nested is _MISSING:
+        sources = ((index, False),)
+    else:
+        direct_fields = ("index_type", "metric_type", "M", "efConstruction")
+        has_direct = any(_member(index, name) is not _MISSING for name in direct_fields)
+        sources = ((nested, True), (index, False)) if has_direct else ((nested, True),)
+    if any(
+        _index_signature(source, nested_params) != ("HNSW", "COSINE", 16, 200)
+        for source, nested_params in sources
     ):
         raise VectorSchemaMismatch()
+
+
+def _index_signature(
+    source: Any, nested_params: bool
+) -> tuple[Any, Any, int | None, int | None]:
+    params = _member(source, "params") if nested_params else source
+    return (
+        _member(source, "index_type"),
+        _member(source, "metric_type"),
+        _positive_int(_member(params, "M")),
+        _positive_int(_member(params, "efConstruction")),
+    )
 
 
 def _member(value: Any, name: str, default: Any = _MISSING) -> Any:
@@ -480,10 +492,20 @@ def _member(value: Any, name: str, default: Any = _MISSING) -> Any:
 def _positive_int(value: Any) -> int | None:
     if type(value) is int:
         return value if value > 0 else None
-    if isinstance(value, str) and value.isdecimal():
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    return None
+    parsed = _bounded_ascii_decimal(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _bounded_ascii_decimal(value: Any) -> int | None:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= _INT64_DECIMAL_DIGITS
+        or not value.isascii()
+        or not value.isdecimal()
+    ):
+        return None
+    parsed = int(value)
+    return parsed if parsed <= _INT64_MAX else None
 
 
 def _operation_failed() -> VectorStoreError:

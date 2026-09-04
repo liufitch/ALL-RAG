@@ -30,6 +30,7 @@ FIELD_NAMES = {
     "parent_id",
     "position",
 }
+HUGE_DECIMAL = "9" * 5_000
 
 
 class RecordingSchema:
@@ -347,6 +348,22 @@ def test_upsert_strictly_validates_all_mappings_before_schema_io():
     assert client.upserted == []
 
 
+def test_upsert_rejects_position_above_signed_int64_before_client_creation():
+    calls = 0
+
+    def factory():
+        nonlocal calls
+        calls += 1
+        return RecordingMilvusClient(existing=True)
+
+    store = MilvusVectorStore(config=VectorStoreSettings(), client_factory=factory)
+
+    with pytest.raises(VectorValidationError):
+        store.upsert("collection", [{**vector_entity(), "position": 2**63}])
+
+    assert calls == 0
+
+
 def test_empty_upsert_and_delete_return_zero_without_creating_client():
     calls = 0
 
@@ -520,6 +537,77 @@ def test_count_treats_invalid_observations_as_unstable_and_never_uses_last_value
     assert sleeps == [0.25, 0.25]
 
 
+def test_count_treats_huge_decimal_observations_as_unstable_with_bounded_polling():
+    client = RecordingMilvusClient(
+        existing=True,
+        stats=[{"row_count": HUGE_DECIMAL}] * 3,
+    )
+    sleeps: list[float] = []
+    store = MilvusVectorStore(
+        config=VectorStoreSettings(
+            consistency_poll_attempts=3,
+            consistency_poll_interval_seconds=0.25,
+        ),
+        client_factory=lambda: client,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(VectorConsistencyError):
+        store.count("collection")
+
+    assert client.stats_calls == 3
+    assert client.flushes == ["collection"]
+    assert sleeps == [0.25, 0.25]
+
+
+def test_existing_collection_rejects_huge_decimal_schema_numeric_metadata():
+    description = collection_description()
+    description["fields"][1]["params"]["dim"] = HUGE_DECIMAL
+    client = RecordingMilvusClient(existing=True, description=description)
+
+    with pytest.raises(VectorSchemaMismatch):
+        make_store(client).ensure_collection("collection", 3)
+
+    assert client.loaded == []
+
+
+def test_existing_collection_rejects_huge_decimal_index_numeric_metadata():
+    client = RecordingMilvusClient(existing=True)
+    client.describe_index = lambda **_: {
+        "field_name": "embedding",
+        "index_type": "HNSW",
+        "metric_type": "COSINE",
+        "M": HUGE_DECIMAL,
+        "efConstruction": "200",
+    }
+
+    with pytest.raises(VectorSchemaMismatch):
+        make_store(client).ensure_collection("collection", 3)
+
+    assert client.loaded == []
+
+
+def test_existing_collection_rejects_conflicting_nested_and_direct_index_metadata():
+    client = RecordingMilvusClient(existing=True)
+    client.describe_index = lambda **_: {
+        "field_name": "embedding",
+        "index_param": {
+            "index_type": "HNSW",
+            "metric_type": "COSINE",
+            "params": {"M": "16", "efConstruction": "200"},
+        },
+        "index_type": "IVF_FLAT",
+        "metric_type": "L2",
+        "M": "32",
+        "efConstruction": "400",
+    }
+
+    with pytest.raises(VectorSchemaMismatch):
+        make_store(client).ensure_collection("collection", 3)
+
+    assert client.loaded == []
+
+
 def test_drop_is_idempotent_and_invalidates_cached_schema():
     client = RecordingMilvusClient(existing=True)
     store = make_store(client)
@@ -575,6 +663,25 @@ def test_unknown_factory_provider_is_a_safe_configuration_error():
 
     assert error.value.code == "VECTOR_PROVIDER_INVALID"
     assert "private-provider" not in str(error.value)
+
+
+@pytest.mark.parametrize("provider", ("", 0, False))
+def test_explicit_falsy_provider_is_rejected_before_provider_construction(
+    monkeypatch, provider
+):
+    def fail_if_constructed():
+        raise AssertionError("provider constructed")
+
+    monkeypatch.setattr(
+        "rag_modules.vector_stores.factory.MilvusVectorStore",
+        fail_if_constructed,
+    )
+    get_vector_store.cache_clear()
+
+    with pytest.raises(VectorValidationError) as error:
+        get_vector_store(provider)
+
+    assert error.value.code == "VECTOR_PROVIDER_INVALID"
 
 
 def test_known_milvus_exception_is_wrapped_without_sensitive_details():

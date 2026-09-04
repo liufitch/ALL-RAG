@@ -15,7 +15,7 @@ _SUPPORTED = {"milvus", "pgvector", "qdrant", "weaviate", "opensearch", "elastic
 
 @lru_cache(maxsize=8)
 def get_vector_store(provider: VectorStoreType | str | None = None) -> VectorStoreProvider:
-    selected = provider or settings.vector_store.provider
+    selected = settings.vector_store.provider if provider is None else provider
     if not isinstance(selected, str) or selected not in _SUPPORTED:
         raise VectorValidationError(
             code="VECTOR_PROVIDER_INVALID",

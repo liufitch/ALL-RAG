@@ -72,7 +72,7 @@ class VectorEntity(BaseModel):
     document_id: str = Field(min_length=1, max_length=36)
     dataset_index_id: str = Field(min_length=1, max_length=36)
     parent_id: str | None = Field(default=None, min_length=1, max_length=36)
-    position: int = Field(ge=0)
+    position: int = Field(ge=0, le=9_223_372_036_854_775_807)
 
     @field_validator("embedding", mode="before")
     @classmethod

@@ -1251,3 +1251,60 @@ After every task, append:
   keyword, PostgreSQL persistence, Task 4/5/6 orchestration, Celery, or live
   Milvus integration behavior was added. A real-service compatibility check
   remains Phase 4 Task 6; this task uses representative PyMilvus shapes only.
+
+### VEC-002 Task 3 Fix Round 1 — validation boundaries (executed 2026-09-04)
+
+- **Review findings and impact:** Four Important cases crossed their intended
+  safe boundaries. `VectorEntity.position` accepted `2**63` for a Milvus INT64
+  field. A decimal string longer than Python 3.11's integer-conversion digit
+  limit escaped `_row_count` and `_positive_int` as raw `ValueError`. A valid
+  nested index description hid contradictory direct `index_type`, `metric_type`,
+  `M`, and `efConstruction`. Finally, explicit falsy factory inputs selected the
+  configured provider and could construct it instead of returning
+  `VECTOR_PROVIDER_INVALID`.
+- **Root causes:** Position had only a nonnegative Pydantic bound. Both metadata
+  parsers treated `isdecimal()` as sufficient proof that `int()` was safe and
+  bounded. Index validation selected one representation instead of accounting
+  for every present representation. Factory selection used `provider or
+  default`, conflating an absent argument with invalid falsy values.
+- **Rulings and implementation:** Position is constrained to the exact inclusive
+  signed-INT64 range `0..9223372036854775807`; the existing adapter translation
+  turns model rejection into `VectorValidationError` before any client, schema,
+  or write access. String metadata conversion now checks a maximum of 19
+  characters, ASCII decimal syntax, and signed-INT64 value before returning an
+  integer. Count treats rejection as an invalid observation through all bounded
+  attempts before `VectorConsistencyError`; schema and index validation classify
+  it as `VectorSchemaMismatch`. If nested and direct index representations
+  coexist, both normalize independently and both must match
+  HNSW/COSINE/16/200; the two legitimate one-shape forms remain accepted. Only
+  `provider is None` selects configuration; `""`, `0`, and `False` all fail with
+  sanitized `VECTOR_PROVIDER_INVALID` before provider construction.
+- **Rejected approaches:** Catching `ValueError` only at public operation
+  boundaries was rejected because it would hide unrelated defects and still
+  perform the oversized conversion attempt. Calling `int()` and then applying a
+  numeric bound was rejected for the same resource reason. Trusting the nested
+  index while ignoring direct fields, or permitting incomplete coexisting
+  representations, was rejected as ambiguous. Retaining truthiness-based
+  fallback or special-casing only the empty string was rejected because other
+  explicit falsy non-string values would still broaden default dispatch.
+- **TDD RED evidence:** After a clean pre-edit focused baseline of `62 passed`,
+  the exact new selector reported `8 failed, 39 deselected`. The oversized
+  position and conflicting mixed-index cases failed with `DID NOT RAISE`; the
+  huge row-count, schema-dimension, and index-parameter cases each exposed the
+  Python 3.11 `5000 digits` conversion `ValueError`; and `""`, `0`, and `False`
+  each reached a patched constructor sentinel rather than the expected safe
+  validation error.
+- **GREEN and verification evidence:** The unchanged selector passed 8 tests
+  with 39 deselected. The full Milvus/settings/factory set passed `70 passed` with
+  the existing Starlette/httpx warning. Direct `py_compile` of the three
+  production modules and the Milvus test module exited 0. The single fresh full
+  suite passed `453 passed, 1 skipped` in 6.82 seconds with only the repository's
+  existing Starlette/httpx and jieba/pkg_resources deprecations.
+- **Fix commit:** `fix: harden milvus validation boundaries` (separate from
+  `3d60c28`; recorded after commit).
+- **Residual risk/status:** Textual metadata larger than signed INT64 is
+  deliberately invalid even if Python could represent it; this matches the
+  target field/count boundary and keeps conversion bounded. Live PyMilvus 2.5.14
+  metadata and service behavior remain Task 6 scope. This fix round continues to
+  cover only the two approved representative one-shape descriptions plus
+  contradictory mixed metadata; it makes no live-service compatibility claim.
