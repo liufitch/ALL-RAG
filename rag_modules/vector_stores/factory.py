@@ -13,7 +13,6 @@ from rag_modules.vector_stores.milvus import MilvusVectorStore
 _SUPPORTED = {"milvus", "pgvector", "qdrant", "weaviate", "opensearch", "elasticsearch"}
 
 
-@lru_cache(maxsize=8)
 def get_vector_store(provider: VectorStoreType | str | None = None) -> VectorStoreProvider:
     selected = settings.vector_store.provider if provider is None else provider
     if not isinstance(selected, str) or selected not in _SUPPORTED:
@@ -21,9 +20,18 @@ def get_vector_store(provider: VectorStoreType | str | None = None) -> VectorSto
             code="VECTOR_PROVIDER_INVALID",
             safe_message="Vector store provider is invalid.",
         )
-    if selected == "milvus":
+    return _get_vector_store(selected)
+
+
+@lru_cache(maxsize=8)
+def _get_vector_store(provider: str) -> VectorStoreProvider:
+    if provider == "milvus":
         return MilvusVectorStore()
     raise VectorProviderNotImplemented()
+
+
+# Preserve the cache-reset hook exposed by the previously decorated facade.
+get_vector_store.cache_clear = _get_vector_store.cache_clear  # type: ignore[attr-defined]
 
 
 def get_vector_factory_class(vector_type: str):

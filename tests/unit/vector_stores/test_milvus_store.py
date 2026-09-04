@@ -684,6 +684,30 @@ def test_explicit_falsy_provider_is_rejected_before_provider_construction(
     assert error.value.code == "VECTOR_PROVIDER_INVALID"
 
 
+@pytest.mark.parametrize("provider", ([], {}))
+def test_explicit_unhashable_provider_is_a_safe_configuration_error(provider):
+    get_vector_store.cache_clear()
+
+    with pytest.raises(VectorValidationError) as error:
+        get_vector_store(provider)
+
+    assert error.value.code == "VECTOR_PROVIDER_INVALID"
+
+
+def test_factory_caches_configured_default_and_same_valid_provider_identity(monkeypatch):
+    monkeypatch.setattr(
+        "rag_modules.vector_stores.factory.settings.vector_store.provider",
+        "milvus",
+    )
+    get_vector_store.cache_clear()
+
+    explicit = get_vector_store("milvus")
+
+    assert get_vector_store("milvus") is explicit
+    assert get_vector_store() is explicit
+    assert get_vector_store(None) is explicit
+
+
 def test_known_milvus_exception_is_wrapped_without_sensitive_details():
     client = RecordingMilvusClient()
     client.fail_with = MilvusException(message="secret backend vector and identifier")

@@ -1308,3 +1308,51 @@ After every task, append:
   metadata and service behavior remain Task 6 scope. This fix round continues to
   cover only the two approved representative one-shape descriptions plus
   contradictory mixed metadata; it makes no live-service compatibility claim.
+
+### VEC-003 Task 3 Fix Round 2 — validate before provider caching (executed 2026-09-04)
+
+- **Review finding and impact:** Explicit unhashable provider values such as an
+  empty list or dictionary raised raw `TypeError` instead of the sanitized
+  non-retryable `VECTOR_PROVIDER_INVALID`. This left the public factory's safe
+  configuration boundary dependent on whether an unsupported runtime value was
+  hashable. Review also required cache identity to remain consistent for the
+  configured default and the same explicit valid provider.
+- **Root cause:** `lru_cache` decorated the public function, so its wrapper
+  hashed positional arguments before the function body could normalize or
+  validate them. The decorator also keyed an omitted call, an explicit `None`,
+  and an explicit `"milvus"` separately even when all selected the same provider.
+- **Ruling and implementation:** `get_vector_store` is now an uncached public
+  validator/normalizer. Only `None` resolves the configured default; every other
+  value must already be a supported string or it raises the fixed safe error.
+  The normalized string is passed to a private `lru_cache` constructor, so only
+  validated hashable values reach caching and equivalent configured/explicit
+  providers share one instance. The facade retains its existing `cache_clear`
+  test hook by delegating to the private cache. Known non-Milvus providers still
+  raise `VECTOR_PROVIDER_NOT_IMPLEMENTED`; unknown strings and falsy hashable
+  values still safe-fail before construction.
+- **Rejected approaches:** Catching `TypeError` around the public call was
+  rejected because decorator hashing occurs outside the body and a broad catch
+  could conceal constructor defects. Converting lists/dictionaries to strings
+  or special-casing only those two containers was rejected because it broadens
+  or fragments provider validation. Removing caching was rejected because store
+  identity is intentional. Keeping separate cache keys for `None` and its
+  resolved provider was rejected because equivalent selection should reuse the
+  same store.
+- **TDD RED evidence:** The new selector reported `3 failed, 47 deselected`.
+  Empty list and dictionary inputs each leaked `TypeError: unhashable type`; the
+  identity test showed an explicit `"milvus"` call and the configured-default
+  call returned distinct `MilvusVectorStore` objects.
+- **GREEN and verification evidence:** The unchanged selector passed 3 tests
+  with 47 deselected. The full Milvus/settings/factory scope passed `73 passed` with
+  the existing Starlette/httpx warning. Direct `py_compile` of the factory and
+  Milvus test module exited 0. The single fresh full suite passed `456 passed, 1
+  skipped` in 6.81 seconds with only the existing Starlette/httpx and
+  jieba/pkg_resources deprecations.
+- **Fix commit:** `fix: validate vector providers before caching` (separate from
+  `87623fc`; recorded after commit).
+- **Residual risk/status:** The public function's dynamic runtime validation is
+  intentionally broader than its static type annotation so malformed Python
+  callers receive the stable error. The attached `cache_clear` attribute is a
+  compatibility/testing hook backed directly by the private cache; construction
+  identity is keyed only by normalized provider string. Live PyMilvus 2.5.14
+  remains Task 6 scope.
