@@ -1543,3 +1543,59 @@ After every task, append:
   validation, compensation, activation, and previous-version deletion.
 - **Final commit:** `feat: index one document into postgres and milvus` (SHA is
   recorded in the Task 5 handoff after Git creates the commit).
+
+### IDX-002 Task 5 Fix Round 1 — cancellation and document-sized vector retention (executing 2026-09-04)
+
+- **Review findings:** Cancellation during a synchronous successful Milvus
+  upsert propagated before acknowledgment validation and PostgreSQL status
+  flush, leaving the written batch `waiting`. A second cancellation interrupted
+  the cleanup join and could close a stream beneath its parser. Separately, the
+  engine retained every batch's vectors until all document Embeddings finished,
+  allowing multi-gigabyte retention at the approved segment/dimension ceilings.
+  Economy mutation had no check after its final progress callback; repository
+  mutation APIs allowed cross-technique state corruption; syntactically valid
+  arbitrary warning codes could carry secret-looking data.
+- **Root causes:** One helper conflated ordinary non-abandonable sync execution
+  with a vector operation critical section. Its cleanup await was unshielded.
+  Embedding and vector writes were implemented as two document-sized materialized
+  phases. Repository validation checked segment type but not technique-derived
+  embedding state. Warning filtering checked grammar rather than a closed
+  producer set. Economy checked cancellation before extraction and after the
+  eventual mutation, not at the progress-to-mutation boundary.
+- **Rulings/rejected approaches:** Process exactly one vector batch at a time
+  and defer cancellation through upsert acknowledgment plus matching status
+  flush. A task-completion-bounded repeated-shield loop is permitted; suppressing
+  cancellation, abandoning a live thread, or adding an independent unbounded
+  wait/retry loop is rejected. Worker/ack/status defects win over pending
+  cancellation so programmer/dependency failures remain visible. Repository
+  technique comes from the established `embedding_status` invariant rather
+  than duplicating technique parameters. Unknown warning codes map to one fixed
+  generic code; syntax filtering is rejected. Collection count, activation,
+  deletion, logging, and orchestration remain out of scope.
+- **TDD RED:** The focused engine selector reported `5 failed, 37 deselected`,
+  reproducing every engine finding. The real SQLite repository selector reported
+  `3 failed, 19 deselected`, reproducing both cross-technique writes and
+  non-idempotent completed timestamp mutation.
+- **Additional cancellation-boundary RED:** A final state-aware progress test
+  proved streaming batch two had no cancellation check between its Embedding
+  result and vector write (`DID NOT RAISE CancelledError`). The explicit check
+  now occurs after every validated/resolved Embedding batch, not only the first
+  stage update; the unchanged selector passed.
+- **GREEN and final verification:** The six-finding engine selector passed `6
+  passed`; the real SQLite repository selector passed `3 passed`; worker-error
+  precedence plus repeated cancellation passed `3 passed`; full Task 5 files
+  passed `64 passed`. The final focused Task 5/Embedding/vector/keyword scope
+  passed `161 passed`; repository/parser/segmentation regressions passed `200
+  passed`; direct `py_compile` and `git diff --check` exited zero. One fresh
+  full suite passed `522 passed, 1 skipped, 2 warnings in 7.31s`; the skip and
+  warnings remain the existing opt-in MinIO/deprecation set.
+- **Residual risk:** Peak vectors are bounded to one configured batch, not zero;
+  the maximum batch of 1,024 can still be sizable for extreme dimensions.
+  Robust join cannot terminate a dependency call that itself never returns,
+  though it cannot outlive a completed task and never abandons the live thread.
+  Worker/ack/status defects deliberately win over a pending cancellation.
+  High-quality progress announces the approved stages monotonically while
+  later Embedding/upsert pairs stream internally. Phase 5 still owns process
+  deadlines, transaction/failure mapping, compensation, and activation.
+- **Fix commit:** `fix: bound indexing batches and cancellation` (SHA is recorded
+  in the fix-round handoff after Git creates the commit).

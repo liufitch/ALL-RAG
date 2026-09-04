@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Iterable, Sequence
 import inspect
 import math
 from pathlib import PurePosixPath
@@ -38,7 +38,17 @@ _SUPPORTED_EXTENSIONS = frozenset(
     {".txt", ".md", ".pdf", ".docx", ".xls", ".xlsx", ".csv"}
 )
 _COLLECTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,254}\Z")
-_WARNING_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
+_SAFE_WARNING_CODES = frozenset(
+    {
+        "EMPTY_SHEET_SKIPPED",
+        "FORMULA_CACHE_UNAVAILABLE",
+        "HIDDEN_SHEET_SKIPPED",
+        "PARENT_FULL_DOCUMENT_FALLBACK",
+        "PDF_EMPTY_PAGE",
+        "SEGMENT_DELIMITER_OMITTED",
+        "WARNINGS_TRUNCATED",
+    }
+)
 _MAX_WARNINGS = 50
 _MAX_COLLECTION_DIMENSION = 32_768
 _MAX_BATCH_SIZE = 1_024
@@ -135,10 +145,8 @@ class DocumentIndexingEngine:
             )
             vector_count = 0
         else:
-            embedded, target = await self._embed_batches(command, indexable, progress)
-            await self._check_cancelled(progress)
-            vector_count, processed_segments = await self._upsert_batches(
-                command, embedded, target, progress
+            vector_count, processed_segments = await self._index_high_quality(
+                command, indexable, progress
             )
 
         await self._check_cancelled(progress)
@@ -181,6 +189,7 @@ class DocumentIndexingEngine:
                 self._batch_progress(45, 70, batch_index, len(batches)),
                 completed,
             )
+            await self._check_cancelled(progress)
         if updates:
             await self._segment_repository.update_keywords(
                 dataset_index_id=command.staging.dataset_index_id,
@@ -197,24 +206,29 @@ class DocumentIndexingEngine:
             for record in records
         }
 
-    async def _embed_batches(
+    async def _index_high_quality(
         self,
         command: IndexDocumentCommand,
         records: Sequence[IndexSegmentRecord],
         progress: ProgressReporter,
-    ) -> tuple[tuple[tuple[IndexSegmentRecord, VectorEntity], ...], VectorTarget]:
-        batches = tuple(self._batches(records, command.embedding_batch_size))
-        if not batches:
+    ) -> tuple[int, int]:
+        if not records:
             raise DocumentIndexingError(
                 "NO_INDEXABLE_SEGMENTS",
                 False,
                 "The document produced no indexable segments.",
             )
 
+        total_batches = (
+            len(records) + command.embedding_batch_size - 1
+        ) // command.embedding_batch_size
         target = self._command_target(command)
         locked_dimension: int | None = target.dimension if target else None
-        embedded_batches: list[tuple[tuple[IndexSegmentRecord, VectorEntity], ...]] = []
-        for batch_index, batch in enumerate(batches, start=1):
+        vector_count = 0
+        processed_segments = 0
+        for batch_index, batch in enumerate(
+            self._batches(records, command.embedding_batch_size), start=1
+        ):
             await self._check_cancelled(progress)
             result = await self._embedding.embed(
                 command.embedding_model or "", [record.content for record in batch]
@@ -240,45 +254,24 @@ class DocumentIndexingEngine:
                     "Embedding dimension changed while indexing the document.",
                 )
 
+            if batch_index == 1:
+                await self._update(progress, "embed-or-keywords", 70, 0)
+            await self._check_cancelled(progress)
+
             entities = tuple(
-                (
-                    record,
-                    VectorEntity(
-                        id=record.id,
-                        embedding=vector,
-                        dataset_id=record.dataset_id,
-                        document_id=record.document_id,
-                        dataset_index_id=record.dataset_index_id,
-                        parent_id=record.parent_id,
-                        position=record.position,
-                    ),
+                VectorEntity(
+                    id=record.id,
+                    embedding=vector,
+                    dataset_id=record.dataset_id,
+                    document_id=record.document_id,
+                    dataset_index_id=record.dataset_index_id,
+                    parent_id=record.parent_id,
+                    position=record.position,
                 )
                 for record, vector in zip(batch, result.vectors, strict=True)
             )
-            embedded_batches.append(entities)
-            await self._update(
-                progress,
-                "embed-or-keywords",
-                self._batch_progress(45, 70, batch_index, len(batches)),
-                0,
-            )
-
-        assert target is not None
-        return tuple(embedded_batches), target
-
-    async def _upsert_batches(
-        self,
-        command: IndexDocumentCommand,
-        batches: Sequence[Sequence[tuple[IndexSegmentRecord, VectorEntity]]],
-        target: VectorTarget,
-        progress: ProgressReporter,
-    ) -> tuple[int, int]:
-        vector_count = 0
-        processed_segments = 0
-        for batch_index, batch in enumerate(batches, start=1):
-            await self._check_cancelled(progress)
-            entities = tuple(entity for _, entity in batch)
-            written = await self._run_sync(
+            assert target is not None
+            written, cancellation = await self._run_sync_deferred_cancellation(
                 self._vector_store.upsert, target.collection_name, entities
             )
             if isinstance(written, bool) or not isinstance(written, int) or written != len(batch):
@@ -287,17 +280,24 @@ class DocumentIndexingEngine:
                     True,
                     "Vector write count did not match the submitted batch.",
                 )
-            await self._segment_repository.mark_embeddings_completed(
-                dataset_index_id=command.staging.dataset_index_id,
-                document_id=command.staging.document_id,
-                segment_ids=tuple(record.id for record, _ in batch),
+            _, cancellation = await self._await_deferred_cancellation(
+                self._segment_repository.mark_embeddings_completed(
+                    dataset_index_id=command.staging.dataset_index_id,
+                    document_id=command.staging.document_id,
+                    segment_ids=tuple(record.id for record in batch),
+                ),
+                cancellation,
             )
             vector_count += written
             processed_segments += len(batch)
+            del entities
+            del result
+            if cancellation is not None:
+                raise cancellation
             await self._update(
                 progress,
                 "vector-upsert",
-                self._batch_progress(70, 95, batch_index, len(batches)),
+                self._batch_progress(70, 95, batch_index, total_batches),
                 processed_segments,
             )
         return vector_count, processed_segments
@@ -448,7 +448,11 @@ class DocumentIndexingEngine:
     ) -> tuple[tuple[str, str], ...]:
         output: list[tuple[str, str]] = []
         for warning in warnings:
-            code = warning.code if _WARNING_CODE.fullmatch(warning.code or "") else "WARNING"
+            code = (
+                warning.code
+                if warning.code in _SAFE_WARNING_CODES
+                else "INDEXING_WARNING"
+            )
             output.append((stage, code))
             if len(output) == _MAX_WARNINGS:
                 break
@@ -484,13 +488,43 @@ class DocumentIndexingEngine:
     async def _run_sync(operation: Any, *args: Any) -> Any:
         """Keep the worker's resource ownership alive until sync work exits."""
         worker = asyncio.create_task(asyncio.to_thread(operation, *args))
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            # Do not release an owned stream underneath its parser thread. A
-            # worker defect remains visible rather than being relabeled.
-            await worker
-            raise
+        result, cancellation = await DocumentIndexingEngine._wait_task(
+            worker, None
+        )
+        if cancellation is not None:
+            raise cancellation
+        return result
+
+    @staticmethod
+    async def _run_sync_deferred_cancellation(
+        operation: Any, *args: Any
+    ) -> tuple[Any, asyncio.CancelledError | None]:
+        worker = asyncio.create_task(asyncio.to_thread(operation, *args))
+        return await DocumentIndexingEngine._wait_task(worker, None)
+
+    @staticmethod
+    async def _await_deferred_cancellation(
+        awaitable: Awaitable[_T], cancellation: asyncio.CancelledError | None
+    ) -> tuple[_T, asyncio.CancelledError | None]:
+        task = asyncio.ensure_future(awaitable)
+        return await DocumentIndexingEngine._wait_task(task, cancellation)
+
+    @staticmethod
+    async def _wait_task(
+        task: asyncio.Future[_T], cancellation: asyncio.CancelledError | None
+    ) -> tuple[_T, asyncio.CancelledError | None]:
+        """Join one concrete task despite repeated outer cancellation.
+
+        The loop is bounded by dependency-task completion. Reading the result
+        before propagating cancellation deliberately preserves worker defects.
+        """
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as caught:
+                if cancellation is None:
+                    cancellation = caught
+        return task.result(), cancellation
 
     @staticmethod
     def _safe_string(value: Any, maximum: int) -> bool:

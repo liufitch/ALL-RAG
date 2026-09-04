@@ -376,6 +376,62 @@ async def test_embedding_batch_validation_precedes_every_mutation(segment_reposi
 
 
 @pytest.mark.asyncio
+async def test_keyword_update_rejects_high_quality_general_without_mutation(segment_repository):
+    records = await segment_repository.stage(
+        command(segmentation_mode="general"), (general_preview_segment(),)
+    )
+
+    with pytest.raises(SegmentPersistenceError, match="keyword"):
+        await segment_repository.update_keywords(
+            dataset_index_id="index-1",
+            document_id="doc-1",
+            keywords_by_segment_id={records[0].id: ("forbidden",)},
+        )
+
+    assert records[0].embedding_status == "waiting"
+    assert records[0].keywords is None
+
+
+@pytest.mark.asyncio
+async def test_embedding_update_rejects_economy_general_without_mutation(segment_repository):
+    records = await segment_repository.stage(
+        command(indexing_technique="economy", segmentation_mode="general"),
+        (general_preview_segment(),),
+    )
+
+    with pytest.raises(SegmentPersistenceError, match="embedding"):
+        await segment_repository.mark_embeddings_completed(
+            dataset_index_id="index-1",
+            document_id="doc-1",
+            segment_ids=(records[0].id,),
+        )
+
+    assert records[0].embedding_status == "not_required"
+    assert records[0].keywords is None
+
+
+@pytest.mark.asyncio
+async def test_embedding_completion_is_idempotent_for_already_completed_batch(
+    segment_repository,
+):
+    records = await segment_repository.stage(
+        command(segmentation_mode="general"), (general_preview_segment(),)
+    )
+    scope = {
+        "dataset_index_id": "index-1",
+        "document_id": "doc-1",
+        "segment_ids": (records[0].id,),
+    }
+
+    await segment_repository.mark_embeddings_completed(**scope)
+    first_timestamp = records[0].updated_at
+    await segment_repository.mark_embeddings_completed(**scope)
+
+    assert records[0].embedding_status == "completed"
+    assert records[0].updated_at == first_timestamp
+
+
+@pytest.mark.asyncio
 async def test_staging_omits_unmapped_legacy_physical_vector_column(segment_repository):
     await segment_repository.session.execute(
         text("ALTER TABLE document_segments ADD COLUMN vector BLOB NULL")

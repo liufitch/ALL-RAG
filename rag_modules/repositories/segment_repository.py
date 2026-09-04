@@ -109,6 +109,7 @@ class SegmentRepository:
             keywords = keywords_by_segment_id[record.id]
             if (
                 record.index_type != "general"
+                or record.embedding_status != "not_required"
                 or isinstance(keywords, (str, bytes))
                 or len(keywords) > 100
                 or any(
@@ -141,10 +142,16 @@ class SegmentRepository:
             document_id=document_id,
             segment_ids=tuple(segment_ids),
         )
-        if any(record.index_type not in {"general", "child"} for record in records):
+        if any(
+            record.index_type not in {"general", "child"}
+            or record.embedding_status not in {"waiting", "completed"}
+            for record in records
+        ):
             raise SegmentPersistenceError("Segment embedding update is invalid.")
         timestamp = utcnow()
         for record in records:
+            if record.embedding_status == "completed":
+                continue
             record.embedding_status = "completed"
             record.updated_at = timestamp
         await self.session.flush()

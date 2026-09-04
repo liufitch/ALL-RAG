@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+import gc
 from io import BytesIO
 import threading
 from typing import Any
+import weakref
 
 import pytest
 
@@ -175,6 +177,7 @@ class FakeSegmentRepository:
         assert document_id == "doc-1"
         ids = tuple(segment_ids)
         self.embedding_flushes.append(ids)
+        self.events.append("embedding-completed")
         for record in self.records:
             if record.id in ids:
                 record.embedding_status = "completed"
@@ -193,15 +196,19 @@ class FakeEmbedding:
         *,
         dimensions: tuple[int, ...] = (3,),
         forbidden: bool = False,
+        before_call: Any = None,
     ) -> None:
         self.events = events
         self.dimensions = dimensions
         self.forbidden = forbidden
+        self.before_call = before_call
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
     async def embed(self, model_id, texts):
         if self.forbidden:
             raise AssertionError("embedding must not be called")
+        if self.before_call is not None:
+            self.before_call(len(self.calls) + 1)
         values = tuple(texts)
         self.calls.append((model_id, values))
         self.events.append("embed")
@@ -241,13 +248,20 @@ class FakeVectorStore:
         fail_on_call: int | None = None,
         count_delta: int = 0,
         forbidden: bool = False,
+        started: threading.Event | None = None,
+        release: threading.Event | None = None,
+        retain_entities: bool = True,
     ) -> None:
         self.events = events
         self.fail_on_call = fail_on_call
         self.count_delta = count_delta
         self.forbidden = forbidden
-        self.batches: list[tuple[str, tuple[Any, ...]]] = []
+        self.started = started
+        self.release = release
+        self.retain_entities = retain_entities
+        self.batches: list[tuple[str, tuple[str, ...]]] = []
         self.entities: list[Any] = []
+        self.entity_references: list[weakref.ReferenceType[Any]] = []
         self.thread_ids: list[int] = []
 
     def upsert(self, collection_name, entities):
@@ -255,12 +269,18 @@ class FakeVectorStore:
             raise AssertionError("Milvus must not be called")
         self.thread_ids.append(threading.get_ident())
         values = tuple(entities)
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None:
+            assert self.release.wait(timeout=2)
         call_number = len(self.batches) + 1
         if self.fail_on_call == call_number:
             self.events.append("vector-failed")
             raise VectorStoreError("VECTOR_UNAVAILABLE", True, "Vector store is unavailable.")
-        self.batches.append((collection_name, values))
-        self.entities.extend(values)
+        self.batches.append((collection_name, tuple(entity.id for entity in values)))
+        self.entity_references.extend(weakref.ref(entity) for entity in values)
+        if self.retain_entities:
+            self.entities.extend(values)
         self.events.append("vector-upsert")
         return len(values) + self.count_delta
 
@@ -306,6 +326,17 @@ class RecordingProgress:
         if stage == self.cancel_after_stage:
             raise asyncio.CancelledError
         if self.cancel_after_batch == (stage, stage_updates):
+            raise asyncio.CancelledError
+
+
+class PredicateProgress(RecordingProgress):
+    def __init__(self, predicate) -> None:
+        super().__init__()
+        self.predicate = predicate
+
+    async def check_cancelled(self):
+        await super().check_cancelled()
+        if self.predicate():
             raise asyncio.CancelledError
 
 
@@ -402,6 +433,10 @@ def make_engine(
     parser_failure: Exception | None = None,
     parser_started: threading.Event | None = None,
     parser_release: threading.Event | None = None,
+    vector_started: threading.Event | None = None,
+    vector_release: threading.Event | None = None,
+    retain_vector_entities: bool = True,
+    before_embedding_call: Any = None,
 ):
     events: list[str] = []
     storage = FakeStorage(events)
@@ -419,6 +454,7 @@ def make_engine(
         events,
         dimensions=embedding_dimensions,
         forbidden=forbidden_high_quality,
+        before_call=before_embedding_call,
     )
     resolver = FakeResolver(
         events, target=resolved_target, forbidden=forbidden_high_quality
@@ -428,6 +464,9 @@ def make_engine(
         fail_on_call=vector_fail_on_call,
         count_delta=vector_count_delta,
         forbidden=forbidden_high_quality,
+        started=vector_started,
+        release=vector_release,
+        retain_entities=retain_vector_entities,
     )
     keywords = FakeKeywordExtractor(events)
     deps = Dependencies(
@@ -534,7 +573,7 @@ async def test_building_target_resolves_once_from_first_embedding_dimension_befo
 
 
 @pytest.mark.asyncio
-async def test_later_embedding_dimension_mismatch_rejects_before_any_vector_write():
+async def test_later_embedding_dimension_mismatch_rejects_before_mismatched_batch_write():
     engine, deps = make_engine(embedding_dimensions=(3, 4))
 
     with pytest.raises(DocumentIndexingError) as caught:
@@ -542,8 +581,12 @@ async def test_later_embedding_dimension_mismatch_rejects_before_any_vector_writ
 
     assert caught.value.code == "EMBEDDING_DIMENSION_MISMATCH"
     assert caught.value.retryable is False
-    assert deps.vector_store.entities == []
-    assert all(record.embedding_status == "waiting" for record in deps.repository.records)
+    assert [entity.id for entity in deps.vector_store.entities] == ["rec-0", "rec-1"]
+    assert [record.embedding_status for record in deps.repository.records] == [
+        "completed",
+        "completed",
+        "waiting",
+    ]
 
 
 @pytest.mark.asyncio
@@ -663,6 +706,21 @@ async def test_cancellation_between_embedding_batches_stops_before_next_batch():
 
 
 @pytest.mark.asyncio
+async def test_cancellation_after_later_embedding_batch_stops_before_its_vector_batch():
+    engine, deps = make_engine()
+    progress = PredicateProgress(
+        lambda: len(deps.embedding.calls) == 2
+        and len(deps.vector_store.batches) == 1
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await engine.run(high_quality_command(batch_size=1), progress)
+
+    assert [entity.id for entity in deps.vector_store.entities] == ["rec-0"]
+    assert deps.repository.embedding_flushes == [("rec-0",)]
+
+
+@pytest.mark.asyncio
 async def test_cancellation_between_vector_batches_preserves_first_completed_batch():
     engine, deps = make_engine()
     progress = RecordingProgress(cancel_after_batch=("vector-upsert", 1))
@@ -677,6 +735,55 @@ async def test_cancellation_between_vector_batches_preserves_first_completed_bat
         "waiting",
         "waiting",
     ]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_vector_upsert_finishes_ack_and_status_before_stopping():
+    started = threading.Event()
+    release = threading.Event()
+    engine, deps = make_engine(
+        blocks=source_blocks(1), vector_started=started, vector_release=release
+    )
+    task = asyncio.create_task(
+        engine.run(high_quality_command(batch_size=1), RecordingProgress())
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [entity.id for entity in deps.vector_store.entities] == ["rec-0"]
+    assert deps.repository.embedding_flushes == [("rec-0",)]
+    assert deps.repository.records[0].embedding_status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_vector_worker_failure_wins_over_pending_cancellation():
+    started = threading.Event()
+    release = threading.Event()
+    engine, deps = make_engine(
+        blocks=source_blocks(1),
+        vector_started=started,
+        vector_release=release,
+        vector_fail_on_call=1,
+    )
+    task = asyncio.create_task(
+        engine.run(high_quality_command(batch_size=1), RecordingProgress())
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+
+    task.cancel()
+    release.set()
+    with pytest.raises(VectorStoreError) as caught:
+        await task
+
+    assert caught.value.code == "VECTOR_UNAVAILABLE"
+    assert deps.repository.embedding_flushes == []
+    assert deps.repository.records[0].embedding_status == "waiting"
 
 
 @pytest.mark.asyncio
@@ -745,6 +852,73 @@ async def test_cancellation_does_not_close_storage_stream_under_running_parser_t
 
 
 @pytest.mark.asyncio
+async def test_repeated_cancellation_never_closes_stream_under_running_parser_thread():
+    started = threading.Event()
+    release = threading.Event()
+    engine, deps = make_engine(parser_started=started, parser_release=release)
+    task = asyncio.create_task(engine.run(high_quality_command(), RecordingProgress()))
+    assert await asyncio.to_thread(started.wait, 1)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0.02)
+    try:
+        assert not task.done()
+        assert deps.storage.stream is not None and not deps.storage.stream.closed
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert deps.storage.stream.closed
+
+
+@pytest.mark.asyncio
+async def test_high_quality_releases_each_vector_batch_before_embedding_the_next():
+    references: list[weakref.ReferenceType[Any]] = []
+    events: list[str] = []
+
+    def before_embedding(call_number: int) -> None:
+        if call_number == 1:
+            return
+        assert events[-2:] == ["vector-upsert", "embedding-completed"]
+        gc.collect()
+        assert references and all(reference() is None for reference in references)
+
+    engine, deps = make_engine(
+        retain_vector_entities=False,
+        before_embedding_call=before_embedding,
+    )
+    events = deps.events
+    references = deps.vector_store.entity_references
+
+    result = await engine.run(high_quality_command(batch_size=1), RecordingProgress())
+
+    assert result.vector_count == 3
+    assert [event for event in events if event in {"embed", "vector-upsert"}] == [
+        "embed",
+        "vector-upsert",
+        "embed",
+        "vector-upsert",
+        "embed",
+        "vector-upsert",
+    ]
+    assert deps.vector_store.entities == []
+
+
+@pytest.mark.asyncio
+async def test_economy_checks_cancellation_after_final_progress_before_keyword_mutation():
+    engine, deps = make_engine(forbidden_high_quality=True)
+    progress = RecordingProgress(cancel_after_batch=("embed-or-keywords", 2))
+
+    with pytest.raises(asyncio.CancelledError):
+        await engine.run(economy_command(), progress)
+
+    assert deps.repository.keyword_flushes == []
+    assert all(record.keywords is None for record in deps.repository.records)
+
+
+@pytest.mark.asyncio
 async def test_sync_parser_segmenter_and_vector_provider_run_off_event_loop_thread():
     event_loop_thread = threading.get_ident()
     engine, deps = make_engine()
@@ -762,12 +936,17 @@ async def test_sync_parser_segmenter_and_vector_provider_run_off_event_loop_thre
 
 @pytest.mark.asyncio
 async def test_progress_is_safe_deterministic_monotonic_and_follows_exact_stage_order():
-    warning = ParserWarning(
-        code="SOURCE_WARNING",
+    known_warning = ParserWarning(
+        code="PDF_EMPTY_PAGE",
         message="secret source fragment",
         metadata={"token": "secret-token"},
     )
-    engine, _deps = make_engine(parser_warnings=(warning,))
+    secret_code_warning = ParserWarning(
+        code="APIKEY123SECRET",
+        message="another source fragment",
+        metadata={},
+    )
+    engine, _deps = make_engine(parser_warnings=(known_warning, secret_code_warning))
     progress = RecordingProgress()
 
     result = await engine.run(high_quality_command(), progress)
@@ -785,7 +964,10 @@ async def test_progress_is_safe_deterministic_monotonic_and_follows_exact_stage_
     percentages = [percentage for _, percentage, _ in progress.updates]
     assert percentages == sorted(percentages)
     assert all(type(value) is int for update in progress.updates for value in update[1:])
-    assert result.warnings == (("parse", "SOURCE_WARNING"),)
+    assert result.warnings == (
+        ("parse", "PDF_EMPTY_PAGE"),
+        ("parse", "INDEXING_WARNING"),
+    )
     assert "secret" not in repr(progress.updates)
     assert "secret" not in repr(result)
 

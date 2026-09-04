@@ -41,3 +41,37 @@ Date: 2026-09-04
 ## Final commit
 
 - `feat: index one document into postgres and milvus`; the resulting SHA is reported in the Task 5 handoff because a commit cannot embed its own final SHA.
+
+## Fix Round 1 — bounded batches and cancellation
+
+### Root-cause and design self-check
+
+- One cancellation helper incorrectly served two semantics. Ordinary parser/segmenter work must join its non-cancellable thread before resource release and then propagate cancellation. A vector-write critical section must additionally validate the acknowledged count and flush the corresponding PostgreSQL completion state before propagating cancellation. The helper's first shield followed by an unshielded cleanup await protected only one cancellation request.
+- Embedding all batches into one document-sized tuple before starting Milvus made memory proportional to `segment_count * dimension`. The redesign processes one bounded batch at a time: check cancellation, embed, validate and lock dimension/resolve once, announce the embed stage once, check cancellation, upsert in a non-abandonable critical section, validate the exact acknowledgment, flush that batch's status in the same cancellation-deferred critical section, release vector-bearing references, then proceed. Fixed progress remains monotonic and exposes `embed-or-keywords` before `vector-upsert`; later physical embedding calls are internal work within the already-announced high-quality indexing phase.
+- Robust join uses a loop whose sole continuation condition is that the concrete worker/status task has not completed. Every cancellation is remembered while every await remains shielded. The loop therefore cannot outlive a completed dependency task; it adds no independent wait or retry budget. After task completion, `task.result()` is evaluated first, so a worker/ack/status defect wins over a pending cancellation and remains visible. A successful vector write and status flush re-raise the first remembered cancellation before another batch.
+- Repository technique is recoverable from the staging invariant without adding a column/API field: economy general rows are `not_required`; high-quality general/child rows are `waiting` or already `completed`. Keyword updates require `general/not_required`. Embedding completion requires `general-or-child` plus `waiting|completed`; completed rows are idempotent and keep their prior timestamp. The full batch is validated before mutation.
+- Parser/segmenter warning codes are provenance-sensitive, not merely syntactically safe. The engine accepts only the codes currently emitted by public parser/segmenter behavior: `PDF_EMPTY_PAGE`, `HIDDEN_SHEET_SKIPPED`, `EMPTY_SHEET_SKIPPED`, `FORMULA_CACHE_UNAVAILABLE`, `WARNINGS_TRUNCATED`, `PARENT_FULL_DOCUMENT_FALLBACK`, and `SEGMENT_DELIMITER_OMITTED`. Every other code maps to fixed `INDEXING_WARNING`; message and metadata remain excluded.
+- Economy keyword extraction still accumulates only bounded keyword tuples, but every progress update is now followed by cancellation checking before the single repository mutation. A cancellation requested by the final progress update therefore prevents mutation precisely.
+
+### Strict TDD RED evidence
+
+- Engine selector collected 42 tests, selected the five new/adversarial behaviors, and reported `5 failed, 37 deselected`. A successful vector write remained `waiting`; a second cancellation completed the outer task while the parser thread was live; embedding batch two observed only `stage, embed` rather than a prior upsert/status flush; economy keywords were flushed despite final-progress cancellation; and `APIKEY123SECRET` appeared unchanged in the result.
+- Real async-SQLite repository selector collected 22 tests, selected three and reported `3 failed, 19 deselected`. High-quality general rows accepted keyword mutation, economy general rows accepted embedding completion, and a repeated completed update changed `updated_at` instead of remaining idempotent.
+
+### GREEN and final verification
+
+- The unchanged six-behavior engine selector passed `6 passed, 36 deselected`; the unchanged real-SQLite technique/idempotency selector passed `3 passed, 19 deselected`. A characterization test confirms that a vector worker's `VectorStoreError` wins over pending cancellation and leaves status waiting; the vector/repeated-parser cancellation selector passed `3 passed, 40 deselected`.
+- Full Task 5 engine and persistence files passed `64 passed, 2 warnings`. A final cancellation-boundary audit then added a state-aware progress regression: after later embedding batch two, the old code failed with `DID NOT RAISE CancelledError` and would write vector batch two. Adding the explicit post-embedding cancellation check made the unchanged selector pass `1 passed, 43 deselected`.
+- Required focused Task 5/Embedding/vector/keyword command passed `161 passed, 2 warnings in 1.63s`.
+- Repository/parser/segmentation regressions passed `200 passed, 2 warnings in 1.20s`.
+- Direct `py_compile` of all changed production/test Python files and `git diff --check` exited zero.
+- One fresh complete suite after the final production change passed `522 passed, 1 skipped, 2 warnings in 7.31s`. The skip remains the opt-in live MinIO test; warnings remain the repository-existing Starlette/httpx and jieba/pkg_resources deprecations.
+
+### Residual risk and commit
+
+- Memory is now bounded to one configured Embedding/vector batch rather than one document. The command caps a batch at 1,024, so peak memory can still be substantial for an unusually high-dimensional model; runtime configuration should choose a smaller operational batch when appropriate.
+- Robust joining deliberately cannot terminate a genuinely hung synchronous SDK call. It prevents resource abandonment and has no wait loop independent of the dependency task, but hard termination/deadline policy remains worker-process/orchestration scope.
+- When cancellation races a worker/ack/status defect, the defect wins. This preserves retryability/programmer diagnostics rather than misleadingly reporting cancellation; Phase 5 must map that terminal attempt consistently. Successful vector writes are acknowledged and status-flushed before cancellation wins.
+- High-quality progress announces `embed-or-keywords` once after the first validated batch, then uses monotonic `vector-upsert` progress while later internal Embedding/upsert pairs stream. Cancellation is still checked before and after every Embedding batch and between every vector batch.
+- No collection-wide count, activation, previous-segment deletion, logging, orchestration, or external integration was added.
+- Fix commit: `fix: bound indexing batches and cancellation`; the resulting SHA is returned in the handoff because a commit cannot contain its own final SHA.
