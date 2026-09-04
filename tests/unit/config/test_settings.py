@@ -5,6 +5,7 @@ from rag_modules.config.settings import (
     PreviewSettings,
     Settings,
     UploadSettings,
+    VectorStoreSettings,
 )
 
 
@@ -49,6 +50,33 @@ def test_indexing_runtime_settings_are_available_with_approved_defaults():
     assert loaded.indexing.parent_max_chunk_length == 4096
     assert loaded.indexing.child_max_chunk_length == 512
     assert loaded.indexing.child_overlap == 50
+
+
+def test_vector_store_batching_and_consistency_defaults_are_bounded():
+    vector_store = VectorStoreSettings()
+
+    assert vector_store.batch_size == 500
+    assert vector_store.consistency_poll_attempts == 5
+    assert vector_store.consistency_poll_interval_seconds == 0.05
+    assert vector_store.connect_timeout == 5
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("batch_size", 0),
+        ("batch_size", 10_001),
+        ("consistency_poll_attempts", 1),
+        ("consistency_poll_attempts", 101),
+        ("consistency_poll_interval_seconds", -0.01),
+        ("consistency_poll_interval_seconds", 5.01),
+        ("connect_timeout", 0),
+        ("connect_timeout", 121),
+    ),
+)
+def test_vector_store_runtime_bounds_reject_invalid_values(field_name, value):
+    with pytest.raises(ValueError):
+        VectorStoreSettings(**{field_name: value})
 
 
 def test_upload_settings_reject_extensions_outside_approved_formats():

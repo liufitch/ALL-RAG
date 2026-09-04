@@ -1183,3 +1183,71 @@ After every task, append:
   compatibility blocks, not radicals, strokes, or unrelated East Asian scripts.
   No Embedding, Milvus, Celery, network, application logging, or user-dictionary
   behavior was added.
+
+### VEC-001 Phase 4 Task 3 — full Milvus vector-store protocol (executed 2026-09-04)
+
+- **Problem and takeover:** The prior Task 3 implementer left only uncommitted
+  configuration and Milvus tests, then became unresponsive. A replacement
+  implementer audited those tests before production edits. During takeover, one
+  rejected combined delete/add patch briefly left `milvus.py` deleted in the
+  uncommitted worktree; the complete intended replacement was restored with
+  `apply_patch` and immediately passed `py_compile` before any other edit or test.
+- **Contract and configuration rulings:** `VectorEntity` is frozen, strict, and
+  contains exactly the seven approved persistence fields. Milvus collections use
+  an explicit non-dynamic schema with a caller-supplied positive dimension,
+  VARCHAR(36) identifiers, nullable `parent_id`, INT64 `position`, and an HNSW
+  COSINE index with `M=16` and `efConstruction=200`. Only COSINE is accepted.
+  Batch size defaults to 500 and is bounded to 1..10000; consistency polling
+  defaults to five attempts and 0.05 seconds, bounded to 2..100 attempts and
+  0..5 seconds; connection timeout defaults to five seconds and is bounded to
+  1..120 seconds.
+- **Safety and lifecycle rulings:** Each store lazily creates and caches at most
+  one client from its injected zero-argument factory. Disabled operational calls
+  fail before client creation, while legacy disabled provisioning remains a
+  compatible skip. Only `MilvusException` is translated at the SDK boundary;
+  unrelated programming errors propagate. Public errors expose only fixed codes,
+  retryability, and safe messages—never collection or entity identifiers, URI,
+  credentials, backend details, or vectors. Known non-Milvus providers fail with
+  `VECTOR_PROVIDER_NOT_IMPLEMENTED`; unknown providers fail with the sanitized
+  `VECTOR_PROVIDER_INVALID` configuration error.
+- **Operation rulings:** Existing collections are checked through the two
+  approved PyMilvus 2.5 mapping/attribute description shapes, with missing or
+  ambiguous schema/index data treated as a mismatch. Upsert validates the entire
+  payload before I/O, re-discovers and caches the actual dimension after process
+  restart, chunks writes, and requires an exact SDK write count. Empty upsert or
+  ID deletion returns zero without creating a client. ID deletion validates all
+  IDs before I/O, performs stable deduplication, and chunks requests. Document
+  deletion accepts only trusted compact or hyphenated UUID text before building
+  an equality filter. Drop is idempotent and invalidates cached schema state.
+  Count flushes once and observes at most the configured attempt count; it returns
+  only after two consecutive equal, valid, nonnegative row counts, sleeps only
+  between observations, and otherwise raises retryable `VECTOR_COUNT_UNSTABLE`.
+- **Rejected approaches:** Dynamic schemas, auto-generated IDs, content fields,
+  non-COSINE metrics, and trusting configured rather than introspected dimensions
+  were rejected because they weaken the persistence contract. Returning the last
+  unstable count was rejected because it fabricates consistency. Broad exception
+  catches were rejected because they hide programmer errors and cancellation-like
+  failures. Interpolating arbitrary document text into a filter was rejected in
+  favor of strict UUID validation. Eager or per-operation client construction was
+  rejected because the store owns one reusable lazy client boundary.
+- **TDD RED evidence:** With inherited tests present and production untouched,
+  `.venv/bin/python -m pytest tests/unit/vector_stores/test_milvus_store.py -v`
+  collected no tests and failed import with missing `VectorConsistencyError`.
+  The expanded Milvus-plus-settings run failed at the same import boundary. The
+  first implemented focused run collected 62 tests and reported 54 passed / 8
+  failed; all failures exposed one test-oracle defect: the input identifier was
+  literally `collection`, while the assertion prohibited that generic noun in
+  safe messages such as `Vector collection schema does not match.` The tests now
+  use a distinctive private identifier and verify that exact value is absent.
+- **GREEN and verification evidence:** The corrected Milvus, settings, and
+  factory set passed `62 passed` with one pre-existing Starlette/httpx warning.
+  The single fresh full-suite run passed `445 passed, 1 skipped` in 6.83 seconds,
+  with only the existing Starlette/httpx and jieba/pkg_resources deprecations.
+  The restored adapter also passed direct `py_compile` before work resumed.
+- **Scope and residual risk:** The 494-line adapter remains cohesive: its public
+  methods are the required store protocol, and its private helpers centralize
+  adapter-specific validation, batching, safe response parsing, and the two SDK
+  introspection shapes. It was not split solely for line count. No embedding,
+  keyword, PostgreSQL persistence, Task 4/5/6 orchestration, Celery, or live
+  Milvus integration behavior was added. A real-service compatibility check
+  remains Phase 4 Task 6; this task uses representative PyMilvus shapes only.

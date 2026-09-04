@@ -96,7 +96,10 @@ class VectorStoreSettings(BaseModel):
     port: int = 19530
     database: str = "default"
     collection_prefix: str = "graph_rag"
-    connect_timeout: int = 5
+    connect_timeout: int = Field(default=5, ge=1, le=120)
+    batch_size: int = Field(default=500, ge=1, le=10_000)
+    consistency_poll_attempts: int = Field(default=5, ge=2, le=100)
+    consistency_poll_interval_seconds: float = Field(default=0.05, ge=0, le=5)
     enabled: bool = True
     user: str = ""
     password: str = ""
