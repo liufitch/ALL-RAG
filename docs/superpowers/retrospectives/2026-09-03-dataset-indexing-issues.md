@@ -652,3 +652,87 @@ After every task, append:
   outside this task. The collector assumes producers expose the documented
   `code` and mapping-shaped `metadata`. Implementation is complete pending final
   verification, commit and independent review.
+
+### SAFE-005 Task 3 — Segmentation CPU budget and delimiter fidelity (executed 2026-09-04)
+
+- **Source, reproduction and symptoms:** A 5,000,000-character source with a
+  1,000,000-character maximum and 999,999-character overlap has a hard and
+  minimum advance of one character, so the proven worst case is 4,000,001 split
+  iterations. The previous emitted-record check reached `_boundary_end` before
+  rejecting either the general or parent-child child path. Boundary scans had no
+  separate request cap, allocated `text[start:limit]`, and could restart their
+  effective allowance for every source. Separately, full-document fallback
+  materialized standalone `\n\n` sources; the public nonblank filter then dropped
+  them, reconstructing prose/code/prose as `aax = 1bb` instead of
+  `aa\n\nx = 1\n\nbb` (and likewise around a table row).
+- **Impact and root cause:** The output limit bounded retained records but not
+  work performed before those records existed. Extreme overlap could therefore
+  consume millions of iterations and repeated full-window scans. Boundary
+  progress only required an advance greater than overlap, rather than a proven
+  floor tied to the hard advance. Delimiter fidelity failed because synthetic
+  delimiter-only parents conflicted with the correct rule that public search
+  records must be nonblank; the fallback did not attach delimiter capacity to
+  real adjacent text.
+- **Ruling:** One request-local state owns the remaining emitted-record and
+  boundary-scan budgets across all general sources, parents and children.
+  Projection uses integers only: `hard_advance = maximum - overlap`,
+  `minimum_advance = max(1, (hard_advance + 1) // 2)`, and either one range or
+  `1 + ceil((length - maximum) / minimum_advance)`. Projection rejects but does
+  not reserve records; only actual nonblank parent/child/general emission
+  decrements the authoritative record count. Every `rfind` charges its exact
+  `[start, limit)` search window before scanning. A preferred boundary must
+  advance by at least `minimum_advance`; otherwise the hard maximum wins.
+  Fallback keeps fitting code/table blocks standalone, tries the preceding
+  non-atomic source without splitting, then the following source, and only then
+  splits adjacent non-atomic text or the two newline characters as needed.
+  Impossible delimiters are omitted and counted in one fidelity warning.
+- **Rejected approaches:** Continuing to stop only on emitted records was
+  rejected because output cardinality is not a CPU budget. Reserving projected
+  records was rejected because later real emission would double-decrement the
+  same capacity. Floating-point ceiling arithmetic was unnecessary and weaker
+  for large lengths. Per-source scan counters, charging after `rfind`, retaining
+  the window slice, and accepting every merely-positive advance were rejected
+  because they fail the request-wide, fail-before-work, allocation, or progress
+  contracts. Publishing delimiter-only parents, silently dropping all fallback
+  delimiters, modifying a fitting atomic block, and splitting a full preceding
+  prose block before trying a fitting following block were rejected for fidelity
+  or atomicity reasons.
+- **Final implementation and compatibility cost:** Added the default
+  100,000,000-character scan budget and a private request-local work-budget
+  object. `_split_ranges` now preflights its worst case, streams ranges, enforces
+  the minimum advance, and uses indexed `str.rfind` without a window substring.
+  Capacity-aware fallback streams bounded sources in source order, retains exact
+  ordinary `\n\n` concatenation, can split a delimiter one newline to each
+  eligible side at a two-character parent maximum, preserves fitting atomic
+  blocks and traceable metadata, and emits `SEGMENT_DELIMITER_OMITTED` once with
+  the aggregate count only when retention is impossible. The stable
+  `SEGMENTATION_LIMIT_EXCEEDED` exception remains compatible with PreviewService's
+  existing safe mapping.
+- **TDD RED evidence:** `.venv/bin/python -m pytest
+  tests/unit/segmentation/test_segmenters.py -k 'projected or boundary_scan or
+  extreme_overlap' -q` produced `4 failed, 29 deselected`: both 5,000,000-character
+  cases called the fail-fast boundary spy and both scan cases rejected the
+  missing constructor parameter. `.venv/bin/python -m pytest
+  tests/unit/segmentation/test_segmenters.py -k 'delimiter or
+  fallback_preserves' -q` produced `5 failed, 28 deselected`: the too-early
+  delimiter won, both atomic reconstructions lost newlines, and maximums one and
+  two lacked the aggregate warning. Self-review added two narrower cases;
+  `-k 'uses_following_prose or splits_delimiter_across'` produced `2 failed, 33
+  deselected` before the precedence and split-delimiter refinement.
+- **GREEN and regression evidence:** The prescribed work selector produced `4
+  passed, 29 deselected`; the initial delimiter selector produced `5 passed, 28
+  deselected`; and the two self-review cases produced `2 passed, 33 deselected`.
+  `.venv/bin/python -m pytest tests/unit/segmentation
+  tests/unit/services/test_preview_service.py -q` produced `56 passed`. The
+  fresh full suite produced `310 passed, 1 skipped`. Runs contained only the
+  repository's existing Starlette/httpx deprecation warning.
+- **Fix commit to be created:** `fix: bound segmentation work and preserve
+  delimiters`.
+- **Residual risk/status:** Projection intentionally uses the proven worst case
+  and can reject inputs whose actual preferred boundaries would require fewer
+  records. Boundary prefix validation remains linear but performs no substring
+  allocation and is coupled to a charged lookup window. Fallback keeps bounded
+  per-block attachment state under the existing source-block cap; pathological
+  whitespace already impossible to represent as nonblank public records remains
+  outside the delimiter-specific warning. No public request or response schema
+  changed. Implementation is complete pending final verification and commit.

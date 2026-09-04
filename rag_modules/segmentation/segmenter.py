@@ -37,24 +37,71 @@ class _SourceText:
         )
 
 
+@dataclass
+class _WorkBudget:
+    remaining_records: int
+    remaining_boundary_scan_characters: int
+
+    def ensure_projected_records(self, length: int, maximum: int, overlap: int) -> None:
+        hard_advance = maximum - overlap
+        minimum_advance = max(1, (hard_advance + 1) // 2)
+        projected = (
+            1
+            if length <= maximum
+            else 1 + (length - maximum + minimum_advance - 1) // minimum_advance
+        )
+        if projected > self.remaining_records:
+            self._raise_limit("segment")
+
+    def consume_record(self) -> None:
+        if self.remaining_records <= 0:
+            self._raise_limit("segment")
+        self.remaining_records -= 1
+
+    def consume_boundary_scan(self, characters: int) -> None:
+        if characters > self.remaining_boundary_scan_characters:
+            self._raise_limit("boundary scan")
+        self.remaining_boundary_scan_characters -= characters
+
+    @staticmethod
+    def _raise_limit(label: str) -> None:
+        raise SegmentationConfigError(
+            f"Segmentation exceeded the configured {label} budget.",
+            code="SEGMENTATION_LIMIT_EXCEEDED",
+        )
+
+
+@dataclass
+class _DelimiterFidelity:
+    omitted_count: int = 0
+
+
 class Segmenter:
     """Create deterministic flat or parent-child segments from a ``ParsedDocument``."""
 
     max_segments = 10_000
     max_source_blocks = 100_000
     max_source_characters = 50 * 1024 * 1024
+    max_boundary_scan_characters = 100_000_000
 
     def __init__(
         self,
         max_segments: int = 10_000,
         max_source_blocks: int = 100_000,
         max_source_characters: int = 50 * 1024 * 1024,
+        max_boundary_scan_characters: int = 100_000_000,
     ) -> None:
-        if min(max_segments, max_source_blocks, max_source_characters) <= 0:
+        if min(
+            max_segments,
+            max_source_blocks,
+            max_source_characters,
+            max_boundary_scan_characters,
+        ) <= 0:
             raise ValueError("segmentation budgets must be positive")
         self.max_segments = max_segments
         self.max_source_blocks = max_source_blocks
         self.max_source_characters = max_source_characters
+        self.max_boundary_scan_characters = max_boundary_scan_characters
 
     def segment(self, parsed: ParsedDocument, config: SegmentationConfig) -> SegmentationResult:
         _validate_config(config)
@@ -62,25 +109,33 @@ class Segmenter:
         blocks = tuple(block for block in parsed.blocks if block.text.strip())
         if not blocks:
             return SegmentationResult(())
+        budget = _WorkBudget(self.max_segments, self.max_boundary_scan_characters)
         if isinstance(config, GeneralSegmentationConfig):
-            return self._general(blocks, config)
+            return self._general(blocks, config, budget)
         if isinstance(config, ParentChildSegmentationConfig):
-            return self._parent_child(parsed, blocks, config)
+            return self._parent_child(parsed, blocks, config, budget)
         raise SegmentationConfigError("segmentation config must be a supported discriminated config")
 
     def _general(
-        self, blocks: tuple[ParsedBlock, ...], config: GeneralSegmentationConfig
+        self,
+        blocks: tuple[ParsedBlock, ...],
+        config: GeneralSegmentationConfig,
+        budget: _WorkBudget,
     ) -> SegmentationResult:
         segments: list[PreviewSegment] = []
         serial = 1
         for source in _general_sources(blocks):
             for start, end in _split_ranges(
-                source.text, config.max_chunk_length, config.overlap, config.separator
+                source.text,
+                config.max_chunk_length,
+                config.overlap,
+                config.separator,
+                budget,
             ):
                 content = source.text[start:end]
                 if not content.strip():
                     continue
-                self._ensure_capacity(len(segments))
+                budget.consume_record()
                 segments.append(
                     PreviewSegment(
                         local_id=f"s-{serial:06d}",
@@ -93,13 +148,6 @@ class Segmenter:
                 )
                 serial += 1
         return SegmentationResult(tuple(segments))
-
-    def _ensure_capacity(self, current_count: int) -> None:
-        if current_count >= self.max_segments:
-            raise SegmentationConfigError(
-                "Segmentation exceeded the configured segment budget.",
-                code="SEGMENTATION_LIMIT_EXCEEDED",
-            )
 
     def _validate_source_budget(self, blocks: tuple[ParsedBlock, ...]) -> None:
         if len(blocks) > self.max_source_blocks:
@@ -121,37 +169,52 @@ class Segmenter:
         parsed: ParsedDocument,
         blocks: tuple[ParsedBlock, ...],
         config: ParentChildSegmentationConfig,
+        budget: _WorkBudget,
     ) -> SegmentationResult:
         spreadsheet = _is_spreadsheet(parsed, blocks)
+        warnings: list[ParserWarning] = []
+        fallback_fidelity: _DelimiterFidelity | None = None
+        parent_sources_are_split = False
         if spreadsheet:
             parent_sources = _spreadsheet_parent_sources(blocks)
-            warning: ParserWarning | None = None
         elif config.parent_mode == "full_document":
             parent_sources = (_combine_blocks(blocks),)
-            warning = None
             if len(parent_sources[0].text) > config.parent_max_length:
+                fallback_fidelity = _DelimiterFidelity()
                 parent_sources = _fallback_parent_sources(
-                    blocks, config.parent_max_length, config.separator
+                    blocks,
+                    config.parent_max_length,
+                    config.separator,
+                    budget,
+                    fallback_fidelity,
                 )
-                warning = ParserWarning(
-                    "PARENT_FULL_DOCUMENT_FALLBACK",
-                    "The full-document parent exceeded its maximum and was split.",
-                    {"parent_max_length": config.parent_max_length},
+                parent_sources_are_split = True
+                warnings.append(
+                    ParserWarning(
+                        "PARENT_FULL_DOCUMENT_FALLBACK",
+                        "The full-document parent exceeded its maximum and was split.",
+                        {"parent_max_length": config.parent_max_length},
+                    )
                 )
         else:
             parent_sources = tuple(_source_for_block(block) for block in blocks)
-            warning = None
 
         output: list[PreviewSegment] = []
         parent_serial = 1
         child_serial = 1
         for source in parent_sources:
             # Paragraph and table parents may themselves exceed the hard parent maximum.
-            parent_parts = _split_source(source, config.parent_max_length, 0, config.separator)
+            parent_parts = (
+                (source,)
+                if parent_sources_are_split
+                else _split_source(
+                    source, config.parent_max_length, 0, config.separator, budget
+                )
+            )
             for parent_part in parent_parts:
                 if not parent_part.text.strip():
                     continue
-                self._ensure_capacity(len(output))
+                budget.consume_record()
                 parent_id = f"p-{parent_serial:06d}"
                 parent_serial += 1
                 parent = PreviewSegment(
@@ -168,12 +231,13 @@ class Segmenter:
                     config.child_max_length,
                     config.child_overlap,
                     config.separator,
+                    budget,
                     atomic_rows=spreadsheet,
                 ):
                     content = parent_part.text[start:end]
                     if not content.strip():
                         continue
-                    self._ensure_capacity(len(output))
+                    budget.consume_record()
                     output.append(
                         PreviewSegment(
                             local_id=f"c-{child_serial:06d}",
@@ -185,7 +249,18 @@ class Segmenter:
                         )
                     )
                     child_serial += 1
-        return SegmentationResult(tuple(output), (warning,) if warning else ())
+        if fallback_fidelity and fallback_fidelity.omitted_count:
+            warnings.append(
+                ParserWarning(
+                    "SEGMENT_DELIMITER_OMITTED",
+                    "A source delimiter could not be retained within the configured parent length.",
+                    {
+                        "delimiter": "\\n\\n",
+                        "count": fallback_fidelity.omitted_count,
+                    },
+                )
+            )
+        return SegmentationResult(tuple(output), tuple(warnings))
 
 
 def _validate_config(config: SegmentationConfig) -> None:
@@ -226,38 +301,165 @@ def _general_sources(blocks: tuple[ParsedBlock, ...]) -> tuple[_SourceText, ...]
 
 
 def _fallback_parent_sources(
-    blocks: tuple[ParsedBlock, ...], maximum: int, separator: str | None
+    blocks: tuple[ParsedBlock, ...],
+    maximum: int,
+    separator: str | None,
+    budget: _WorkBudget,
+    fidelity: _DelimiterFidelity,
 ) -> Iterator[_SourceText]:
-    """Degrade a full document without breaking atomic units or losing delimiters."""
-    sources: list[_SourceText] = []
-    prose: list[ParsedBlock] = []
-    previous: ParsedBlock | None = None
-    for block in blocks:
-        if block.block_type not in {"code", "table_row"}:
-            if previous and previous.block_type in {"code", "table_row"}:
-                sources.append(_delimiter_source(previous, block))
-            prose.append(block)
-            previous = block
+    """Stream bounded fallback parents while keeping fitting atomic blocks intact."""
+    protected = tuple(_is_fitting_atomic(block, maximum) for block in blocks)
+    prefixes = [0] * len(blocks)
+    suffixes = [0] * len(blocks)
+
+    for index in range(len(blocks) - 1):
+        if not protected[index] and _fits_delimiters_without_splitting(
+            blocks[index], prefixes[index], 2, maximum
+        ):
+            suffixes[index] = 2
+        elif not protected[index + 1] and _fits_delimiters_without_splitting(
+            blocks[index + 1], 2, suffixes[index + 1], maximum
+        ):
+            prefixes[index + 1] = 2
+        elif not protected[index] and _can_host_delimiters(
+            blocks[index], prefixes[index], 2, maximum
+        ):
+            suffixes[index] = 2
+        elif not protected[index + 1] and _can_host_delimiters(
+            blocks[index + 1], 2, suffixes[index + 1], maximum
+        ):
+            prefixes[index + 1] = 2
+        elif (
+            not protected[index]
+            and not protected[index + 1]
+            and _can_host_delimiters(blocks[index], prefixes[index], 1, maximum)
+            and _can_host_delimiters(
+                blocks[index + 1], 1, suffixes[index + 1], maximum
+            )
+        ):
+            suffixes[index] = 1
+            prefixes[index + 1] = 1
+        else:
+            fidelity.omitted_count += 1
+
+    for index, block in enumerate(blocks):
+        if protected[index]:
+            yield _source_for_block(block)
             continue
-        if prose:
-            sources.append(_combine_blocks(prose))
-            prose = []
-        if previous:
-            sources.append(_delimiter_source(previous, block))
-        sources.append(_source_for_block(block))
-        previous = block
-    if prose:
-        sources.append(_combine_blocks(prose))
-    for source in sources:
-        yield from _split_source(source, maximum, 0, separator)
+        yield from _split_fallback_block(
+            block,
+            prefixes[index],
+            suffixes[index],
+            maximum,
+            separator,
+            budget,
+        )
 
 
-def _delimiter_source(previous: ParsedBlock, current: ParsedBlock) -> _SourceText:
-    """Keep an inter-block delimiter traceable while leaving both atomic blocks intact."""
-    return _SourceText(
-        "\n\n",
-        (_SourcePiece(0, 2, _merge_metadata((previous.metadata, current.metadata))),),
+def _is_fitting_atomic(block: ParsedBlock, maximum: int) -> bool:
+    return block.block_type in {"code", "table_row"} and len(block.text) <= maximum
+
+
+def _can_host_delimiters(
+    block: ParsedBlock, prefix_length: int, suffix_length: int, maximum: int
+) -> bool:
+    first = next(
+        (index for index, character in enumerate(block.text) if not character.isspace()),
+        None,
     )
+    if first is None:
+        return False
+    last = next(
+        (
+            index
+            for index in range(len(block.text) - 1, -1, -1)
+            if not block.text[index].isspace()
+        ),
+        first,
+    )
+    if prefix_length and prefix_length + first + 1 > maximum:
+        return False
+    if suffix_length and len(block.text) - last + suffix_length > maximum:
+        return False
+    if prefix_length and suffix_length and first == last:
+        return len(block.text) + prefix_length + suffix_length <= maximum
+    return True
+
+
+def _fits_delimiters_without_splitting(
+    block: ParsedBlock, prefix_length: int, suffix_length: int, maximum: int
+) -> bool:
+    return len(block.text) + prefix_length + suffix_length <= maximum
+
+
+def _split_fallback_block(
+    block: ParsedBlock,
+    prefix_length: int,
+    suffix_length: int,
+    maximum: int,
+    separator: str | None,
+    budget: _WorkBudget,
+) -> Iterator[_SourceText]:
+    """Split only the text needed to keep attached delimiters on nonblank parents."""
+    delimiter = "\n\n"
+    prefix = delimiter[:prefix_length]
+    suffix = delimiter[2 - suffix_length :] if suffix_length else ""
+    source = _source_for_block(block)
+    if len(source.text) + len(prefix) + len(suffix) <= maximum:
+        yield _source_slice(
+            source,
+            0,
+            len(source.text),
+            prefix,
+            suffix,
+        )
+        return
+
+    first = next(
+        index
+        for index, character in enumerate(source.text)
+        if not character.isspace()
+    )
+    last = next(
+        index
+        for index in range(len(source.text) - 1, -1, -1)
+        if not source.text[index].isspace()
+    )
+    prefix_end = first + 1 if prefix_length else 0
+    suffix_start = last if suffix_length else len(source.text)
+
+    if prefix_length:
+        prefix_end = min(
+            suffix_start,
+            max(prefix_end, min(len(source.text), maximum - len(prefix))),
+        )
+        yield _source_slice(source, 0, prefix_end, prefix, "")
+    if prefix_end < suffix_start:
+        middle = _source_slice(source, prefix_end, suffix_start)
+        yield from _split_source(middle, maximum, 0, separator, budget)
+    if suffix_length:
+        yield _source_slice(source, suffix_start, len(source.text), "", suffix)
+
+
+def _source_slice(
+    source: _SourceText,
+    start: int,
+    end: int,
+    prefix: str = "",
+    suffix: str = "",
+) -> _SourceText:
+    pieces: list[_SourcePiece] = []
+    for piece in source.pieces:
+        left, right = max(start, piece.start), min(end, piece.end)
+        if left < right:
+            pieces.append(
+                _SourcePiece(
+                    len(prefix) + left - start,
+                    len(prefix) + right - start,
+                    piece.metadata,
+                )
+            )
+    return _SourceText(prefix + source.text[start:end] + suffix, tuple(pieces))
 
 
 def _source_for_block(block: ParsedBlock) -> _SourceText:
@@ -279,9 +481,13 @@ def _combine_blocks(blocks: Iterable[ParsedBlock], delimiter: str = "\n\n") -> _
 
 
 def _split_source(
-    source: _SourceText, maximum: int, overlap: int, separator: str | None
+    source: _SourceText,
+    maximum: int,
+    overlap: int,
+    separator: str | None,
+    budget: _WorkBudget,
 ) -> Iterator[_SourceText]:
-    for start, end in _split_ranges(source.text, maximum, overlap, separator):
+    for start, end in _split_ranges(source.text, maximum, overlap, separator, budget):
         intersecting: list[_SourcePiece] = []
         for piece in source.pieces:
             left, right = max(start, piece.start), min(end, piece.end)
@@ -291,19 +497,31 @@ def _split_source(
 
 
 def _split_ranges(
-    text: str, maximum: int, overlap: int, separator: str | None
+    text: str,
+    maximum: int,
+    overlap: int,
+    separator: str | None,
+    budget: _WorkBudget,
 ) -> Iterator[tuple[int, int]]:
     """Split by Unicode character count, retaining the selected boundary in the chunk."""
     if not text:
         return
+    budget.ensure_projected_records(len(text), maximum, overlap)
+    hard_advance = maximum - overlap
+    minimum_advance = max(1, (hard_advance + 1) // 2)
     start = 0
     while start < len(text):
         limit = min(start + maximum, len(text))
         if limit == len(text):
             end = limit
         else:
-            boundary_end = _boundary_end(text, start, limit, separator)
-            end = boundary_end if boundary_end and boundary_end - start > overlap else limit
+            boundary_end = _boundary_end(text, start, limit, separator, budget)
+            end = (
+                boundary_end
+                if boundary_end
+                and boundary_end - overlap - start >= minimum_advance
+                else limit
+            )
         yield start, end
         if end == len(text):
             break
@@ -318,21 +536,28 @@ def _child_ranges(
     maximum: int,
     overlap: int,
     separator: str | None,
+    budget: _WorkBudget,
     *,
     atomic_rows: bool,
 ) -> Iterator[tuple[int, int]]:
     """Keep every spreadsheet row self-describing unless it exceeds the hard max."""
     if not atomic_rows:
-        yield from _split_ranges(source.text, maximum, overlap, separator)
+        yield from _split_ranges(source.text, maximum, overlap, separator, budget)
         return
     for piece in source.pieces:
         for start, end in _split_ranges(
-            source.text[piece.start : piece.end], maximum, overlap, separator
+            source.text[piece.start : piece.end], maximum, overlap, separator, budget
         ):
             yield piece.start + start, piece.start + end
 
 
-def _boundary_end(text: str, start: int, limit: int, separator: str | None) -> int | None:
+def _boundary_end(
+    text: str,
+    start: int,
+    limit: int,
+    separator: str | None,
+    budget: _WorkBudget,
+) -> int | None:
     boundary_sets: tuple[str, ...] = (
         (separator,) if separator else (),
         ("\n\n",),
@@ -341,17 +566,25 @@ def _boundary_end(text: str, start: int, limit: int, separator: str | None) -> i
         (".", "!", "?", ";"),
         (" ", "\t"),
     )
-    window = text[start:limit]
     for choices in boundary_sets:
         best = -1
         for choice in choices:
-            index = window.rfind(choice)
+            budget.consume_boundary_scan(limit - start)
+            index = text.rfind(choice, start, limit)
             candidate = index + len(choice)
-            if index >= 0 and candidate > best and window[:candidate].strip():
+            if (
+                index >= 0
+                and candidate > best
+                and _contains_non_whitespace(text, start, candidate)
+            ):
                 best = candidate
-        if best > 0:
-            return start + best
+        if best >= start:
+            return best
     return None
+
+
+def _contains_non_whitespace(text: str, start: int, end: int) -> bool:
+    return any(not text[index].isspace() for index in range(start, end))
 
 
 def _merge_metadata(metadata_items: Iterable[dict[str, Any]]) -> dict[str, Any]:

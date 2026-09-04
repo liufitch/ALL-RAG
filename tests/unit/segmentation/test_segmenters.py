@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import pytest
 
 from rag_modules.parsing.models import ParsedBlock, ParsedDocument
+from rag_modules.segmentation import segmenter as segmenter_module
 from rag_modules.segmentation import (
     GeneralSegmentationConfig,
     ParentChildSegmentationConfig,
@@ -73,6 +74,71 @@ def test_general_makes_progress_when_a_preferred_boundary_is_not_past_overlap():
         for left, right in zip(result.segments, result.segments[1:])
     )
     assert rebuild_with_overlap(result.segments, 2) == source
+
+
+def test_general_rejects_projected_extreme_overlap_before_boundary_scanning(monkeypatch):
+    """Checking only emitted chunks would spend millions of iterations before rejection."""
+    boundary_calls = 0
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal boundary_calls
+        boundary_calls += 1
+        raise AssertionError("projected work must be rejected before boundary scanning")
+
+    monkeypatch.setattr(segmenter_module, "_boundary_end", fail_if_called)
+
+    with pytest.raises(SegmentationConfigError) as error:
+        Segmenter(max_segments=10_000).segment(
+            parsed_document(ParsedBlock("paragraph", "x" * 5_000_000, {})),
+            GeneralSegmentationConfig(max_chunk_length=1_000_000, overlap=999_999),
+        )
+
+    assert error.value.code == "SEGMENTATION_LIMIT_EXCEEDED"
+    assert boundary_calls == 0
+
+
+def test_parent_child_rejects_projected_extreme_overlap_before_boundary_scanning(monkeypatch):
+    """The child splitter must share the request budget and reject before its first scan."""
+    boundary_calls = 0
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal boundary_calls
+        boundary_calls += 1
+        raise AssertionError("projected child work must be rejected before boundary scanning")
+
+    monkeypatch.setattr(segmenter_module, "_boundary_end", fail_if_called)
+    source = "x" * 5_000_000
+
+    with pytest.raises(SegmentationConfigError) as error:
+        Segmenter(max_segments=10_000).segment(
+            parsed_document(ParsedBlock("paragraph", source, {})),
+            ParentChildSegmentationConfig(
+                "paragraph",
+                parent_max_length=len(source),
+                child_max_length=1_000_000,
+                child_overlap=999_999,
+            ),
+        )
+
+    assert error.value.code == "SEGMENTATION_LIMIT_EXCEEDED"
+    assert boundary_calls == 0
+
+
+def test_boundary_progress_falls_back_early_but_keeps_later_preferred_delimiter():
+    """A legal but tiny preferred advance must not defeat the proven progress floor."""
+    source = "aaaaa|bbbbcccc|dddd"
+
+    result = Segmenter().segment(
+        parsed_document(ParsedBlock("paragraph", source, {})),
+        GeneralSegmentationConfig(max_chunk_length=10, overlap=4, separator="|"),
+    )
+
+    assert [item.content for item in result.segments] == [
+        "aaaaa|bbbb",
+        "bbbbcccc|",
+        "ccc|dddd",
+    ]
+    assert rebuild_with_overlap(result.segments, 4) == source
 
 
 def test_parent_child_makes_progress_when_a_preferred_child_boundary_is_not_past_overlap():
@@ -227,7 +293,7 @@ def test_full_document_fallback_keeps_short_code_atomic():
 def test_full_document_fallback_preserves_delimiters_around_short_atomic_blocks(
     atomic_type, atomic_text, atomic_metadata
 ):
-    """Fallback keeps atomic blocks and never publishes delimiter-only parents."""
+    """Fallback keeps exact source delimiters without changing a fitting atomic block."""
     blocks = (
         ParsedBlock("paragraph", "aa", {"line_start": 1, "line_end": 1}),
         ParsedBlock(atomic_type, atomic_text, atomic_metadata),
@@ -238,10 +304,110 @@ def test_full_document_fallback_preserves_delimiters_around_short_atomic_blocks(
     result = Segmenter().segment(parsed, ParentChildSegmentationConfig("full_document", 8, 8, 0))
 
     parents = [item for item in result.segments if item.index_type == "parent"]
-    assert all(len(item.content) <= 8 for item in parents)
-    assert "".join(item.content for item in parents) == "aa" + atomic_text + "bb"
-    assert all(item.content.strip() for item in parents)
+    assert "".join(item.content for item in parents) == f"aa\n\n{atomic_text}\n\nbb"
+    assert all(item.content.strip() and len(item.content) <= 8 for item in parents)
+    assert all(
+        item.content.strip() and len(item.content) <= 8
+        for item in result.segments
+        if item.index_type == "child"
+    )
+    assert all(item.source_metadata for item in result.segments)
     assert next(item for item in parents if item.content == atomic_text).source_metadata == atomic_metadata
+    assert [item.position for item in result.segments] == list(range(len(result.segments)))
+    parent_positions = {
+        item.local_id: item.position for item in result.segments if item.index_type == "parent"
+    }
+    assert all(
+        item.parent_local_id in parent_positions
+        and parent_positions[item.parent_local_id] < item.position
+        for item in result.segments
+        if item.index_type == "child"
+    )
+    assert [warning.code for warning in result.warnings] == ["PARENT_FULL_DOCUMENT_FALLBACK"]
+
+
+@pytest.mark.parametrize("maximum", [1, 2])
+def test_full_document_fallback_delimiter_omission_is_bounded_and_aggregated(maximum):
+    """Impossible delimiters must be omitted once without blank records or looping."""
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "A", {"line_start": 1}),
+        ParsedBlock("code", "B", {"line_start": 3, "language": "text"}),
+        ParsedBlock("paragraph", "C", {"line_start": 5}),
+    )
+
+    with segmentation_deadline():
+        result = Segmenter().segment(
+            parsed,
+            ParentChildSegmentationConfig("full_document", maximum, maximum, 0),
+        )
+
+    parents = [item for item in result.segments if item.index_type == "parent"]
+    assert "".join(item.content for item in parents) == "ABC"
+    assert all(item.content.strip() and len(item.content) <= maximum for item in result.segments)
+    assert next(item for item in parents if item.content == "B").source_metadata == {
+        "line_start": 3,
+        "line_end": 3,
+        "language": "text",
+    }
+    assert [item.position for item in result.segments] == list(range(len(result.segments)))
+    parent_positions = {
+        item.local_id: item.position for item in result.segments if item.index_type == "parent"
+    }
+    assert all(
+        item.parent_local_id in parent_positions
+        and parent_positions[item.parent_local_id] < item.position
+        for item in result.segments
+        if item.index_type == "child"
+    )
+    assert [
+        (warning.code, warning.message, warning.metadata) for warning in result.warnings
+    ] == [
+        (
+            "PARENT_FULL_DOCUMENT_FALLBACK",
+            "The full-document parent exceeded its maximum and was split.",
+            {"parent_max_length": maximum},
+        ),
+        (
+            "SEGMENT_DELIMITER_OMITTED",
+            "A source delimiter could not be retained within the configured parent length.",
+            {"delimiter": "\\n\\n", "count": 2},
+        ),
+    ]
+
+
+def test_full_document_fallback_uses_following_prose_when_preceding_parent_is_full():
+    """Splitting a full preceding source is unnecessary when the following source fits."""
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "ABCDEFGH", {"line_start": 1}),
+        ParsedBlock("paragraph", "bb", {"line_start": 3}),
+    )
+
+    result = Segmenter().segment(
+        parsed,
+        ParentChildSegmentationConfig("full_document", 8, 8, 0),
+    )
+
+    parents = [item.content for item in result.segments if item.index_type == "parent"]
+    assert parents == ["ABCDEFGH", "\n\nbb"]
+    assert [warning.code for warning in result.warnings] == ["PARENT_FULL_DOCUMENT_FALLBACK"]
+
+
+def test_full_document_fallback_splits_delimiter_across_non_atomic_sides_when_needed():
+    """A split delimiter is retainable at length two and must not be falsely omitted."""
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "A", {"line_start": 1}),
+        ParsedBlock("paragraph", "B", {"line_start": 3}),
+    )
+
+    result = Segmenter().segment(
+        parsed,
+        ParentChildSegmentationConfig("full_document", 2, 2, 0),
+    )
+
+    parents = [item.content for item in result.segments if item.index_type == "parent"]
+    assert parents == ["A\n", "\nB"]
+    assert all(content.strip() for content in parents)
+    assert [warning.code for warning in result.warnings] == ["PARENT_FULL_DOCUMENT_FALLBACK"]
 
 
 def test_spreadsheet_groups_consecutive_rows_per_sheet_and_preserves_headers_in_children():
@@ -348,3 +514,40 @@ def test_segmenter_has_an_independent_source_work_budget(parsed):
         )
 
     assert error.value.code == "SEGMENTATION_LIMIT_EXCEEDED"
+
+
+def test_boundary_scan_budget_is_cumulative_across_general_source_blocks():
+    """Resetting the scan budget per atomic source would permit unbounded total scans."""
+    parsed = parsed_document(
+        ParsedBlock("code", "abc|def", {"line_start": 1}),
+        ParsedBlock("code", "abc|def", {"line_start": 3}),
+    )
+    config = GeneralSegmentationConfig(max_chunk_length=4, overlap=0, separator="|")
+
+    with pytest.raises(SegmentationConfigError) as error:
+        Segmenter(max_boundary_scan_characters=7).segment(parsed, config)
+
+    assert error.value.code == "SEGMENTATION_LIMIT_EXCEEDED"
+    assert len(Segmenter(max_boundary_scan_characters=8).segment(parsed, config).segments) == 4
+
+
+def test_boundary_scan_budget_is_cumulative_across_parent_child_children():
+    """Each parent's children must consume the same request-local boundary scan budget."""
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "abc|def", {"line_start": 1}),
+        ParsedBlock("paragraph", "abc|def", {"line_start": 3}),
+    )
+    config = ParentChildSegmentationConfig(
+        "paragraph",
+        parent_max_length=7,
+        child_max_length=4,
+        child_overlap=0,
+        separator="|",
+    )
+
+    with pytest.raises(SegmentationConfigError) as error:
+        Segmenter(max_boundary_scan_characters=7).segment(parsed, config)
+
+    assert error.value.code == "SEGMENTATION_LIMIT_EXCEEDED"
+    result = Segmenter(max_boundary_scan_characters=8).segment(parsed, config)
+    assert len([item for item in result.segments if item.index_type == "child"]) == 4
