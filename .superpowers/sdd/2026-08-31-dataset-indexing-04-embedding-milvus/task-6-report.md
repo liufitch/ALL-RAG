@@ -72,13 +72,15 @@ output and this report.
   | standalone | `milvusdb/milvus:v2.5.14` | Up, healthy |
   | minio | `minio/minio:RELEASE.2024-05-28T17-19-04Z` | Up, unhealthy |
 
-  MinIO is not involved in this vector-only test and was not changed. Its
-  unhealthy healthcheck and the use of a pre-existing shared stack are residual
-  environment concerns.
+  The application MinIO adapter is not directly exercised and MinIO was not
+  changed. Milvus standalone nevertheless remains configured to use this
+  pre-existing MinIO storage backend, so its unhealthy healthcheck and the use
+  of a shared stack are residual environment concerns even though the vector
+  path passed.
 
 ## Verification
 
-- Disabled integration: `2 skipped, 1 warning`.
+- Disabled integration before Fix Round 1: `2 skipped, 1 warning`.
 - Focused schema/count/mismatch units: `14 passed, 37 deselected, 1 warning`.
 - Full Task 3 vector units: `51 passed, 1 warning`.
 - Phase unit scope (`embeddings`, `indexing`, `vector_stores`): `184 passed,
@@ -89,7 +91,7 @@ output and this report.
   service.
 - `py_compile` for the changed adapter and unit module: passed.
 - `git diff --check`: passed.
-- Fresh default suite: `523 passed, 3 skipped, 2 warnings in 7.11s`. The skips
+- Fresh default suite before Fix Round 1: `523 passed, 3 skipped, 2 warnings in 7.11s`. The skips
   are the two opt-in Milvus tests and one opt-in MinIO test. Warnings are the
   existing Starlette/httpx and jieba/pkg_resources deprecations.
 
@@ -102,6 +104,34 @@ response shapes can still change, but the two observed live shapes now have
 focused regressions. Task 5’s per-document acknowledged-upsert-count rule
 remains appropriate for concurrent document indexing; collection-level logical
 count is the adapter API behavior verified here.
+
+## Fix Round 1 — cleanup verification sanitization
+
+An independent review found that the test-only `_collection_exists()` helper
+called the private raw client and could allow a `MilvusException` to print a
+backend message in pytest output. A no-live fake-client RED was added first:
+the fake raised a MilvusException with a distinctive backend detail and the
+test failed with that exact raw exception (`1 failed, 2 deselected`).
+
+The helper now catches only `MilvusException` and raises the fixed generic
+`AssertionError("Milvus cleanup verification failed.") from None`. It does not
+catch arbitrary programmer exceptions. The GREEN test asserts the fixed text,
+the absence of the distinctive detail, no explicit cause, and suppressed
+context. The test-owned collection cleanup evidence remains unchanged.
+
+- Focused sanitizer GREEN: `1 passed, 2 deselected, 1 warning`.
+- Disabled module after adding the no-live regression: `1 passed, 2 skipped,
+  1 warning`.
+- Live integration after the sanitizer change: `3 passed, 1 warning in
+  14.19s` against the existing healthy Milvus 2.5.14 service.
+- Full Task 3 vector units after the change: `51 passed, 1 warning`.
+- Phase unit scope after the change: `184 passed, 2 warnings`.
+- Fresh default suite after the change: `524 passed, 3 skipped, 2 warnings in
+  7.18s`.
+- `py_compile` and `git diff --check` after the change: passed.
+
+This repair did not start Compose, alter containers, or mutate any live
+collection outside the existing tests' generated ownership boundary.
 
 ## Commits
 

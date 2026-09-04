@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 import pytest
+from pymilvus.exceptions import MilvusException
 
 from rag_modules.vector_stores.base import VectorEntity
 from rag_modules.vector_stores.milvus import MilvusVectorStore
@@ -19,10 +20,34 @@ def _entity(identifier: str, embedding: tuple[float, float, float]) -> VectorEnt
 
 
 def _collection_exists(store: MilvusVectorStore, collection_name: str) -> bool:
-    return store._client().has_collection(
-        collection_name=collection_name,
-        timeout=10,
-    )
+    try:
+        return store._client().has_collection(
+            collection_name=collection_name,
+            timeout=10,
+        )
+    except MilvusException:
+        raise AssertionError("Milvus cleanup verification failed.") from None
+
+
+def test_collection_cleanup_verification_sanitizes_milvus_failure():
+    """A failed test-owned cleanup check must not expose backend details."""
+    distinctive_backend_detail = "distinctive-backend-detail"
+
+    class FailingClient:
+        def has_collection(self, **kwargs):
+            raise MilvusException(message=distinctive_backend_detail)
+
+    class StoreWithFailingClient:
+        def _client(self):
+            return FailingClient()
+
+    with pytest.raises(AssertionError) as error:
+        _collection_exists(StoreWithFailingClient(), f"test_{uuid4().hex}")
+
+    assert str(error.value) == "Milvus cleanup verification failed."
+    assert distinctive_backend_detail not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
 
 
 @pytest.mark.integration

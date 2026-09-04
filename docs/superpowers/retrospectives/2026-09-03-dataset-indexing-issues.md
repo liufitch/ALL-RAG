@@ -1625,8 +1625,11 @@ After every task, append:
   (RELEASE.2024-05-28T17-19-04Z, Up/unhealthy). An elevated localhost health
   probe returned `OK` from standalone. Sandbox-localhost isolation initially
   made both port 19530 and health port 9091 unreachable; elevated test execution
-  was required to reach the already-running service. MinIO was neither used nor
-  changed by this test; its unhealthy state is a residual environment concern.
+  was required to reach the already-running service. The application MinIO
+  adapter was neither exercised nor changed by this test, but Milvus standalone
+  remains configured against that pre-existing MinIO backend; its unhealthy
+  state is therefore a residual environment concern even though the vector path
+  passed.
 - **Isolated test and skip evidence:** Added an opt-in `RUN_INTEGRATION=1`
   fixture with explicit safe localhost/default-database configuration and a
   unique `test_<uuid>` collection per test. With integration disabled,
@@ -1680,3 +1683,25 @@ After every task, append:
   now have focused regressions. Collection-wide logical count is appropriate to
   this adapter API; Task 5 continues to use per-document acknowledged upsert
   counts for concurrent document validation.
+
+### IDX-004 Task 6 Fix Round 1 — sanitize cleanup verification failures (2026-09-04)
+
+- **Review finding/root cause:** The integration-only `_collection_exists()`
+  evidence helper reached the private raw Milvus client. If that check raised a
+  `MilvusException`, pytest could display its backend detail even though the
+  application adapter sanitizes its public boundary.
+- **TDD RED:** A deterministic no-live fake client raised MilvusException with
+  a distinctive backend-only detail. The focused test failed as the raw SDK
+  exception (`1 failed, 2 deselected`), proving the disclosure path without
+  creating or changing any collection.
+- **Fix and rejection:** The helper now catches only `MilvusException` and
+  raises one fixed generic `AssertionError` with `from None`. The no-chaining
+  test verifies the fixed text, absence of the distinctive detail, no cause, and
+  suppressed context. Catching arbitrary exceptions was rejected so programmer
+  errors remain visible.
+- **GREEN/verification:** Focused sanitizer GREEN was `1 passed, 2 deselected`.
+  With `RUN_INTEGRATION` absent the module now reports `1 passed, 2 skipped`;
+  the pure sanitizer runs locally and only the two live tests skip. Elevated
+  live verification against Milvus 2.5.14 passed `3 passed, 1 warning in
+  14.19s`. No Compose startup, container mutation, broad cleanup, or live
+  collection outside a generated test-owned name occurred.
