@@ -309,38 +309,10 @@ def _fallback_parent_sources(
 ) -> Iterator[_SourceText]:
     """Stream bounded fallback parents while keeping fitting atomic blocks intact."""
     protected = tuple(_is_fitting_atomic(block, maximum) for block in blocks)
-    prefixes = [0] * len(blocks)
-    suffixes = [0] * len(blocks)
-
-    for index in range(len(blocks) - 1):
-        if not protected[index] and _fits_delimiters_without_splitting(
-            blocks[index], prefixes[index], 2, maximum
-        ):
-            suffixes[index] = 2
-        elif not protected[index + 1] and _fits_delimiters_without_splitting(
-            blocks[index + 1], 2, suffixes[index + 1], maximum
-        ):
-            prefixes[index + 1] = 2
-        elif not protected[index] and _can_host_delimiters(
-            blocks[index], prefixes[index], 2, maximum
-        ):
-            suffixes[index] = 2
-        elif not protected[index + 1] and _can_host_delimiters(
-            blocks[index + 1], 2, suffixes[index + 1], maximum
-        ):
-            prefixes[index + 1] = 2
-        elif (
-            not protected[index]
-            and not protected[index + 1]
-            and _can_host_delimiters(blocks[index], prefixes[index], 1, maximum)
-            and _can_host_delimiters(
-                blocks[index + 1], 1, suffixes[index + 1], maximum
-            )
-        ):
-            suffixes[index] = 1
-            prefixes[index + 1] = 1
-        else:
-            fidelity.omitted_count += 1
+    prefixes, suffixes, omitted_count = _allocate_delimiters(
+        blocks, protected, maximum
+    )
+    fidelity.omitted_count += omitted_count
 
     for index, block in enumerate(blocks):
         if protected[index]:
@@ -358,6 +330,142 @@ def _fallback_parent_sources(
 
 def _is_fitting_atomic(block: ParsedBlock, maximum: int) -> bool:
     return block.block_type in {"code", "table_row"} and len(block.text) <= maximum
+
+
+def _allocate_delimiters(
+    blocks: tuple[ParsedBlock, ...],
+    protected: tuple[bool, ...],
+    maximum: int,
+) -> tuple[list[int], list[int], int]:
+    """Choose all boundary attachments with three bounded states per source block."""
+    decisions: list[list[int | None]] = [[None, None, None] for _ in blocks]
+    next_costs: list[tuple[int, int, int] | None] = [None, None, None]
+
+    for index in range(len(blocks) - 1, -1, -1):
+        current_costs: list[tuple[int, int, int] | None] = [None, None, None]
+        for prefix_length in range(3):
+            if index == len(blocks) - 1:
+                split_cost = _delimiter_split_cost(
+                    blocks[index], protected[index], prefix_length, 0, maximum
+                )
+                if split_cost is not None:
+                    current_costs[prefix_length] = (0, split_cost, 0)
+                continue
+
+            candidates: list[tuple[tuple[int, int, int], int]] = []
+            for suffix_length in range(3):
+                split_cost = _delimiter_split_cost(
+                    blocks[index],
+                    protected[index],
+                    prefix_length,
+                    suffix_length,
+                    maximum,
+                )
+                future = next_costs[2 - suffix_length]
+                if split_cost is None or future is None:
+                    continue
+                preference = _delimiter_preference(
+                    blocks,
+                    protected,
+                    index,
+                    prefix_length,
+                    suffix_length,
+                    maximum,
+                )
+                candidates.append(
+                    (
+                        (
+                            future[0],
+                            split_cost + future[1],
+                            preference + future[2],
+                        ),
+                        suffix_length,
+                    )
+                )
+
+            split_cost = _delimiter_split_cost(
+                blocks[index], protected[index], prefix_length, 0, maximum
+            )
+            omitted_future = next_costs[0]
+            if split_cost is not None and omitted_future is not None:
+                candidates.append(
+                    (
+                        (
+                            1 + omitted_future[0],
+                            split_cost + omitted_future[1],
+                            omitted_future[2],
+                        ),
+                        -1,
+                    )
+                )
+
+            if candidates:
+                cost, decision = min(candidates, key=lambda item: (item[0], item[1]))
+                current_costs[prefix_length] = cost
+                decisions[index][prefix_length] = decision
+        next_costs = current_costs
+
+    prefixes = [0] * len(blocks)
+    suffixes = [0] * len(blocks)
+    omitted_count = 0
+    prefix_length = 0
+    for index in range(len(blocks) - 1):
+        decision = decisions[index][prefix_length]
+        if decision == -1:
+            omitted_count += 1
+            prefix_length = 0
+            continue
+        if decision is None:  # pragma: no cover - the omit-all path is always feasible
+            raise RuntimeError("delimiter allocation did not find a bounded path")
+        suffixes[index] = decision
+        prefix_length = 2 - decision
+        prefixes[index + 1] = prefix_length
+    return prefixes, suffixes, omitted_count
+
+
+def _delimiter_split_cost(
+    block: ParsedBlock,
+    protected: bool,
+    prefix_length: int,
+    suffix_length: int,
+    maximum: int,
+) -> int | None:
+    if protected:
+        return 0 if prefix_length == suffix_length == 0 else None
+    if not _can_host_delimiters(block, prefix_length, suffix_length, maximum):
+        return None
+    base_parts = (len(block.text) + maximum - 1) // maximum
+    attached_parts = (
+        len(block.text) + prefix_length + suffix_length + maximum - 1
+    ) // maximum
+    return max(0, attached_parts - base_parts)
+
+
+def _delimiter_preference(
+    blocks: tuple[ParsedBlock, ...],
+    protected: tuple[bool, ...],
+    index: int,
+    prefix_length: int,
+    suffix_length: int,
+    maximum: int,
+) -> int:
+    if suffix_length == 2 and _fits_delimiters_without_splitting(
+        blocks[index], prefix_length, suffix_length, maximum
+    ):
+        return 0
+    if (
+        suffix_length == 0
+        and not protected[index + 1]
+        and _fits_delimiters_without_splitting(
+            blocks[index + 1], 2, 0, maximum
+        )
+    ):
+        return 1
+    if suffix_length == 2:
+        return 2
+    if suffix_length == 0:
+        return 3
+    return 4
 
 
 def _can_host_delimiters(

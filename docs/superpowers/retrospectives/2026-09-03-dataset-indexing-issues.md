@@ -736,3 +736,60 @@ After every task, append:
   whitespace already impossible to represent as nonblank public records remains
   outside the delimiter-specific warning. No public request or response schema
   changed. Implementation is complete pending final verification and commit.
+
+### SAFE-005 Review Fix Round 1 — Joint delimiter allocation (executed 2026-09-04)
+
+- **Review symptom and root cause:** With three non-atomic blocks `AA`, `B`, and
+  ` C` at parent maximum three, the greedy boundary allocator committed both
+  characters of the first delimiter as a prefix on `B`. It then could not fit
+  the second delimiter around the same one-character middle block or before the
+  leading-space final block, so it emitted parents `AA`, `\n\nB`, and ` C` plus
+  omission count one. That omission was false: the bounded nonblank allocation
+  `AA\n`, `\nB\n`, `\n C` preserves both delimiters exactly. The root cause was
+  making each boundary irrevocably without accounting for the prefix/suffix
+  contention it creates on the next block.
+- **Rejected approaches:** A fixture-specific redistribution rule was rejected
+  because longer consecutive prose runs create the same contention. Retrying
+  only the immediately failed boundary was rejected because correcting it may
+  require revisiting an earlier attachment and can cascade. Exhaustive global
+  search/backtracking was rejected because its state space grows exponentially.
+  Treating a retainable delimiter as omitted, modifying fitting atomic blocks,
+  weakening direct-fit precedence, or changing Task 3 CPU projection/scan logic
+  were also rejected as violations or unrelated scope expansion.
+- **Final bounded algorithm:** Delimiter ownership is a path problem with only
+  three prefix states per block: zero, one, or two newline characters received
+  from the preceding boundary. A reverse dynamic program considers the three
+  suffix allocations plus one omission transition, validates the joint
+  prefix/suffix capacity of the current block, and stores one backpointer per
+  state. Its lexicographic objective minimizes omitted boundaries first, then
+  incremental hard-chunk count, then the deterministic preceding/following
+  direct-fit preference. Fitting atomic code/table blocks accept only the zero/
+  zero state. Reconstruction assigns exactly two newline characters per retained
+  boundary and increments the aggregate count exactly once per omission. Runtime
+  is O(blocks × 3 × 4), memory is O(blocks × 3), and both remain bounded by the
+  existing 100,000-source-block cap; split ranges remain streamed.
+- **TDD RED evidence:** `.venv/bin/python -m pytest
+  tests/unit/segmentation/test_segmenters.py -k
+  'three_block_delimiter_contention' -q` on `3eee2ac` produced `1 failed, 35
+  deselected`. The literal mismatch was `['AA', '\\n\\nB', ' C']` versus
+  `['AA\\n', '\\nB\\n', '\\n C']`; the old result also carried the false
+  `SEGMENT_DELIMITER_OMITTED` warning.
+- **GREEN and regression evidence:** The isolated review regression produced `1
+  passed, 35 deselected`. The legacy delimiter selector first produced `7
+  passed, 29 deselected`. A compact max-two/three/four consecutive-prose matrix
+  then produced `3 passed, 36 deselected`, proving exact reconstruction without
+  duplicated or lost delimiters. The final covering delimiter selector produced
+  `10 passed, 29 deselected`; segmentation plus PreviewService produced `60
+  passed`; and the full suite produced `314 passed, 1 skipped` in 5.35 seconds.
+  The final pre-commit gate repeated `60 passed`, the unchanged CPU-budget
+  selector produced `4 passed, 35 deselected`, segmentation bytecode compilation
+  exited zero, and `git diff --check` exited zero. Runs contained only the
+  existing Starlette/httpx deprecation warning.
+- **Fix commit to be created:** `fix: resolve delimiter allocation contention`.
+- **Residual risk/status:** The secondary grouping objective estimates added
+  hard chunks from lengths; it may choose a different valid grouping than a
+  separator-aware optimum, but omission feasibility is determined independently
+  and always takes priority. The DP retains three small backpointer entries per
+  source block rather than constant memory, within the pre-existing source-block
+  bound. Existing pathological source-internal whitespace caveats remain; no CPU
+  budget, public API, warning schema, or fitting-atomic behavior changed.

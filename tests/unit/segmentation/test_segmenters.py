@@ -410,6 +410,65 @@ def test_full_document_fallback_splits_delimiter_across_non_atomic_sides_when_ne
     assert [warning.code for warning in result.warnings] == ["PARENT_FULL_DOCUMENT_FALLBACK"]
 
 
+def test_full_document_fallback_resolves_three_block_delimiter_contention():
+    """Independent greedy boundaries must not omit a jointly retainable delimiter."""
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "AA", {"line_start": 1}),
+        ParsedBlock("paragraph", "B", {"line_start": 3}),
+        ParsedBlock("paragraph", " C", {"line_start": 5}),
+    )
+
+    result = Segmenter().segment(
+        parsed,
+        ParentChildSegmentationConfig("full_document", 3, 3, 0),
+    )
+
+    parents = [item for item in result.segments if item.index_type == "parent"]
+    assert [item.content for item in parents] == ["AA\n", "\nB\n", "\n C"]
+    assert "".join(item.content for item in parents) == "AA\n\nB\n\n C"
+    assert all(item.content.strip() and len(item.content) <= 3 for item in parents)
+    assert [item.source_metadata["line_start"] for item in parents] == [1, 3, 5]
+    assert [item.position for item in result.segments] == list(range(len(result.segments)))
+    parent_positions = {
+        item.local_id: item.position for item in result.segments if item.index_type == "parent"
+    }
+    assert all(
+        item.parent_local_id in parent_positions
+        and parent_positions[item.parent_local_id] < item.position
+        for item in result.segments
+        if item.index_type == "child"
+    )
+    assert [warning.code for warning in result.warnings] == ["PARENT_FULL_DOCUMENT_FALLBACK"]
+
+
+@pytest.mark.parametrize(
+    ("maximum", "texts"),
+    [
+        (2, ("A", "B")),
+        (3, ("AA", "B", " C")),
+        (4, ("AAA", "B", " C")),
+    ],
+)
+def test_full_document_fallback_contention_matrix_retains_all_delimiters(maximum, texts):
+    """Small consecutive prose runs must neither duplicate nor lose delimiters."""
+    parsed = parsed_document(
+        *(
+            ParsedBlock("paragraph", text, {"line_start": 2 * index + 1})
+            for index, text in enumerate(texts)
+        )
+    )
+
+    result = Segmenter().segment(
+        parsed,
+        ParentChildSegmentationConfig("full_document", maximum, maximum, 0),
+    )
+
+    parents = [item.content for item in result.segments if item.index_type == "parent"]
+    assert "".join(parents) == "\n\n".join(texts)
+    assert all(content.strip() and len(content) <= maximum for content in parents)
+    assert [warning.code for warning in result.warnings] == ["PARENT_FULL_DOCUMENT_FALLBACK"]
+
+
 def test_spreadsheet_groups_consecutive_rows_per_sheet_and_preserves_headers_in_children():
     """Cross-sheet grouping or omitted headers makes spreadsheet children ambiguous."""
     parsed = parsed_document(
