@@ -1356,3 +1356,74 @@ After every task, append:
   compatibility/testing hook backed directly by the private cache; construction
   identity is keyed only by normalized provider string. Live PyMilvus 2.5.14
   remains Task 6 scope.
+
+### SEG-001 Phase 4 Task 4 — deterministic document-segment persistence (executed 2026-09-04)
+
+- **Problem and approved boundary:** The indexing design required deterministic,
+  retry-safe PostgreSQL `document_segments` staging that can later be activated
+  only after a vector-store validation step. The repository had segment ORM
+  columns but no stable identity/hash contract, no transaction-neutral staging
+  boundary, no preview-parent-to-database-parent mapping, and no narrowly
+  scoped activation/previous-version deletion operations.
+- **Rulings and implementation:** `SegmentStagingCommand` carries dataset,
+  document, target-index, job, technique, and segmentation snapshot values into
+  `SegmentRepository.stage(command, segments)`. Content normalizes CRLF/CR to
+  LF and Unicode NFC. Metadata recursively applies the same string treatment,
+  accepts only finite JSON-compatible values, preserves list order, normalizes
+  mapping keys, rejects duplicate normalized keys, and serializes using sorted,
+  compact canonical JSON. SHA-256 hashes the canonical object containing both
+  normalized content and metadata. A fixed application UUID namespace plus
+  target index, document, deterministic persisted parent ID, position, and hash
+  produces compact UUIDv5 retry IDs. Thus a configuration/index-version change
+  changes identities even for identical text.
+- **Parent, status, and transaction rulings:** Parent candidates are identified
+  in a first in-memory pass; the subsequent pass resolves children from preview
+  local IDs to those deterministic database IDs, so child-before-parent preview
+  order remains valid. Missing/non-parent links, duplicate local IDs and derived
+  IDs reject before any row is added. New rows stage as `indexing`; parents and
+  all economy rows are `not_required` for embeddings while high-quality general
+  and child rows wait. Exact retries return pre-existing immutable-equivalent
+  records without creating duplicates or changing original job attribution;
+  mismatched hash/content/metadata or immutable identity raises a safe conflict.
+  All repository operations use `flush`, never `commit`; activation is limited
+  to an explicit dataset/index/document's nondeleted staging records, and old
+  rows are soft-deleted only for an explicit previous dataset index after later
+  orchestration makes the replacement active. Timestamps come from aware UTC
+  `utcnow`. Vectors are neither accepted nor stored or logged.
+- **Encountered symptoms and root causes:** The initial test RED correctly
+  failed module collection because `rag_modules.indexing.ids` did not exist. The
+  first implementation test run then exposed a strict-plugin fixture authoring
+  issue (`async fixture ... no plugin or hook`) caused by use of `@pytest.fixture`
+  instead of `@pytest_asyncio.fixture`. It also exposed an existing ORM dialect
+  mapping problem: actual SQLite table creation failed because its compiler does
+  not support the PostgreSQL `ARRAY(Text)` keyword column. A SQLite-only JSON
+  type variant restores real async-SQLite ORM testing while retaining PostgreSQL
+  ARRAY and GIN behavior; no PostgreSQL schema column was changed. A later
+  economy/parent-child design test intentionally REDed with `DID NOT RAISE`,
+  revealing the missing command-level consistency check.
+- **Rejected approaches:** Mock repository assertions and test-local SQL tables
+  were rejected because the required test is real async SQLite behavior through
+  the actual ORM mapping. Random IDs, source-metadata insertion order,
+  content-only hashes, serial parent insertion dependency, mutation of exact
+  retry rows, and automatic stage-time activation were rejected because they
+  break reproducibility, linkage, audit history, or safe version switching.
+- **TDD evidence to date:** `.venv/bin/python -m pytest
+  tests/unit/indexing/test_segment_persistence.py -v` first failed collection
+  with `ModuleNotFoundError`; after implementation it passed `12 passed, 2
+  warnings in 0.08s`. The additive economy/parent-child test first produced `1
+  failed, 11 passed`, then passed unchanged. Relevant db/repository/segmentation
+  /keyword regressions passed `65 passed, 2 warnings in 0.94s`. The warnings are
+  repository-existing Starlette/httpx and jieba/pkg_resources deprecations.
+- **Final verification:** `py_compile` of every changed Python module and the
+  persistence test exited zero; `git diff --check` exited zero; one fresh
+  `.venv/bin/python -m pytest -v` run passed `468 passed, 1 skipped, 2 warnings
+  in 6.96s`. The skip is the opt-in MinIO integration test and warnings are the
+  existing Starlette/httpx and jieba/pkg_resources deprecations. Final review
+  reconfirmed no vector payload/persistence/logging, no repository commit, and
+  no Task 5 engine/activation invocation.
+- **Final commit:** `feat: stage deterministic document segments` (its SHA is
+  recorded in the Task 4 handoff after Git creates the commit).
+- **Residual risk:** SQLite establishes actual asynchronous mapped persistence,
+  but it cannot prove PostgreSQL locking or a cross-PostgreSQL/Milvus atomic
+  transaction. A concurrent identical staging race still relies on the database
+  primary key and Phase 5's transaction/retry orchestration to reload safely.

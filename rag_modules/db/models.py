@@ -90,7 +90,11 @@ class DocumentSegmentRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    keywords: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    # PostgreSQL retains its GIN-indexable ARRAY; SQLite integration tests use
+    # JSON because its dialect cannot compile PostgreSQL ARRAY DDL.
+    keywords: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text).with_variant(JSON, "sqlite"), nullable=True
+    )
     parent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     dataset_index_id: Mapped[str | None] = mapped_column(
         String(36),
