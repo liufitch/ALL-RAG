@@ -1478,3 +1478,68 @@ After every task, append:
   PostgreSQL `ON CONFLICT` resolves a concurrent primary-key contender before
   the following reload under normal Read Committed semantics; production must
   retain ordinary database timeout/retry policy for disconnects or lock timeouts.
+
+### IDX-001 Phase 4 Task 5 — single-document indexing engine (executing 2026-09-04)
+
+- **Approved boundary and ruling:** The single-document engine owns only
+  `download -> parse -> split -> stage -> embed-or-keywords -> vector-upsert -> validate`.
+  It checks cancellation between stages and batches, uses deterministic safe
+  progress, and never activates rows or deletes previous versions. Existing
+  high-quality targets come from the immutable command; building targets are
+  resolved once from the first non-empty embedding dimension. Economy remains
+  PostgreSQL-only. Parser, segmenter, keyword extraction, and Milvus calls are
+  synchronous and must run off the event-loop thread; storage and Embedding stay
+  asynchronous, with the storage context deterministically exited.
+- **Vector-count ruling and cost:** Per-document validation is the exact sum of
+  successful upsert return counts against this document's indexable row count.
+  Calling `count(collection)` was rejected because its collection-wide value is
+  invalid when documents append or execute in parallel. Independent whole-index
+  cardinality validation and activation remain Phase 5 work; Task 5 proves only
+  the provider's acknowledged counts for this document.
+- **PostgreSQL vector ruling:** `DocumentSegmentRecord.vector` remains
+  intentionally unmapped. Staging and engine APIs accept no PostgreSQL vector;
+  embeddings exist only in `VectorEntity` batches sent to Milvus, leaving the
+  legacy physical PostgreSQL column untouched/NULL. Adding pgvector or a shadow
+  Python attribute merely to satisfy an illustrative assertion was rejected.
+- **Initial tooling symptom/root cause:** The plan's literal `python -m pytest`
+  selected `/Users/fitch/miniconda3/bin/python`, where pytest is not installed.
+  This was an interpreter-selection error and not accepted as feature RED. The
+  repository `.venv/bin/python` is the authoritative test interpreter.
+- **Initial TDD RED:** Before production edits, `.venv/bin/python -m pytest
+  tests/unit/indexing/test_document_engine.py -v` failed collection with
+  `ModuleNotFoundError: No module named 'rag_modules.indexing.engine'`, exactly
+  demonstrating the missing Task 5 engine.
+- **Repository mutation defect and rejected approach:** The first atomicity
+  probe passed only because SQLite happened to return the invalid row first; it
+  was rejected as evidence. Deterministically ordering a valid row before an
+  invalid row exposed partial in-memory mutation (`keywords=['valid']` and a
+  completed child) before the safe error. Validation and mutation shared one
+  loop. The fix validates the entire batch and materializes bounded keyword
+  lists before changing any record, then flushes once. Relying on query row
+  order or rolling back the caller's whole transaction was rejected.
+- **Additional validation/lifecycle symptoms:** A leading-digit collection,
+  non-string separator, and dimension 32,769 crossed the engine's validation
+  boundary even though the Milvus adapter rejects them. The engine now matches
+  the consumed adapter's exact collection grammar and `1..32768` dimension
+  ceiling and validates the entire command before storage I/O. Plain
+  `asyncio.to_thread` also allowed cancellation to close a source stream while
+  its parser thread was still running. Sync work is now shielded and joined
+  before resource release/cancellation propagation; worker defects remain
+  visible rather than being relabeled.
+- **TDD GREEN and final verification:** The engine suite grew from the initial
+  valid missing-module RED to 38 collected cases. Repository API RED was `2
+  failed, 1 passed`, then `3 passed`; deterministic atomicity RED was `2
+  failed`, then `2 passed`; validation REDs were `3 failed` and later `2
+  failed`, then passed unchanged; lifecycle RED was `1 failed`, then passed.
+  The final required engine/Embedding/vector/keyword selector passed `155
+  passed`; repository/parser/segmentation regressions passed `197 passed`;
+  direct `py_compile` and `git diff --check` exited zero; one fresh full suite
+  passed `513 passed, 1 skipped, 2 warnings in 7.10s`. The skip is opt-in live
+  MinIO and warnings are existing deprecations.
+- **Residual risk:** External boundaries are deterministic unit fakes here;
+  live multi-service integration remains later scope. Per-upsert acknowledgement
+  is not independent collection cardinality proof. Phase 5 still owns caller
+  transaction disposition after partial external success, whole-index
+  validation, compensation, activation, and previous-version deletion.
+- **Final commit:** `feat: index one document into postgres and milvus` (SHA is
+  recorded in the Task 5 handoff after Git creates the commit).

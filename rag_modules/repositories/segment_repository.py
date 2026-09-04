@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -88,6 +89,66 @@ class SegmentRepository:
         await self.session.flush()
         return records
 
+    async def update_keywords(
+        self,
+        *,
+        dataset_index_id: str,
+        document_id: str,
+        keywords_by_segment_id: Mapping[str, Sequence[str]],
+    ) -> None:
+        """Flush economy keywords for exactly the submitted staged records."""
+        if not keywords_by_segment_id:
+            return
+        records = await self._exact_mutation_records(
+            dataset_index_id=dataset_index_id,
+            document_id=document_id,
+            segment_ids=tuple(keywords_by_segment_id),
+        )
+        validated: dict[str, list[str]] = {}
+        for record in records:
+            keywords = keywords_by_segment_id[record.id]
+            if (
+                record.index_type != "general"
+                or isinstance(keywords, (str, bytes))
+                or len(keywords) > 100
+                or any(
+                    not isinstance(keyword, str)
+                    or not keyword
+                    or len(keyword) > 255
+                    for keyword in keywords
+                )
+            ):
+                raise SegmentPersistenceError("Segment keyword update is invalid.")
+            validated[record.id] = list(keywords)
+        timestamp = utcnow()
+        for record in records:
+            record.keywords = validated[record.id]
+            record.updated_at = timestamp
+        await self.session.flush()
+
+    async def mark_embeddings_completed(
+        self,
+        *,
+        dataset_index_id: str,
+        document_id: str,
+        segment_ids: Sequence[str],
+    ) -> None:
+        """Flush successful embedding state for one exact vector-write batch."""
+        if not segment_ids:
+            return
+        records = await self._exact_mutation_records(
+            dataset_index_id=dataset_index_id,
+            document_id=document_id,
+            segment_ids=tuple(segment_ids),
+        )
+        if any(record.index_type not in {"general", "child"} for record in records):
+            raise SegmentPersistenceError("Segment embedding update is invalid.")
+        timestamp = utcnow()
+        for record in records:
+            record.embedding_status = "completed"
+            record.updated_at = timestamp
+        await self.session.flush()
+
     async def soft_delete_previous_segments(
         self, *, dataset_id: str, document_id: str, previous_dataset_index_id: str
     ) -> list[DocumentSegmentRecord]:
@@ -127,6 +188,36 @@ class SegmentRepository:
             .order_by(DocumentSegmentRecord.position.asc(), DocumentSegmentRecord.id.asc())
         )
         return list(result.scalars())
+
+    async def _exact_mutation_records(
+        self,
+        *,
+        dataset_index_id: str,
+        document_id: str,
+        segment_ids: tuple[str, ...],
+    ) -> list[DocumentSegmentRecord]:
+        requested = set(segment_ids)
+        if (
+            len(requested) != len(segment_ids)
+            or any(
+                not isinstance(value, str) or not value or len(value) > 36
+                for value in requested
+            )
+        ):
+            raise SegmentPersistenceError("Segment mutation scope is invalid.")
+        result = await self.session.execute(
+            select(DocumentSegmentRecord).where(
+                DocumentSegmentRecord.dataset_index_id == dataset_index_id,
+                DocumentSegmentRecord.document_id == document_id,
+                DocumentSegmentRecord.id.in_(requested),
+                DocumentSegmentRecord.status == "indexing",
+                DocumentSegmentRecord.deleted_at.is_(None),
+            )
+        )
+        records = list(result.scalars())
+        if {record.id for record in records} != requested:
+            raise SegmentPersistenceError("Segment mutation scope is invalid.")
+        return records
 
     async def _load_by_id(self, candidates: list[_Candidate]) -> dict[str, DocumentSegmentRecord]:
         result = await self.session.execute(

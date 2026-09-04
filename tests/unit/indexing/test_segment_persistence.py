@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from rag_modules.common import utcnow
@@ -273,6 +273,124 @@ async def test_stage_sets_embedding_status_by_index_technique_and_segment_type(s
     assert high_quality[0].status == economy[0].status == "indexing"
     assert high_quality[0].embedding_status == "waiting"
     assert economy[0].embedding_status == "not_required"
+
+
+@pytest.mark.asyncio
+async def test_update_keywords_flushes_only_exact_scoped_staged_records(segment_repository):
+    target = await segment_repository.stage(
+        command(indexing_technique="economy", segmentation_mode="general"),
+        (general_preview_segment(content="alpha beta"),),
+    )
+    other = await segment_repository.stage(
+        command(
+            dataset_index_id="index-2",
+            indexing_technique="economy",
+            segmentation_mode="general",
+        ),
+        (general_preview_segment(content="other content"),),
+    )
+
+    await segment_repository.update_keywords(
+        dataset_index_id="index-1",
+        document_id="doc-1",
+        keywords_by_segment_id={target[0].id: ("alpha", "beta")},
+    )
+    await segment_repository.session.refresh(target[0])
+    await segment_repository.session.refresh(other[0])
+
+    assert target[0].keywords == ["alpha", "beta"]
+    assert other[0].keywords is None
+
+
+@pytest.mark.asyncio
+async def test_mark_embeddings_completed_flushes_only_submitted_batch(segment_repository):
+    records = await segment_repository.stage(
+        command(segmentation_mode="general"),
+        (
+            general_preview_segment(content="first", position=0),
+            general_preview_segment(content="second", position=1),
+        ),
+    )
+
+    await segment_repository.mark_embeddings_completed(
+        dataset_index_id="index-1",
+        document_id="doc-1",
+        segment_ids=(records[0].id,),
+    )
+    await segment_repository.session.refresh(records[0])
+    await segment_repository.session.refresh(records[1])
+
+    assert records[0].embedding_status == "completed"
+    assert records[1].embedding_status == "waiting"
+    assert records[0].updated_at is not None
+
+
+@pytest.mark.asyncio
+async def test_keyword_batch_validation_precedes_every_mutation(segment_repository):
+    records = await segment_repository.stage(
+        command(indexing_technique="economy", segmentation_mode="general"),
+        (
+            general_preview_segment(content="first", position=0),
+            general_preview_segment(content="second", position=1),
+        ),
+    )
+    records[0].id = "a"
+    records[1].id = "z"
+    await segment_repository.session.flush()
+
+    with pytest.raises(SegmentPersistenceError, match="keyword"):
+        await segment_repository.update_keywords(
+            dataset_index_id="index-1",
+            document_id="doc-1",
+            keywords_by_segment_id={
+                records[0].id: ("valid",),
+                records[1].id: ("",),
+            },
+        )
+
+    assert records[0].keywords is None
+    assert records[1].keywords is None
+
+
+@pytest.mark.asyncio
+async def test_embedding_batch_validation_precedes_every_mutation(segment_repository):
+    records = await segment_repository.stage(
+        command(), parent_child_preview_segments(child_first=True)
+    )
+    child = next(record for record in records if record.index_type == "child")
+    parent = next(record for record in records if record.index_type == "parent")
+    child.id = "a"
+    parent.id = "z"
+    child.parent_id = parent.id
+    await segment_repository.session.flush()
+
+    with pytest.raises(SegmentPersistenceError, match="embedding"):
+        await segment_repository.mark_embeddings_completed(
+            dataset_index_id="index-1",
+            document_id="doc-1",
+            segment_ids=(child.id, parent.id),
+        )
+
+    assert child.embedding_status == "waiting"
+    assert parent.embedding_status == "not_required"
+
+
+@pytest.mark.asyncio
+async def test_staging_omits_unmapped_legacy_physical_vector_column(segment_repository):
+    await segment_repository.session.execute(
+        text("ALTER TABLE document_segments ADD COLUMN vector BLOB NULL")
+    )
+
+    records = await segment_repository.stage(
+        command(segmentation_mode="general"), (general_preview_segment(),)
+    )
+    physical_vector = await segment_repository.session.scalar(
+        text("SELECT vector FROM document_segments WHERE id = :id"),
+        {"id": records[0].id},
+    )
+
+    assert "vector" not in DocumentSegmentRecord.__table__.columns
+    assert physical_vector is None
 
 
 @pytest.mark.asyncio
