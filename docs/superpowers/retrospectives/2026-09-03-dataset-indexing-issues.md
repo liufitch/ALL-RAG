@@ -1479,7 +1479,7 @@ After every task, append:
   the following reload under normal Read Committed semantics; production must
   retain ordinary database timeout/retry policy for disconnects or lock timeouts.
 
-### IDX-001 Phase 4 Task 5 — single-document indexing engine (executing 2026-09-04)
+### IDX-001 Phase 4 Task 5 — single-document indexing engine (completed and approved 2026-09-04)
 
 - **Approved boundary and ruling:** The single-document engine owns only
   `download -> parse -> split -> stage -> embed-or-keywords -> vector-upsert -> validate`.
@@ -1544,7 +1544,7 @@ After every task, append:
 - **Final commit:** `feat: index one document into postgres and milvus` (SHA is
   recorded in the Task 5 handoff after Git creates the commit).
 
-### IDX-002 Task 5 Fix Round 1 — cancellation and document-sized vector retention (executing 2026-09-04)
+### IDX-002 Task 5 Fix Round 1 — cancellation and document-sized vector retention (completed and approved 2026-09-04)
 
 - **Review findings:** Cancellation during a synchronous successful Milvus
   upsert propagated before acknowledgment validation and PostgreSQL status
@@ -1705,3 +1705,148 @@ After every task, append:
   live verification against Milvus 2.5.14 passed `3 passed, 1 warning in
   14.19s`. No Compose startup, container mutation, broad cleanup, or live
   collection outside a generated test-owned name occurred.
+
+### IDX-005 Phase 4 Final Fix Wave — persistence, retry, and physical-unit contracts (2026-09-04)
+
+- **A — storage disclosure symptom and root cause:** `SegmentRepository`
+  allowed raw SQLAlchemy execute/flush failures to escape. Those exceptions can
+  retain rendered statements, bound `content`/`source_metadata`, backend text,
+  parameters, causes, and contexts, which could then reach job errors or logs.
+  The repository now catches only `SQLAlchemyError` at each database operation
+  and raises a fixed `SegmentStorageError` outside the handler with `from None`.
+  Operational, interface, disconnect, timeout, and invalidated-connection
+  failures are conservatively retryable; data, integrity, and other SQLAlchemy
+  failures are not. Validation errors, cancellation, and programmer errors keep
+  their original behavior. Runtime-generated private values prove the public
+  exception, `str`, `repr`, chain, and formatted traceback are content-free,
+  without persisting a test value here. All runtime, legacy, and Alembic async
+  engine factories now set `hide_parameters=True` as a second boundary.
+- **A — rejected approaches and cost:** Copying a backend message or original
+  exception into the public type was rejected because either can retain bound
+  data. Catching `Exception`, or wrapping validation and statement-building
+  code, was rejected because it would misclassify cancellation and defects.
+  Parameter hiding alone was rejected because exception objects still expose
+  parameter structures. The fixed boundary intentionally sacrifices backend
+  detail at the public edge; private operational diagnostics must come from a
+  separately controlled observability path.
+- **B — bind-ceiling symptom, root cause, and ruling:** A valid 10,000-segment
+  preview produced one PostgreSQL multi-values insert with roughly fourteen
+  binds per row and one all-ID `IN` reload. Both could cross PostgreSQL's bind
+  ceiling. Staging now fully prevalidates first, then emits dialect-native
+  `ON CONFLICT (id) DO NOTHING` inserts in explicit groups of at most 500 and
+  reloads all candidates in groups of at most 500, combines them by ID, and
+  performs the same immutable recheck in original preview order. Exact mutation
+  reads use the same bound. The transaction remains caller-owned, and the
+  existing deterministic SQLite race semantics remain unchanged.
+- **B — rejected approaches and cost:** Lowering the public 10,000-segment
+  ceiling or relying on an ORM/driver to split statements was rejected because
+  neither preserves the approved contract. A single expanded `IN` clause and
+  per-row queries were rejected. The conservative constant avoids dependence on
+  current column-count arithmetic but adds bounded database round trips: a full
+  10,000-row stage uses twenty inserts and twenty reload statements.
+- **C — lifecycle symptom, root cause, and ruling:** Exact retry comparison
+  previously ignored `status`, deletion, and embedding state, so terminal,
+  activated, deleted, or cross-technique rows could be treated as mutable
+  staging. Repository equality now requires a non-deleted `indexing` row;
+  high-quality general/child rows allow `waiting` or `completed`, while parents
+  and economy rows require `not_required`. The engine independently validates
+  every returned staged record before resolver, Embedding, or Milvus access and
+  emits one fixed non-retryable state error on violation. A partial
+  high-quality retry skips already-completed records, processes only waiting
+  records, and does not change existing attribution.
+- **C — result ruling, rejected approaches, and cost:** On successful return,
+  `vector_count` is total ready indexable rows for this document: completed rows
+  accepted from staging plus newly acknowledged writes. It is not writes made
+  during this invocation. Re-embedding/upserting completed rows and requiring a
+  new acknowledgement for them were rejected because they defeat idempotent
+  partial retry. Calling collection count was rejected because concurrent
+  documents make it the wrong per-document invariant. The engine therefore
+  trusts the completed staging marker until Phase 5 performs collection-wide
+  reconciliation; that trust is an explicit recovery boundary.
+- **D — physical-batch symptom, root cause, and ruling:** The engine accepted a
+  1,024 batch while the selected Embedding model normally permits at most 512
+  and Milvus writes default to 500, so one apparent engine unit could silently
+  become several HTTP and vector operations with misaligned cancellation and
+  status acknowledgements. `IndexDocumentCommand` now snapshots and validates
+  separate `embedding_batch_size` and `vector_batch_size` values. The effective
+  streaming unit is their minimum with the 1,024 engine ceiling. Each normal
+  high-quality unit is embedded, dimension-validated/resolved when first, sent
+  as one bounded upsert, and marked completed only after its exact
+  acknowledgement; cancellation is checked before the next unit.
+- **D — rejected approaches and cost:** Reaching into adapter private settings,
+  treating adapter-side defensive chunking as the engine contract, or resolving
+  dimension after multiple batches were rejected. The new required immutable
+  command field makes Phase 5 snapshot vector configuration explicitly. The
+  Embedding client's bounded adaptive split after an HTTP size rejection remains
+  an internal exception to one-request normal behavior, and Milvus keeps its
+  defensive split for direct callers.
+- **E — keyword symptom, root cause, and ruling:** The extractor could emit a
+  256–1,024-character word/identifier that the repository correctly rejected at
+  its 255-character storage boundary. A dependency-free shared
+  `MAX_KEYWORD_LENGTH = 255` now controls both sides. Extraction omits an
+  overlong normalized token; persistence still validates defensively. Truncation
+  was rejected because different source terms could collide. A real SQLite
+  repository/engine economy regression proves an overlong-only token completes,
+  stores only valid bounded keywords (possibly none), and makes no external
+  vector calls.
+- **F1–F2 — characterization findings:** Stable segment ID tests now vary
+  dataset index, document, parent, position, and content hash independently,
+  parse the result as UUID version 5, and require 32 lowercase hexadecimal
+  characters. PostgreSQL compilation proves `keywords` is `ARRAY(Text)` with
+  the intended GIN index while SQLite remains JSON. Both new tests passed during
+  RED, so production already honored these contracts and no artificial code
+  change was made.
+- **F3–F6 — small review findings:** The indexing package initializer eagerly
+  imported the engine and therefore PyMilvus, breaking dependency-light economy
+  imports. It now exposes the same API through lazy module attributes, with a
+  subprocess regression that blocks PyMilvus and verifies engine/vector modules
+  stay unloaded. Milvus logical-count parsing now rejects a direct Python int
+  above signed INT64 while accepting the exact maximum, matching the existing
+  decimal-string bound. Historical Task 2 status and Task 5 retrospective
+  headings now state their completed/approved state. Obsolete collection-stats
+  fields and methods were removed from the unit `RecordingMilvusClient`; no
+  production stats API was reintroduced.
+- **F3–F6 — rejected approaches and cost:** Moving PyMilvus imports into economy
+  code, swallowing blocked imports, or narrowing the public package API were
+  rejected; lazy exports preserve compatibility at the cost of first-access
+  resolution. Converting arbitrary direct integers through the existing string
+  parser was rejected in favor of an explicit signed-INT64 check. The already
+  conforming F1/F2 behavior was not rewritten, and the fake-only stats cleanup
+  deliberately changes no adapter behavior.
+- **TDD RED:** Before production edits, `.venv/bin/python -m pytest
+  tests/unit/config/test_settings.py tests/unit/db/test_indexing_models.py
+  tests/unit/indexing/test_import_boundaries.py
+  tests/unit/indexing/test_keywords.py
+  tests/unit/indexing/test_segment_persistence.py
+  tests/unit/indexing/test_document_engine.py
+  tests/unit/vector_stores/test_milvus_store.py -q` reported `28 failed, 169
+  passed, 2 warnings`: A accounted for twelve failures, B one, C nine, D one,
+  E three, F3 one, and F4 one. F1 and F2 passed as valid characterization.
+  Strengthened early batch validation then reported `4 failed`, and the Alembic
+  engine-boundary regression separately reported `1 failed`. These were the
+  expected missing contracts, not environment failures.
+- **TDD GREEN and verification:** A/B/C selectors passed `46 passed, 2
+  warnings`; D selectors passed `5 passed, 2 warnings`; E/F selectors passed
+  `27 passed, 2 warnings`; and the Alembic boundary passed `1 passed, 1
+  warning`. The combined new focused set passed `201 passed, 2 warnings in
+  2.25s`. Repository/indexing/Embedding/vector/config/db unit scopes passed
+  `251 passed, 2 warnings in 2.53s`; parser/segmentation regressions passed `177
+  passed, 1 warning in 0.78s`; the default integration-disabled Milvus module
+  passed `1 passed, 2 skipped, 1 warning`. Direct `py_compile` and `git diff
+  --check` exited zero. One fresh default suite passed `561 passed, 3 skipped,
+  2 warnings in 8.39s`; skips remain opt-in Milvus/MinIO and warnings are the
+  existing Starlette/httpx and jieba/pkg_resources deprecations. A final
+  post-documentation verification is recorded in the phase fix report.
+- **Commits:** Production and regression coverage are in `de2e4b2` (`fix:
+  harden phase 4 indexing contracts`). The documentation/status update is in
+  `docs: record phase 4 final fix wave`, the commit containing this section.
+- **Residual risks:** PostgreSQL dialect compilation deterministically proves
+  statement shape and bind counts, but no live PostgreSQL load/concurrency test
+  ran in this wave. Existing SQLite race tests cover exact and incompatible
+  contenders. Completed-row retry relies on persisted acknowledgement until
+  Phase 5 reconciliation. Adaptive HTTP splitting can still make a configured
+  engine unit more than one transport request after a size rejection. Fixed
+  storage errors intentionally omit backend diagnostics, so deployments need a
+  separate sanitized operator-only signal. No live Docker run was warranted
+  because production Milvus adapter behavior changed only by the direct integer
+  bound.

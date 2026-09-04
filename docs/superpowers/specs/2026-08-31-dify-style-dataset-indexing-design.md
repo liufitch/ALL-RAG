@@ -405,6 +405,17 @@ dispatch_pending_jobs()
 
 文档阶段：claim、download、parse、split、persist staging segments、embed or keywords、write vectors、validate、complete。每阶段更新进度和心跳，并在文档、分段批次、Embedding 批次和 Milvus 批次之间检查取消标记。
 
+Phase 4 最终审查明确了单文档执行契约：命令同时快照并独立校验
+Embedding 与向量写入 batch size；引擎物理流式单元取两者和引擎上限的
+最小值，使正常配置下每个 Embedding 结果对应一次 Milvus upsert 和一次
+PostgreSQL 状态确认。首次物理 Embedding 结果锁定维度并只解析一次目标，
+然后立即写入对应 batch。重试仅接受未删除且仍为 `indexing` 的 staging
+记录；高质量 general/child 可为 `waiting` 或 `completed`，parent 与 economy
+必须为 `not_required`。已 `completed` 的高质量记录不重复 Embedding 或写入。
+成功结果中的 `vector_count` 表示该文档全部已就绪的可索引记录数（原已完成
+加本次确认），不表示本次写入量，也不以 collection-wide count 校验；后者仍
+由 Phase 5 负责。
+
 ## 14. 幂等、恢复和补偿
 
 - RabbitMQ/Celery 是至少一次投递，重复消息是预期情况。

@@ -257,6 +257,16 @@ Expected: FAIL on imports.
 
 Use a fixed application namespace UUID and `uuid5(namespace, canonical_string).hex`. Hash normalized content plus canonical JSON source metadata with SHA-256. Parents get `embedding_status="not_required"`; high-quality general/child segments get `waiting`; economy segments get `not_required`. Upsert exact retry IDs without creating duplicates, but reject an existing same ID with different content hash.
 
+Final-review clarification: validate every candidate before the first database
+mutation, issue conflict-safe inserts and all-ID reloads in explicit batches of at
+most 500 records, and keep the caller-owned transaction. An exact retry is valid
+only for a non-deleted `indexing` row with technique-compatible embedding state:
+high-quality general/child rows may be `waiting` or `completed`, while parent and
+economy rows remain `not_required`. Repository SQLAlchemy failures cross a fixed,
+typed, content-free storage-error boundary; validation and programmer errors do
+not. Every application and migration async engine hides bound parameters as
+defense in depth.
+
 - [ ] **Step 4: Run persistence tests**
 
 Run: `python -m pytest tests/unit/indexing/test_segment_persistence.py -v`
@@ -274,7 +284,7 @@ git commit -m "feat: stage deterministic document segments"
 
 **Interfaces:**
 - Produces: `DocumentIndexingEngine.run(command, progress) -> IndexDocumentResult`。
-- `IndexDocumentCommand` contains immutable IDs/config snapshot and `collection_name`/expected dimension when high quality.
+- `IndexDocumentCommand` contains immutable IDs/config snapshot, independently validated `embedding_batch_size` and `vector_batch_size` snapshots, and `collection_name`/expected dimension when high quality.
 - `ProgressReporter.update(stage: str, progress: int, processed_segments: int)` and `check_cancelled()`.
 - Consumes: `VectorTargetResolver.resolve(index_id: str, discovered_dimension: int) -> Awaitable[VectorTarget]`; phase 5 supplies the PostgreSQL/Milvus coordinator and unit tests supply a fake.
 
@@ -325,6 +335,20 @@ download → parse → split → stage → embed-or-keywords → vector-upsert �
 ```
 
 For an existing index, the command supplies its resolved collection/dimension. For a building index, the engine embeds the first non-empty batch, obtains `discovered_dimension`, calls `VectorTargetResolver.resolve`, then writes that batch and all remaining batches to the returned collection. Call `progress.check_cancelled()` between stages and every batch. Mark segment embedding status after the corresponding vector batch succeeds; validate vector count against indexable segment count. Do not activate segments in this engine—phase 5 finalization owns activation and version switching.
+
+Final-review clarification: one engine streaming unit is
+`min(1024, embedding_batch_size, vector_batch_size)`, so normally one Embedding
+request corresponds to one submitted Milvus upsert and one PostgreSQL status
+acknowledgement. The Embedding client may still adaptively split a rejected HTTP
+request, and the Milvus adapter retains defensive chunking, but configured engine
+batches do not exceed either snapshot. Before either external dependency is
+called, staged rows must be non-deleted, remain `indexing`, and have the
+technique-compatible embedding state described in Task 4. A high-quality retry
+skips rows already `completed` and processes only `waiting` rows. On successful
+return, `IndexDocumentResult.vector_count` means total ready indexable rows for
+the document (previously completed plus newly acknowledged), not writes made by
+this invocation and not collection-wide cardinality; Phase 5 owns independent
+collection reconciliation.
 
 - [ ] **Step 4: Run engine regression tests**
 
