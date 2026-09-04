@@ -141,3 +141,96 @@ locking or the final cross-store activation transaction.
 
 Final Task-4 commit: `feat: stage deterministic document segments` (the commit
 SHA is supplied with this task handoff).
+
+## Fix Round 1 — race-safe deterministic staging
+
+### Finding, reproduction, and root cause
+
+The original `stage` implementation selected candidate IDs, added ORM objects,
+then flushed. Two transactions could both observe no row, after which the loser
+received a primary-key `IntegrityError`. Because that flush was not protected by
+a savepoint, SQLAlchemy marked the caller-owned transaction as failed; this was
+neither idempotent success nor the required safe conflict error.
+
+The test suite now creates a real SQLite database file with an `AsyncSession`
+for the repository and a separate synchronous connection. A SQLAlchemy cursor
+event commits an interloper exactly when the repository begins the target insert
+(no sleep or mock timing). The exact interloper has the same immutable fields
+and hash; the conflict interloper reuses the deterministic ID with incompatible
+content/hash. Each test then stages a separate second document through the same
+session, proving the caller's outer transaction remains usable. Timestamp tests
+now refresh records from SQLite before asserting that timestamp values persisted;
+they no longer claim SQLite returns timezone-aware datetimes, because SQLite's
+datetime storage does not preserve that distinction. Production values still
+come from aware UTC `utcnow`.
+
+Initial RED command:
+
+```text
+.venv/bin/python -m pytest tests/unit/indexing/test_segment_persistence.py -v
+```
+
+Result: `2 failed, 12 passed, 2 warnings`. Both new tests reached the expected
+`sqlite3.IntegrityError: UNIQUE constraint failed: document_segments.id` from
+`SegmentRepository.stage`'s unprotected ORM flush. This proves the failure was
+at the select/add/flush transaction boundary rather than a test fixture or
+parent/link calculation.
+
+### Design and implementation
+
+The fix replaces the add/flush batch with one dialect-native batch upsert:
+
+- PostgreSQL uses `INSERT ... ON CONFLICT (id) DO NOTHING`.
+- SQLite uses the equivalent `ON CONFLICT (id) DO NOTHING` for the real async
+  behavior test environment.
+- The repository then reloads **every** requested candidate and reapplies the
+  complete immutable-identity/content hash/normalized content/metadata check
+  before returning records in preview order.
+
+This is one statement for the missing batch plus reloads, not an O(n) per-row
+savepoint design. Expected ID collisions never raise, so there is no rollback
+of the caller's outer transaction. Any non-unique `IntegrityError`, SQL/program
+error, or unsupported dialect still propagates normally rather than being
+misclassified as a retry. The method remains caller-owned and commit-free: the
+upsert is part of the current transaction and makes no commit. A matching row is
+an idempotent success; a row with any incompatible immutable identity safely
+raises `SegmentPersistenceError` after reload.
+
+Rejected approaches: catching all `IntegrityError` values (would hide foreign
+key/check/program errors), per-row nested savepoints (inefficient and no need
+when the database can atomically ignore the intended PK conflict), and a timing
+dependent two-coroutine test (flaky under SQLite locking). A savepoint recovery
+would preserve an outer transaction, but the native upsert removes the expected
+error path while also handling an entire batch efficiently.
+
+### GREEN and verification
+
+Unchanged focused command after implementation: `14 passed, 2 warnings in
+0.10s`. The added tests cover exact race recovery, conflicting race safe failure,
+and continued use of the same outer session. Relevant db/repository/
+segmentation/keyword regressions passed `65 passed, 2 warnings in 0.94s`.
+`py_compile` of the repository and persistence tests and `git diff --check`
+exited successfully. The two warnings remain the existing Starlette/httpx and
+jieba/pkg_resources deprecations.
+
+Final verification command:
+
+```text
+.venv/bin/python -m py_compile rag_modules/repositories/segment_repository.py tests/unit/indexing/test_segment_persistence.py
+git diff --check
+.venv/bin/python -m pytest -v
+```
+
+`py_compile` and `git diff --check` completed with no output/errors. The fresh
+full suite passed `470 passed, 1 skipped, 2 warnings in 7.04s`; the skip is the
+opt-in MinIO integration test and warnings are unchanged. Final review confirms
+that the race path has no exception catch, no commit, no vector behavior, and
+reloads every candidate before returning.
+
+Final fix commit: `fix: make segment staging race-safe` (the SHA is supplied
+with this task handoff). Residual risk: SQLite validates deterministic conflict
+behavior, but PostgreSQL production deployment is still responsible for its
+isolation and lock-timeout configuration. Under PostgreSQL Read Committed, `ON
+CONFLICT` waits for a conflicting transaction to decide, and the following
+reload sees the committed winner; an aborted competing transaction permits this
+insert instead.

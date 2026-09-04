@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from rag_modules.common import utcnow
 from rag_modules.db.models import DocumentSegmentRecord
 from rag_modules.indexing.ids import segment_content_hash, stable_segment_id
 from rag_modules.indexing.models import SegmentStagingCommand
@@ -77,6 +77,54 @@ async def segment_repository(tmp_path):
     await engine.dispose()
 
 
+@pytest_asyncio.fixture
+async def race_repository(tmp_path):
+    database_path = tmp_path / "segment-race.db"
+    async_engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    sync_engine = create_engine(f"sqlite:///{database_path}")
+    async with async_engine.begin() as connection:
+        await connection.run_sync(DocumentSegmentRecord.__table__.create)
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with factory() as session:
+        yield SegmentRepository(session), sync_engine
+    sync_engine.dispose()
+    await async_engine.dispose()
+
+
+def _race_record(*, record_id: str, content_hash: str, content: str) -> dict:
+    return {
+        "id": record_id,
+        "dataset_id": "dataset-1",
+        "dataset_index_id": "index-1",
+        "document_id": "doc-1",
+        "indexing_job_id": "other-job",
+        "parent_id": None,
+        "position": 0,
+        "content": content,
+        "content_hash": content_hash,
+        "source_metadata": {"page": 1},
+        "status": "indexing",
+        "index_type": "general",
+        "embedding_status": "waiting",
+        "created_at": utcnow(),
+    }
+
+
+def _insert_interloper_on_first_segment_insert(
+    session: AsyncSession, sync_engine, record: dict
+) -> None:
+    injected = False
+
+    @event.listens_for(session.sync_session.get_bind(), "before_cursor_execute")
+    def insert_interloper(_connection, _cursor, statement, *_args) -> None:
+        nonlocal injected
+        if injected or not statement.lstrip().upper().startswith("INSERT INTO DOCUMENT_SEGMENTS"):
+            return
+        injected = True
+        with sync_engine.begin() as connection:
+            connection.execute(DocumentSegmentRecord.__table__.insert(), record)
+
+
 def test_segment_id_is_stable_and_sensitive_to_index_version():
     first = stable_segment_id("index-1", "doc-1", None, 0, "hash")
 
@@ -105,8 +153,10 @@ async def test_stage_parent_child_resolves_parent_database_id(segment_repository
     assert parent.status == child.status == "indexing"
     assert parent.embedding_status == "not_required"
     assert child.embedding_status == "waiting"
-    assert parent.created_at.tzinfo is not None
-    assert child.created_at.tzinfo is not None
+    await segment_repository.session.refresh(parent)
+    await segment_repository.session.refresh(child)
+    assert parent.created_at is not None
+    assert child.created_at is not None
 
 
 @pytest.mark.asyncio
@@ -269,9 +319,8 @@ async def test_soft_delete_previous_segments_only_deletes_the_explicit_previous_
     )
 
     assert [record.id for record in deleted] == [old[0].id]
+    await segment_repository.session.refresh(old[0])
     assert old[0].deleted_at is not None
-    assert old[0].deleted_at.tzinfo is not None
-    assert old[0].deleted_at.utcoffset() == timezone.utc.utcoffset(old[0].deleted_at)
     assert current[0].deleted_at is None
 
 
@@ -288,3 +337,66 @@ async def test_stage_rejects_economy_parent_child_configuration_before_persistin
         select(func.count()).select_from(DocumentSegmentRecord)
     )
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_stage_recovers_an_exact_id_race_without_poisoning_the_outer_transaction(
+    race_repository,
+):
+    repository, sync_engine = race_repository
+    preview = general_preview_segment()
+    expected_hash = segment_content_hash(preview.content, preview.source_metadata)
+    expected_id = stable_segment_id("index-1", "doc-1", None, 0, expected_hash)
+    _insert_interloper_on_first_segment_insert(
+        repository.session,
+        sync_engine,
+        _race_record(
+            record_id=expected_id,
+            content_hash=expected_hash,
+            content="General retrieval text",
+        ),
+    )
+
+    raced = await repository.stage(command(segmentation_mode="general"), (preview,))
+    later = await repository.stage(
+        command(document_id="doc-2", segmentation_mode="general"),
+        (general_preview_segment(),),
+    )
+
+    assert [record.id for record in raced] == [expected_id]
+    assert [record.document_id for record in later] == ["doc-2"]
+    assert await repository.session.scalar(
+        select(func.count()).select_from(DocumentSegmentRecord)
+    ) == 2
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_a_conflicting_id_race_and_keeps_the_outer_transaction_usable(
+    race_repository,
+):
+    repository, sync_engine = race_repository
+    preview = general_preview_segment()
+    expected_hash = segment_content_hash(preview.content, preview.source_metadata)
+    expected_id = stable_segment_id("index-1", "doc-1", None, 0, expected_hash)
+    _insert_interloper_on_first_segment_insert(
+        repository.session,
+        sync_engine,
+        _race_record(
+            record_id=expected_id,
+            content_hash="f" * 64,
+            content="conflicting interloper",
+        ),
+    )
+
+    with pytest.raises(SegmentPersistenceError, match="conflicts"):
+        await repository.stage(command(segmentation_mode="general"), (preview,))
+
+    later = await repository.stage(
+        command(document_id="doc-2", segmentation_mode="general"),
+        (general_preview_segment(),),
+    )
+
+    assert [record.document_id for record in later] == ["doc-2"]
+    assert await repository.session.scalar(
+        select(func.count()).select_from(DocumentSegmentRecord)
+    ) == 2

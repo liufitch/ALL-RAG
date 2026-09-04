@@ -1427,3 +1427,54 @@ After every task, append:
   but it cannot prove PostgreSQL locking or a cross-PostgreSQL/Milvus atomic
   transaction. A concurrent identical staging race still relies on the database
   primary key and Phase 5's transaction/retry orchestration to reload safely.
+
+### SEG-002 Phase 4 Task 4 Fix Round 1 — race-safe batch segment staging (executed 2026-09-04)
+
+- **Review finding and root cause:** `stage`'s sequential select then ORM
+  add/flush flow allowed concurrent transactions to both observe missing IDs.
+  The loser received a primary-key `IntegrityError`, which failed its entire
+  caller-owned SQLAlchemy transaction. Thus an exact retry did not consistently
+  return the existing row, while a conflicting collision did not become the
+  public `SegmentPersistenceError` either.
+- **Deterministic reproduction:** New real SQLite file tests use one async
+  repository session and an independent committed connection. A cursor event
+  inserts the competing row precisely when the repository begins its insert, so
+  no wall-clock timing or mock assertions are involved. Before the fix, the
+  focused suite reported `2 failed, 12 passed`; both race cases produced
+  `sqlite3.IntegrityError: UNIQUE constraint failed: document_segments.id` at
+  the unprotected flush. The test then requires staging a distinct document in
+  the same outer session, which the old failure cannot safely do.
+- **Ruling and fix:** Staging now uses one dialect-native batch `INSERT ... ON
+  CONFLICT (id) DO NOTHING` for missing records (PostgreSQL production and
+  SQLite real-behavior tests), then reloads every requested ID and checks the
+  full immutable identity, content hash, normalized content, and metadata before
+  it returns. An exact raced row therefore succeeds idempotently; an incompatible
+  raced row safely fails only after reload; no expected collision exceptions or
+  outer transaction rollback occur. This is batch-safe and avoids O(n) per-row
+  savepoints. The method is still commit-free and uses the caller's transaction.
+  Non-unique constraint/database/program failures are not caught or relabeled.
+- **Timestamp correction:** Earlier tests asserted only the in-memory aware UTC
+  value assigned by `utcnow`. They now refresh after persistence and assert the
+  timestamp exists. SQLite does not round-trip timezone-awareness, so that
+  limitation is documented rather than overclaimed; PostgreSQL remains mapped
+  with `DateTime(timezone=True)` and receives aware UTC values.
+- **Rejected approaches:** Broad `IntegrityError` catches would hide FKs/checks
+  and unrelated failures. Per-row savepoints preserve a caller transaction but
+  add avoidable O(n) write/rollback work and still require reload validation.
+  Timing-dependent concurrent tasks were rejected for deterministic cursor-event
+  injection through two actual database connections.
+- **Final verification:** The unchanged focused persistence suite passed `14
+  passed, 2 warnings in 0.10s`; relevant db/repository/segmentation/keyword
+  regressions passed `65 passed, 2 warnings in 0.94s`; direct `py_compile` and
+  `git diff --check` passed. One fresh complete `.venv/bin/python -m pytest -v`
+  run passed `470 passed, 1 skipped, 2 warnings in 7.04s`; the skip is opt-in
+  MinIO, and warnings remain the existing Starlette/httpx and jieba/pkg_resources
+  notices. Final review verified no catch/commit/vector behavior in the race
+  path and exact validation after the all-ID reload.
+- **Final commit:** `fix: make segment staging race-safe` (the SHA is recorded
+  in the Task 4 Fix Round 1 handoff after Git creates the commit).
+- **Residual risk:** SQLite proves the ORM conflict result and continued
+  transaction usability but not PostgreSQL deployment lock timeouts/isolation.
+  PostgreSQL `ON CONFLICT` resolves a concurrent primary-key contender before
+  the following reload under normal Read Committed semantics; production must
+  retain ordinary database timeout/retry policy for disconnects or lock timeouts.

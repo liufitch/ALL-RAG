@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag_modules.common import utcnow
@@ -56,42 +58,17 @@ class SegmentRepository:
         if not candidates:
             return []
 
-        result = await self.session.execute(
-            select(DocumentSegmentRecord).where(
-                DocumentSegmentRecord.id.in_([candidate.id for candidate in candidates])
-            )
-        )
-        existing_by_id = {record.id: record for record in result.scalars()}
-        for candidate in candidates:
-            existing = existing_by_id.get(candidate.id)
-            if existing is not None and not self._is_exact_retry(command, candidate, existing):
-                raise SegmentPersistenceError("A deterministic segment ID conflicts with existing data.")
+        existing_by_id = await self._load_by_id(candidates)
+        records = self._exact_existing_records(command, candidates, existing_by_id)
+        missing = [candidate for candidate in candidates if candidate.id not in existing_by_id]
+        if not missing:
+            return records
 
-        records: list[DocumentSegmentRecord] = []
-        for candidate in candidates:
-            existing = existing_by_id.get(candidate.id)
-            if existing is not None:
-                records.append(existing)
-                continue
-            record = DocumentSegmentRecord(
-                id=candidate.id,
-                dataset_id=command.dataset_id,
-                dataset_index_id=command.dataset_index_id,
-                document_id=command.document_id,
-                indexing_job_id=command.indexing_job_id,
-                parent_id=candidate.parent_id,
-                position=candidate.preview.position,
-                content=candidate.content,
-                content_hash=candidate.content_hash,
-                source_metadata=candidate.source_metadata,
-                status="indexing",
-                index_type=candidate.preview.index_type,
-                embedding_status=candidate.embedding_status,
-                created_at=utcnow(),
-            )
-            self.session.add(record)
-            records.append(record)
-        await self.session.flush()
+        await self.session.execute(self._insert_missing_statement(command, missing))
+        existing_by_id = await self._load_by_id(candidates)
+        records = self._exact_existing_records(command, candidates, existing_by_id)
+        if len(records) != len(candidates):  # pragma: no cover - conflict writes are statement-visible
+            raise SegmentPersistenceError("A deterministic segment ID could not be staged safely.")
         return records
 
     async def activate_document_segments(
@@ -150,6 +127,64 @@ class SegmentRepository:
             .order_by(DocumentSegmentRecord.position.asc(), DocumentSegmentRecord.id.asc())
         )
         return list(result.scalars())
+
+    async def _load_by_id(self, candidates: list[_Candidate]) -> dict[str, DocumentSegmentRecord]:
+        result = await self.session.execute(
+            select(DocumentSegmentRecord).where(
+                DocumentSegmentRecord.id.in_([candidate.id for candidate in candidates])
+            )
+        )
+        return {record.id: record for record in result.scalars()}
+
+    def _insert_missing_statement(
+        self, command: SegmentStagingCommand, missing: list[_Candidate]
+    ):
+        dialect_name = self.session.get_bind().dialect.name
+        if dialect_name == "postgresql":
+            insert_statement = postgresql_insert(DocumentSegmentRecord)
+        elif dialect_name == "sqlite":
+            insert_statement = sqlite_insert(DocumentSegmentRecord)
+        else:  # The configured production store is PostgreSQL; SQLite is the test dialect.
+            raise RuntimeError("Segment staging requires PostgreSQL or SQLite conflict handling.")
+        return insert_statement.values(
+            [self._candidate_values(command, candidate) for candidate in missing]
+        ).on_conflict_do_nothing(index_elements=[DocumentSegmentRecord.id])
+
+    @staticmethod
+    def _candidate_values(command: SegmentStagingCommand, candidate: _Candidate) -> dict:
+        return {
+            "id": candidate.id,
+            "dataset_id": command.dataset_id,
+            "dataset_index_id": command.dataset_index_id,
+            "document_id": command.document_id,
+            "indexing_job_id": command.indexing_job_id,
+            "parent_id": candidate.parent_id,
+            "position": candidate.preview.position,
+            "content": candidate.content,
+            "content_hash": candidate.content_hash,
+            "source_metadata": candidate.source_metadata,
+            "status": "indexing",
+            "index_type": candidate.preview.index_type,
+            "embedding_status": candidate.embedding_status,
+            "created_at": utcnow(),
+        }
+
+    @classmethod
+    def _exact_existing_records(
+        cls,
+        command: SegmentStagingCommand,
+        candidates: list[_Candidate],
+        existing_by_id: dict[str, DocumentSegmentRecord],
+    ) -> list[DocumentSegmentRecord]:
+        records: list[DocumentSegmentRecord] = []
+        for candidate in candidates:
+            existing = existing_by_id.get(candidate.id)
+            if existing is None:
+                continue
+            if not cls._is_exact_retry(command, candidate, existing):
+                raise SegmentPersistenceError("A deterministic segment ID conflicts with existing data.")
+            records.append(existing)
+        return records
 
     @staticmethod
     def _validate_command(command: SegmentStagingCommand) -> None:
