@@ -20,7 +20,7 @@ from rag_modules.config.settings import settings
 from rag_modules.parsing.base import ParseContext
 from rag_modules.parsing.models import DocumentParseError, ParsedDocument, ParserWarning
 from rag_modules.parsing.tabular import TableRowBudget, table_blocks
-from rag_modules.parsing.warnings import BoundedWarningCollector
+from rag_modules.parsing.warnings import BoundedWarningCollector, parser_warning_summary
 
 
 _WORKBOOK_PART = "xl/workbook.xml"
@@ -92,7 +92,7 @@ class XlsxParser:
             blocks = []
             warnings = BoundedWarningCollector[ParserWarning](
                 settings.parser.max_warnings_per_document,
-                _warnings_truncated,
+                parser_warning_summary,
             )
             budget = TableRowBudget()
             formula_worksheets = formula_workbook.worksheets
@@ -511,14 +511,6 @@ def _formula_cache_warning(
             "count": aggregate.count,
             "sample_cells": list(aggregate.sample_cells),
         },
-    )
-
-
-def _warnings_truncated(omitted_count: int) -> ParserWarning:
-    return ParserWarning(
-        "WARNINGS_TRUNCATED",
-        "Additional warnings were omitted.",
-        {"omitted_count": omitted_count},
     )
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any, Generic, Protocol, TypeVar
 
+from rag_modules.parsing.models import ParserWarning
+
 
 class WarningLike(Protocol):
     """The warning fields needed to recognize and fold truncation summaries."""
@@ -64,3 +66,12 @@ class BoundedWarningCollector(Generic[_WarningT]):
         if self._omitted_count == 0:
             return retained
         return (*retained, self._summary_factory(self._omitted_count))
+
+
+def parser_warning_summary(omitted_count: int) -> ParserWarning:
+    """Build the safe document-level summary used by parser warning collectors."""
+    return ParserWarning(
+        "WARNINGS_TRUNCATED",
+        "Additional warnings were omitted.",
+        {"omitted_count": omitted_count},
+    )

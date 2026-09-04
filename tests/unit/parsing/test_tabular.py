@@ -893,6 +893,45 @@ def test_xls_and_xlsx_warn_for_hidden_very_hidden_and_nondata_sheets():
         assert [warning.code for warning in parsed.warnings].count("EMPTY_SHEET_SKIPPED") == 2
 
 
+def test_xls_bounds_hidden_and_empty_sheet_warnings_while_preserving_data(monkeypatch):
+    """Legacy workbooks must not retain sheet-scale warnings beyond the document cap."""
+    monkeypatch.setattr(settings.parser, "max_warnings_per_document", 3)
+
+    def configure(workbook):
+        hidden_one = workbook.add_sheet("HiddenOne")
+        hidden_one.visibility = 1
+        hidden_one.write(0, 0, "secret")
+        workbook.add_sheet("EmptyOne")
+        hidden_two = workbook.add_sheet("HiddenTwo")
+        hidden_two.visibility = 2
+        hidden_two.write(0, 0, "secret")
+        workbook.add_sheet("EmptyTwo")
+        data = workbook.add_sheet("Data")
+        data.write(0, 0, "列")
+        data.write(1, 0, "值")
+
+    parsed = XlsParser().parse(
+        io.BytesIO(_xls_bytes(configure)), ParseContext("d", "warnings.xls")
+    )
+
+    assert [(block.text, block.metadata) for block in parsed.blocks] == [
+        ("列：值", {"sheet": "Data", "row": 2, "headers": ["列"]})
+    ]
+    assert [warning.code for warning in parsed.warnings] == [
+        "HIDDEN_SHEET_SKIPPED",
+        "EMPTY_SHEET_SKIPPED",
+        "WARNINGS_TRUNCATED",
+    ]
+    assert [warning.metadata for warning in parsed.warnings[:2]] == [
+        {"sheet": "HiddenOne"},
+        {"sheet": "EmptyOne"},
+    ]
+    summary = parsed.warnings[-1]
+    assert summary.message == "Additional warnings were omitted."
+    assert summary.metadata == {"omitted_count": 2}
+    assert "sheet" not in summary.metadata
+
+
 def test_xlsx_prefers_real_cached_formula_and_warns_when_cache_is_absent():
     """Formula text is only a fallback; a genuine OOXML cached value wins."""
     def workbook_with_formulas(workbook):

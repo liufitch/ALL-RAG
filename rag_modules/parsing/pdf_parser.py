@@ -15,6 +15,7 @@ from rag_modules.parsing.models import (
     ParserWarning,
 )
 from rag_modules.parsing.text_parser import normalize_text
+from rag_modules.parsing.warnings import BoundedWarningCollector, parser_warning_summary
 
 
 class PdfParser:
@@ -40,7 +41,10 @@ class PdfParser:
             )
 
         blocks: list[ParsedBlock] = []
-        warnings: list[ParserWarning] = []
+        warnings = BoundedWarningCollector[ParserWarning](
+            settings.parser.max_warnings_per_document,
+            parser_warning_summary,
+        )
         for page_number, page in enumerate(reader.pages, start=1):
             try:
                 extracted = page.extract_text() or ""
@@ -48,7 +52,7 @@ class PdfParser:
                 raise _malformed_pdf_error() from error
             paragraphs = _pdf_paragraphs(extracted)
             if not paragraphs:
-                warnings.append(
+                warnings.add(
                     ParserWarning(
                         "PDF_EMPTY_PAGE",
                         "The PDF page contains no extractable text.",
@@ -71,7 +75,7 @@ class PdfParser:
             source_type=self.source_type,
             blocks=tuple(blocks),
             metadata={"page_count": page_count},
-            warnings=tuple(warnings),
+            warnings=warnings.result(),
         )
 
 

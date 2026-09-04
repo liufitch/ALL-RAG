@@ -2,6 +2,7 @@ import io
 from pathlib import Path
 
 import pytest
+from pypdf import PdfReader, PdfWriter
 
 import rag_modules.parsing.docx_parser as docx_parser_module
 from rag_modules.config.settings import settings
@@ -20,6 +21,16 @@ def fixture_bytes():
         return (FIXTURE_DIRECTORY / name).read_bytes()
 
     return load
+
+
+def _pdf_with_empty_pages_then_text(empty_pages: int, text_pdf: bytes) -> bytes:
+    output = io.BytesIO()
+    writer = PdfWriter()
+    for _ in range(empty_pages):
+        writer.add_blank_page(width=72, height=72)
+    writer.add_page(PdfReader(io.BytesIO(text_pdf)).pages[0])
+    writer.write(output)
+    return output.getvalue()
 
 
 def test_pdf_parser_preserves_page_numbers_and_normalizes_wrapped_text(fixture_bytes):
@@ -49,6 +60,42 @@ def test_pdf_parser_warns_for_empty_pages_but_keeps_text_from_other_pages(fixtur
     assert [(warning.code, warning.metadata) for warning in parsed.warnings] == [
         ("PDF_EMPTY_PAGE", {"page": 2})
     ]
+
+
+@pytest.mark.parametrize(
+    ("empty_pages", "omitted_count"),
+    [
+        pytest.param(3, 1, id="exact-limit"),
+        pytest.param(5, 3, id="over-limit"),
+    ],
+)
+def test_pdf_parser_bounds_empty_page_warnings_and_keeps_later_text(
+    monkeypatch, fixture_bytes, empty_pages, omitted_count
+):
+    """An empty-page run must not bypass the per-document warning cap."""
+    monkeypatch.setattr(settings.parser, "max_warnings_per_document", 3)
+    payload = _pdf_with_empty_pages_then_text(
+        empty_pages, fixture_bytes("two-pages.pdf")
+    )
+
+    parsed = PdfParser().parse(io.BytesIO(payload), ParseContext("d", "mixed.pdf"))
+
+    assert [(block.text, block.metadata) for block in parsed.blocks] == [
+        ("Alphabeta", {"page": empty_pages + 1})
+    ]
+    assert [warning.code for warning in parsed.warnings] == [
+        "PDF_EMPTY_PAGE",
+        "PDF_EMPTY_PAGE",
+        "WARNINGS_TRUNCATED",
+    ]
+    assert [warning.metadata for warning in parsed.warnings[:2]] == [
+        {"page": 1},
+        {"page": 2},
+    ]
+    summary = parsed.warnings[-1]
+    assert summary.message == "Additional warnings were omitted."
+    assert summary.metadata == {"omitted_count": omitted_count}
+    assert "page" not in summary.metadata
 
 
 def test_scanned_pdf_reports_specific_error(fixture_bytes):

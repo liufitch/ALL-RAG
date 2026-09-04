@@ -853,3 +853,48 @@ After every task, append:
   recursion or parse exception before the configured threshold on a different
   runtime, but the same bounded-raw fallback handles it without exposing source
   text beyond 65,536 characters. No public parser or registry contract changed.
+
+### SAFE-007 Whole-plan Fix W1 — PDF/XLS parser warning caps (executed 2026-09-04)
+
+- **Whole-review finding and impact:** `XlsxParser` applied the configured
+  per-document warning cap, but `PdfParser` and `XlsParser` accumulated ordinary
+  warning lists. A PDF could retain one `PDF_EMPTY_PAGE` warning for every page
+  before later valid text, up to the separate 500-page ceiling, and an XLS file
+  could retain one warning for every hidden or data-empty sheet before a valid
+  sheet. This violated the parser-level warning bound used by direct parser and
+  future indexing-worker consumers.
+- **Root cause and boundary ruling:** PDF and XLS predated the shared
+  `BoundedWarningCollector` integration used by XLSX. Preview's collector was
+  insufficient because it runs after parsing: each parser had already retained
+  its complete warning list, and callers that consume parsers directly never
+  pass through PreviewService. The cap therefore belongs at each producing
+  parser, not only at an HTTP response boundary.
+- **Rejected approach:** A broad `ParserRegistry` wrapper was rejected because
+  it would hide noncompliance in individual parsers, risk changing every parser's
+  ordering and error boundary, and still allow direct parser instances to bypass
+  the cap. Copying the XLSX truncation factory into PDF and XLS was rejected to
+  prevent warning-code, message, or metadata drift.
+- **Implementation:** Added one shared `parser_warning_summary(omitted_count)`
+  factory in `parsing/warnings.py`. PDF and XLS now add warnings to a
+  request-local `BoundedWarningCollector` configured by
+  `max_warnings_per_document`; XLSX reuses the same factory with byte-for-byte
+  equivalent code, message, and `{"omitted_count": int}` metadata. Existing
+  block extraction, warning order, malformed-input handling, resource cleanup,
+  and no-extractable-text errors remain unchanged.
+- **TDD RED evidence:** Before production edits, the focused PDF/XLS command
+  produced `3 failed, 1 warning`: both the exact-limit and over-limit PDF cases
+  returned raw `PDF_EMPTY_PAGE` entries instead of a summary, and XLS returned
+  four raw hidden/empty-sheet warnings instead of its bounded prefix and summary.
+  The later valid PDF paragraph and XLS table block assertions already passed.
+- **GREEN and regression evidence:** The focused command produced `3 passed, 1
+  warning`. Collector plus parsing plus PreviewService produced `159 passed, 1
+  warning`. The single full-suite run produced `330 passed, 1 skipped, 1
+  warning` in 5.78 seconds. The warning was the repository's existing
+  Starlette/httpx deprecation warning.
+- **Fix commit to be created:** `fix: enforce parser warning caps`.
+- **Residual risk/status:** The collectors bound retained output and metadata,
+  but parsers still construct one short-lived warning object per skipped page or
+  sheet so omission counts remain exact; the independent PDF page, spreadsheet
+  structure, and parser timeout/work limits bound that traversal. Other parsers
+  were not wrapped broadly and retain their existing producer-specific warning
+  strategies. No public parser model or warning schema changed.
