@@ -1,1910 +1,675 @@
-# Dataset Indexing Issue Retrospective
+# 数据集索引问题复盘
 
-**Started:** 2026-09-03  
-**Scope:** From the earliest reported knowledge-base API problem through the
-current parsing/preview safety remediation.  
-**Update rule:** Append new incidents and review findings chronologically. Do
-not erase superseded rulings; mark them as superseded and explain why. Never
-record passwords, API keys, source document bodies, complete vectors, or raw
-backend exception payloads.
+**开始日期：** 2026-09-03
+**覆盖范围：** 从最早的知识库接口和数据库配置问题，一直到文件解析、预览、
+分段、嵌入、Milvus、PostgreSQL 持久化、单文档索引和最终合并验证。
+**记录规则：** 新问题按时间追加；被后续结论取代的裁决不能删除，必须说明被
+取代的原因。不得记录密码、API 密钥、源文档正文、完整向量或后端原始异常载荷。
 
-## How to read this document
+## 阅读说明
 
-Each entry distinguishes its evidence source:
+- **用户报告：** 用户在开发环境观察到或在需求讨论中明确提供。
+- **代码证据：** 可以追溯到提交、配置模型、接口、迁移或实现差异。
+- **测试或审查证据：** 由自动化测试、受限探针、真实服务或独立审查复现。
+- **已解决：** 已实现、审查并验证。
+- **已被取代：** 早期结论后来被证伪或由更完整方案替换，仍保留用于复盘。
+- **未解决：** 已确认但尚未通过独立审查。
 
-- **User report:** observed in the development environment or supplied during
-  requirements discussion; it may predate automated regression coverage.
-- **Git/code evidence:** traceable to a repository commit, configuration model,
-  route, migration, or implementation diff.
-- **Test/review evidence:** reproduced by an automated test, bounded probe, or
-  independent code review.
-
-Statuses:
-
-- **Resolved:** implemented, reviewed and verified at the recorded commit.
-- **Superseded:** an earlier decision was later disproved or replaced; retained
-  here for learning.
-- **Open:** confirmed and not yet accepted by independent review.
-- **Design/plan:** implementation has not started.
+命令、路径、类名、错误码、提交哈希、协议字段和第三方产品名必须精确引用，
+因此保持原样；除此之外，本文说明正文全部使用中文。
 
 ---
 
-## 1. Earliest knowledge-base API and configuration issues
-
-### KB-001 — Knowledge-base list request returned 404
-
-- **Source:** User report: `GET /api/knowledge_base/list?status=all&visibility=all`
-  returned `404 Not Found`.
-- **Impact:** The frontend could not load the knowledge-base list and initially
-  appeared disconnected from backend persistence.
-- **Root-cause direction:** The original route set and frontend expectations
-  were not aligned. The early codebase evolved from a local/tutorial-style
-  implementation rather than a stable dataset API contract.
-- **Decision:** The new API uses PostgreSQL-backed `datasets` domain records and
-  dedicated knowledge-base/document routers. Compatibility must be verified
-  through API route tests rather than by adding another JSON fallback.
-- **Evidence:** Early frontend commits `a34a3bd` and `044098e`; architecture and
-  implementation plans in commits `4739752` and `7cef002`; dataset creation in
-  `f134257`.
-- **Evidence:** The current `rag_modules/api/knowledge_base_api.py` registers
-  `GET /api/knowledge_base/list`; `tests/test_api_routes.py` asserts the exact
-  frontend path is present in OpenAPI, and `tests/api/test_dataset_api.py`
-  exercises list behavior.
-- **Status:** Resolved by the PostgreSQL-backed API route and contract tests.
-- **Lesson:** Freeze the frontend/backend route contract before implementing
-  persistence. A 404 should trigger route inventory and contract tests, not a
-  second data source.
-
-### KB-002 — Obsolete `data/knowledge_base.json` / `knowledge_bases.json`
-
-- **Source:** User report and explicit request to delete the unused JSON file.
-- **Impact:** A stale local JSON path obscured the real source of truth and made
-  it unclear whether PostgreSQL or a file supplied knowledge-base data.
-- **Root cause:** Tutorial/local persistence remained adjacent to the new API
-  and PostgreSQL design.
-- **Decision:** PostgreSQL is the only business metadata source of truth. The
-  old JSON and its `main.py` references must not be reintroduced.
-- **Evidence:** Foundation/MinIO ledger records removal of the stale
-  `knowledge_bases.json` block from `main.py`; final roadmap acceptance item 30
-  keeps a repository-wide cleanup check in phase 7.
-- **Status:** Active runtime references were removed; repository-wide absence is
-  retained as a final hardening gate.
-- **Lesson:** Deleting a file is insufficient unless imports, fallback branches,
-  startup code, documentation and tests are scanned together.
-
-### CFG-001 — PostgreSQL authenticated as unexpected user `fitch`
-
-- **Source:** User report: `asyncpg.exceptions.InvalidPasswordError: password
-  authentication failed for user "fitch"`.
-- **Impact:** The application could not establish its configured PostgreSQL
-  connection, and it was unclear where the username/password originated.
-- **Root cause:** The settings model's top-level field is named `database` and
-  Pydantic uses `env_nested_delimiter="__"`. Variables prefixed with
-  `PG_DATABASE__...` do not populate `Settings.database`; missing effective
-  credentials can fall through to other configuration/default behavior. One
-  supplied variable also mixed a single underscore in `PG_DATABASE_HOST` with
-  double underscores in the other names.
-- **Decision:** Use `DATABASE__TYPE`, `DATABASE__HOST`, `DATABASE__PORT`,
-  `DATABASE__DATABASE`, `DATABASE__USERNAME`, and `DATABASE__PASSWORD` in
-  `rag_modules/config/.env`. The value must match the PostgreSQL service
-  credential, but the secret itself is deliberately not recorded here.
-- **Evidence:** `rag_modules/config/settings.py` defines
-  `Settings.database: DatabaseSettings` and
-  `env_nested_delimiter="__"`; commit `716ef3e` introduced multi-database
-  support.
-- **Status:** Configuration convention resolved; deployments still need their
-  own secret injection and connectivity verification.
-- **Lesson:** Environment variable names are derived from the settings object
-  path, not from an arbitrary service prefix. Log the effective non-secret
-  host/database/username at startup when troubleshooting, never the password.
-
-### DB-001 — ORM table name did not match the existing schema
-
-- **Source:** User supplied authoritative PostgreSQL DDL for `datasets`,
-  `documents`, and `document_segments`; the original model used a
-  knowledge-base table name.
-- **Impact:** ORM queries targeted a table that did not exist in the real
-  database and could not honor the existing foreign keys.
-- **Root cause:** Product terminology (“knowledge base”) was used as a physical
-  table name although the deployed schema uses Dify-style `datasets`.
-- **Decision:** API/domain naming may remain knowledge-base oriented, but ORM
-  `__tablename__` and foreign keys must match the physical tables exactly:
-  `datasets`, `documents`, and `document_segments`.
-- **Evidence:** Structure/multi-database commits `162fa1d`, `716ef3e`; schema
-  foundation commits `e7e5aad` through `f134257`.
-- **Status:** Resolved in the foundation schema implementation.
-- **Lesson:** Separate product vocabulary from physical schema identifiers and
-  test ORM metadata against the real database schema.
-
-## 2. Product and infrastructure decisions that prevented later drift
-
-### ARC-001 — Frontend flow differed from Dify
-
-- **Source:** User report: create knowledge base first, then upload files;
-  current page exposed different steps and Milvus configuration.
-- **Impact:** Users saw backend infrastructure choices in the UI and could not
-  follow the approved Dify-style workflow.
-- **Decision:** Creation only captures name, description and permission, then
-  navigates to documents. Configuration/preview comes after upload. Milvus is
-  backend-only. Indexing offers high-quality and economy modes, with general or
-  parent-child segmentation and real preview.
-- **Evidence:** Design commit `4739752`, roadmap commit `7cef002`.
-- **Status:** Design approved; frontend implementation remains in roadmap phase
-  6.
-- **Lesson:** UI should expose product choices, not storage/vector deployment
-  details.
-
-### ARC-002 — Approved file formats and indexing stack
-
-- **Source:** User decisions during design review.
-- **Decision:** Support `.txt`, `.md`, `.pdf`, `.docx`, `.xls`, `.xlsx`, and
-  `.csv`; do not support OCR or `.doc` in this release. Use OpenAI-compatible
-  Embedding, PostgreSQL metadata, backend Milvus, MinIO object storage, Celery,
-  and RabbitMQ as broker. Redis is not part of the broker/result design.
-- **Evidence:** Specs/plans in `4739752` and `7cef002`; RabbitMQ foundation
-  `45b743b`; supported-type guard `ebcd12c`; MinIO implementation
-  `bb0f90d` through `02a21e5`.
-- **Status:** Foundation and parsing decisions implemented; Embedding/Milvus and
-  Celery orchestration remain later roadmap phases.
-- **Lesson:** Record rejected infrastructure choices explicitly; otherwise an
-  old “Celery + Redis” assumption can silently return.
-
-### ARC-003 — Source-change synchronization strategy
-
-- **Source:** User proposed content hashes, polling/listening, and queue-driven
-  near-real-time reindexing.
-- **Decision:** Treat source changes as revisioned builds: detect add/update/delete,
-  build new segments/vectors idempotently, activate safely, then clean old
-  vectors. RabbitMQ/outbox and connector polling/listening are later phases;
-  do not delete the active index before a replacement is ready.
-- **Evidence:** Design `459e886`, plan `20e9416` and source-sync plans 8–11.
-- **Status:** Design/plan; depends on complete indexing phases 1–5.
-- **Lesson:** “Delete old vectors first” creates an availability gap. Build,
-  validate and switch before asynchronous cleanup.
-
-## 3. Parsing and preview implementation issues
-
-### PARSE-001 — Text decoding could silently corrupt input
-
-- **Source:** Task 2 independent review and later whole-phase review.
-- **Symptoms:** UTF-8 bypassed text-quality checks; heuristic Han counting could
-  reinterpret BOM-less UTF-16; later the ASCII-plus-round-trip GB18030 fallback
-  silently decoded Shift-JIS, Big5 and CP1251 as Chinese-looking garbage.
-- **Impact:** Corrupted text could be segmented, embedded and persisted without
-  an explicit failure.
-- **Failed/superseded decision:** Accept GB18030 whenever bytes contained ASCII
-  structure and round-tripped exactly. This was recorded as “conservative” but
-  was disproved: several legacy encodings satisfy the same conditions.
-- **Final decision:** Accept UTF-8/UTF-8-SIG and structurally evidenced UTF-16.
-  Ambiguous legacy input returns `TEXT_ENCODING_UNCERTAIN`; short valid GB18030
-  may require conversion to UTF-8 or a future explicit charset.
-- **Evidence:** Fixes `a3b6909`, `f94960b`, `ab8284f`, and `8fb64f4`; regression
-  tests cover Shift-JIS, Big5, CP1251 and ambiguous GB18030.
-- **Status:** Resolved and reviewed at `8fb64f4`.
-- **Lesson:** Re-encoding equality proves reversibility, not the original
-  encoding. Encoding detection must prefer false rejection over silent data
-  mutation.
-
-### PARSE-002 — Markdown front matter lost data or created unsafe graphs
-
-- **Source:** Task 2 review and whole-phase review.
-- **Symptoms:** Flat-only parsing discarded nested/list/scalar YAML; permissive
-  `safe_load` still allowed anchors/aliases, cycles and amplification that later
-  failed JSON serialization.
-- **Impact:** Metadata could be silently lost or cause preview failure/resource
-  exhaustion.
-- **Decision:** Preserve safe structured JSON-compatible YAML, otherwise retain
-  bounded raw text. Only exact column-zero `---` delimiters count. Reject aliases,
-  anchors, duplicate keys, cycles, excessive nodes/depth/scalars and non-finite
-  values.
-- **Evidence:** `a3b6909`, `8fb64f4`.
-- **Status:** Partially resolved. Deep alias-free YAML can still raise
-  `RecursionError` during construction; tracked below as SAFE-005.
-- **Lesson:** Post-construction graph validation is too late when construction
-  itself can recurse or expand. Validate event structure first.
-
-### PARSE-003 — DOCX malformed OOXML error boundary was too narrow, then too broad
-
-- **Source:** Task 3 independent review.
-- **Symptoms:** A valid ZIP with malformed internal OOXML leaked
-  `XMLSyntaxError`; the first repair caught broad built-in exceptions around
-  extraction and risked hiding programmer bugs.
-- **Impact:** Unstable client errors initially; overbroad catch would later turn
-  implementation defects into misleading “malformed document” responses.
-- **Decision:** Separate library loading/parsing errors from extraction logic.
-  Normalize malformed OOXML to `DOCX_MALFORMED`, but let programming errors in
-  extraction surface during development/tests.
-- **Evidence:** `cdc5e4e` followed by narrower fix `7ae1198`.
-- **Status:** Resolved and independently reviewed.
-- **Lesson:** Exception normalization belongs at dependency boundaries, not
-  around an entire feature function.
-
-### PARSE-004 — Spreadsheet normalization and budgets were inconsistent
-
-- **Source:** Task 4 independent review.
-- **Symptoms:** XLS/CSV nulls and XLS booleans were not normalized; ragged CSV
-  blocks could use different headers; row budget reset per sheet; OpenPyXL
-  declared dimensions treated style-only remote cells as real data limits.
-- **Impact:** Incorrect searchable facts, inconsistent metadata and bypassable
-  document-wide work limits.
-- **Decision:** Normalize adapter-local scalar/null semantics; finalize one
-  collision-safe header set for ragged rows; count non-empty logical rows across
-  visible sheets; use physical/value evidence rather than worksheet dimensions.
-- **Evidence:** `e9a2cd7` with tabular regression fixtures.
-- **Status:** Functional issues resolved, but the original allowance for
-  unlimited empty structural padding was superseded by later security review.
-- **Lesson:** Logical content budgets and physical parser-work budgets are
-  separate controls; both are required.
-
-### SEG-001 — Preferred-boundary overlap could cause non-progress
-
-- **Source:** Task 5 review; reviewer probes hung until interrupted.
-- **Symptoms:** If a preferred boundary advanced no farther than overlap,
-  `_split_ranges` could repeat or move backward. Example: `a。abcdefgh`, maximum
-  8, overlap 2.
-- **Impact:** Infinite loop and request/worker exhaustion.
-- **Decision:** Use the preferred boundary only when its advance exceeds overlap;
-  otherwise fall back to the hard maximum and assert strictly increasing start.
-- **Evidence:** `175d4cb` and general/parent-child bounded regressions.
-- **Status:** Resolved for progress, but extreme-overlap CPU cost remains a
-  separate issue (SAFE-002).
-- **Lesson:** Validate both output shape and algorithmic progress invariants.
-
-### SEG-002 — Full-document fallback lost real delimiters
-
-- **Source:** Task 5 review and final scoped re-review.
-- **Symptoms:** Initial fallback dropped `\n\n` around prose/code/table groups.
-  `175d4cb` restored them as delimiter-only sources. Later `8fb64f4` filtered
-  blank segments and again reduced `aa\n\nx = 1\n\nbb` to `aax = 1bb` even under
-  ordinary limits.
-- **Impact:** Semantically separate source blocks become silently concatenated;
-  preview and eventual stored content lose source fidelity.
-- **Failed approach:** Represent delimiters as standalone source blocks, then
-  globally filter blank blocks. Each individual rule looked correct, but their
-  composition was not.
-- **Decision:** Attach delimiters to adjacent nonblank bounded sources; omit only
-  when pathological limits make any delimiter-bearing nonblank chunk impossible.
-- **Evidence:** `175d4cb`, regression at `8fb64f4`, final review reproduction.
-- **Status:** Open as SAFE-003; remediation design approved at `c567afc`.
-- **Lesson:** A local invariant (“no blank segment”) must be tested together with
-  end-to-end fidelity, not in isolation.
-
-### PREVIEW-001 — Blocking MinIO read defeated request timeout
-
-- **Source:** Task 6 independent review and wall-clock probe.
-- **Symptoms:** Storage `stream.read()` ran with `abandon_on_cancel=False`; a
-  50 ms deadline waited roughly 359 ms for a 350 ms blocking read and could wait
-  forever if the transport never returned.
-- **Impact:** Preview requests could exceed their deadline indefinitely and
-  exhaust the AnyIO worker pool.
-- **Decision:** Add bounded `ObjectStorage.get_bytes`; one worker owns
-  `get_object -> read -> close -> release_conn`, while the request may abandon
-  waiting safely.
-- **Evidence:** `59be47f`; slow-storage API and adapter lifecycle tests.
-- **Status:** Resolved and scoped re-review passed.
-- **Lesson:** Cancellation cannot safely abandon a thread if resource ownership
-  remains in the caller. Move the entire lifecycle into the abandoned unit.
-
-### PREVIEW-002 — HTTP serialization was outside the request deadline
-
-- **Source:** Task 6 review.
-- **Symptoms:** Service timeout covered model construction, but FastAPI performed
-  response validation and JSON rendering after the service scope exited.
-- **Impact:** Large metadata could continue blocking the event loop beyond the
-  advertised deadline.
-- **Decision:** Start an outer deadline at handler entry and render a validated
-  `JSONResponse` inside an abandonable worker within that scope. Keep the inner
-  service timeout only as concurrent defense for direct callers.
-- **Evidence:** `59be47f`; slow `model_dump` returns 504 near deadline while a
-  dependency's own `TimeoutError` remains 503.
-- **Status:** Resolved and scoped re-review passed.
-- **Lesson:** A request-wide timeout must include serialization, not merely the
-  domain service call.
-
-### PREVIEW-003 — Error schema and production read-only proof diverged
-
-- **Source:** Task 6 and whole-phase reviews.
-- **Symptoms:** OpenAPI declared one 422 domain shape while Pydantic validation
-  returned FastAPI `detail`; no-write tests replaced the whole service and could
-  not prove production dependency composition.
-- **Impact:** Generated clients saw an incorrect contract, and a future DI
-  regression could introduce persistence/Embedding/Milvus calls unnoticed.
-- **Decision:** A preview-local `APIRoute` produces stable
-  `code/message/detail/request_id` errors and matching request ID header. A real
-  production-composition test overrides only DB/storage, permits SELECT only and
-  installs fail-fast external-client constructors.
-- **Evidence:** `8fb64f4` and final scoped re-review.
-- **Status:** Resolved and independently reviewed.
-- **Lesson:** A unit test of a manually assembled service cannot prove the
-  production dependency graph.
-
-## 4. Whole-phase review findings and current remediation
-
-### SAFE-001 — XLSX preflight can be bypassed and merge placeholders can expand
-
-- **Source:** Final scoped re-review after `8fb64f4`.
-- **Reproduction:** Rename a relationship target/member to `sheet1.XML`; the
-  glob for lowercase `.xml` skips it while OpenPyXL still parses it. A single
-  physical cell plus merge range `A1:Z100` can materialize roughly 2,600 `_cells`
-  entries.
-- **Impact:** Crafted XLSX can bypass physical-cell checks and allocate
-  disproportionate CPU/memory before an HTTP timeout.
-- **Root cause:** Preflight discovers parts by ZIP filename convention rather
-  than workbook relationships and does not budget merged-range expansion.
-- **Decision:** Resolve exact internal worksheet targets from relationships,
-  reject unsafe package paths/relationships, preflight every resolved part, and
-  enforce single/aggregate merge-area limits before OpenPyXL.
-- **Status:** Open; Task 1 of the safety-hardening plan.
-
-### SAFE-002 — Segment-count cap is not a CPU-work cap
-
-- **Source:** Final scoped re-review plus controller complexity probe.
-- **Reproduction:** With near-100% overlap, every chunk advances one character
-  while `_boundary_end` copies/scans a very large window. Measured examples:
-  1,000,000 characters with a 200,000 window took about 0.36 seconds;
-  5,000,000 characters with a 1,000,000 window took about 1.79 seconds. The
-  10,000-output cap can still permit billions of scanned characters.
-- **Impact:** A timed-out preview leaves an abandoned worker consuming CPU for
-  seconds or longer; the future Worker inherits the same risk.
-- **Root cause:** Output allocation was bounded, but repeated boundary-search
-  work and substring copies were not projected or accounted.
-- **Decision:** Reject excessive projected iterations before splitting, charge
-  actual boundary window sizes to a request-local scan budget, and use
-  `str.rfind` bounds without copying the window.
-- **Status:** Open; Task 3 of the safety-hardening plan.
-
-### SAFE-003 — Ordinary delimiter fidelity regressed
-
-- **Source:** Final scoped re-review.
-- **Details:** See SEG-002. This remains open because the first final fix wave
-  over-applied blank filtering beyond the approved pathological-limit exception.
-- **Status:** Open; Task 3 of the safety-hardening plan.
-
-### SAFE-004 — Formula warnings can fan out to nearly one million objects
-
-- **Source:** Final scoped re-review.
-- **Symptoms:** Each missing formula cache creates a warning; preview returns all
-  warnings without a separate cap.
-- **Impact:** A structurally valid workbook can consume large parser memory and
-  produce an oversized JSON response even though chunks are truncated.
-- **Decision:** Aggregate per sheet/code with count and five coordinate samples;
-  bound warnings per document and across the preview response, folding overflow
-  into `WARNINGS_TRUNCATED` without retaining omitted metadata.
-- **Status:** Open; Task 2 of the safety-hardening plan.
-
-### SAFE-005 — Deep alias-free YAML can fail before bounded normalization
-
-- **Source:** Final scoped re-review.
-- **Reproduction:** Roughly 1,500 nested flow-sequence levels can raise
-  `RecursionError` inside `yaml.load`; the later depth check never runs.
-- **Impact:** A small Markdown upload can cause an unhandled preview/parser
-  failure and destabilize Worker execution.
-- **Root cause:** Safety checks run after YAML object construction.
-- **Decision:** Scan safe YAML events first with depth/event budgets and
-  normalize `RecursionError` from scan, load and normalization to bounded raw
-  metadata.
-- **Status:** Open; Task 4 of the safety-hardening plan.
-
-## 5. Process incidents
-
-### PROCESS-001 — Final review found cross-property failures missed by task reviews
-
-- **Symptoms:** Individual task reviews passed, yet whole-phase review found
-  interactions between timeout/abandoned work, logical/physical budgets,
-  nonblank/fidelity guarantees, serialization and metadata graph shape.
-- **Root cause:** Task-scoped fixtures verified local behavior but did not always
-  compose adjacent invariants under adversarial inputs.
-- **Correction:** Final review now explicitly checks property pairs: bounded
-  output plus bounded CPU; nonblank chunks plus faithful reconstruction; safe
-  loader plus safe construction; parser warning behavior plus response caps;
-  preflight plus dependency materialization.
-- **Status:** Process correction active.
-
-### PROCESS-002 — First final-fix agent stalled without producing changes
-
-- **Symptoms:** The first final-fix worker ran for an extended period, ignored
-  status requests and initially left the worktree unchanged. It was interrupted;
-  later partial tests/encoding changes appeared, but no usable complete report.
-- **Impact:** Lost wall-clock time and uncertainty about whether TDD had begun.
-- **Correction:** A takeover agent was required to audit and preserve the
-  existing partial diff, report after each group, and finish one coherent commit.
-- **Evidence:** Takeover report records initial `15 failed, 73 passed`, then
-  commit `8fb64f4`.
-- **Lesson:** Require early observable RED evidence and periodic bounded status
-  updates for broad repair tasks. Do not reset partial shared-worktree changes.
-
-### PROCESS-003 — A large final fix still required a scoped adversarial review
-
-- **Symptoms:** `8fb64f4` passed 240 tests but scoped review still found two
-  Critical and three Important issues.
-- **Root cause:** Green suites only prove represented cases. The fix changed
-  several interacting boundaries and its new tests did not include relationship
-  filename casing, merged-range materialization, scan complexity, construction-
-  time recursion or warning cardinality.
-- **Correction:** Create the separate approved safety-hardening design and plan,
-  with one independently reviewed task per risk family and explicit adversarial
-  fixtures.
-- **Status:** In progress.
-- **Lesson:** Test count is not a risk metric. Review must ask what input dimension
-  remains unbounded and what downstream stage executes before validation.
-
-## 6. Current execution map
-
-| Work item | Plan task | Status | Expected commit |
-|---|---:|---|---|
-| Relationship-resolved XLSX and merge bounds | 1 | Design/plan | `fix: bound xlsx worksheet materialization` |
-| Parser and preview warning caps | 2 | Design/plan | `fix: bound parser and preview warnings` |
-| Segmentation CPU budget and delimiter fidelity | 3 | Design/plan | `fix: bound segmentation work and preserve delimiters` |
-| YAML event preflight | 4 | Design/plan | `fix: preflight markdown front matter` |
-
-After every task, append:
-
-1. exact reproduction and expected failure;
-2. root cause and why the previous control failed;
-3. approaches rejected and why;
-4. final implementation and compatibility cost;
-5. RED/GREEN/full-regression commands and results;
-6. commit SHA and independent-review verdict;
-7. remaining or newly discovered risk.
-
-## 7. Safety-hardening implementation records
-
-### SAFE-001 Task 1 — Relationship-resolved XLSX preflight and merge bounds
-
-- **Source and symptoms:** The Task 1 RED fixtures confirmed that filename-glob
-  discovery skipped a relationship-resolved `xl/worksheets/sheet1.XML` member,
-  allowing three physical cells past a limit of two. External relationships,
-  authority/absolute URI targets, `..` traversal, missing members, duplicate
-  relationship IDs, duplicate worksheet targets and a referenced non-worksheet
-  relationship type all reached the fail-fast `load_workbook` hook instead of
-  returning `XLSX_MALFORMED`. A sparse real cell plus `A1:Z100`, several legal
-  ranges exceeding the aggregate limit, and malformed/reversed/out-of-sheet/
-  missing merge references likewise reached OpenPyXL before rejection. Normal
-  mode materialized `MergedCell` placeholders in private `_cells` mappings.
-- **Root cause:** Preflight selected worksheet parts by a lowercase ZIP filename
-  convention rather than resolving the workbook's sheet relationships. It
-  counted `<c>` nodes but ignored `<mergeCell>` declarations, then extraction
-  enumerated OpenPyXL's private mapping directly and used `worksheet.cell()` for
-  cached values, which could create coordinates.
-- **Plan ambiguity and ruling:** The written step said to reject absolute
-  targets, but this repository and current OpenPyXL legitimately encode package
-  targets as `/xl/worksheets/sheet1.xml`. The controller ruled that exactly one
-  leading slash is a valid OPC package-root reference and is canonicalized to
-  the exact case-sensitive member `xl/...`. Authority paths beginning `//`, URI
-  schemes, drive paths, backslashes, query/fragment text, percent escapes, empty
-  or dot segments and package traversal remain invalid. The RED absolute-target
-  case therefore uses an authority/host target, not an OPC package-root target.
-- **Rejected approaches:** Lowercasing member names was rejected because ZIP
-  members and relationship resolution are case-sensitive. Retaining the glob
-  and adding another suffix was rejected because relationships, not filenames,
-  define worksheet identity. Letting OpenPyXL load before validation was
-  rejected because merge placeholders allocate before the safety boundary.
-  Enumerating cached cells with `.cell()` was rejected because lookup can mutate
-  the mapping. Rejecting every leading slash was rejected because it breaks
-  valid packages already produced and consumed by the project.
-- **Final design:** Parse `xl/workbook.xml` and its relationship part with a
-  hardened lxml parser, accept only the exact Transitional or Strict worksheet
-  relationship URI, validate unique internal IDs/targets and resolve exact ZIP
-  members in workbook order. Stream-preflight only those parts into immutable
-  title/part/physical-coordinate records. Validate merge boundaries and XLSX
-  coordinate maxima, enforce 100,000 single-range and 1,000,000 aggregate
-  default areas, and avoid counting duplicate ranges twice. After two bounded
-  OpenPyXL loads, verify sheet title/order and route all private mapping access
-  through one adapter that walks sorted preflight coordinates with `.get()`,
-  skips `MergedCell` placeholders and never calls `.cell()`.
-- **TDD RED evidence:**
-  `.venv/bin/python -m pytest tests/unit/config/test_settings.py
-  tests/unit/parsing/test_tabular.py -k 'merged_cell or relationship or
-  case_varied or external or traversal or missing_target or duplicate_target'
-  -q` produced `12 failed, 31 deselected`: fields/validators were absent and
-  every relationship breach reached the fail-fast loader. Then
-  `.venv/bin/python -m pytest tests/unit/parsing/test_tabular.py -k 'merge or
-  merged or physical_cell_adapter' -q` produced `7 failed, 1 passed, 34
-  deselected`: merge breaches reached the loader and `_physical_cells` did not
-  exist; the legal merged-workbook compatibility case already passed.
-- **GREEN and regression evidence:** The same relationship command produced
-  `12 passed, 31 deselected`; the same merge command produced `8 passed, 34
-  deselected`. The focused Task 1 regression
-  `.venv/bin/python -m pytest tests/unit/config/test_settings.py
-  tests/unit/parsing/test_tabular.py -q` produced `51 passed` with one existing
-  Starlette/httpx deprecation warning.
-- **Fix commit to be created:** `fix: bound xlsx worksheet materialization`.
-- **Residual risk/status:** The adapter deliberately depends on OpenPyXL's
-  private `_cells` mapping contract, but that dependency is isolated and fails
-  closed if its mapping/coordinate/cell-type assumptions change. ZIP payload
-  size protection remains the upstream upload/decompression boundary. Task 2
-  still owns bounded warning aggregation. Implementation is complete pending
-  the full-suite verification, commit and independent review.
-
-### SAFE-001 Fix Round 1 — Hyperlink materialization and hidden-sheet validation
-
-- **Review symptoms:** Independent review reproduced an XLSX with only physical
-  `A1` plus `<hyperlink ref="B2:C3">`: preflight retained only `(1, 1)`, but
-  each OpenPyXL normal-mode load created real `Cell` entries for `B2`, `C2`,
-  `B3` and `C3`. A near-sheet-sized hyperlink rectangle could therefore force
-  large allocation before any configured limit. Review also found that the
-  hidden-sheet `continue` ran before `_physical_cells`, so a hidden worksheet's
-  formula/cached private mappings were never contract-validated. Finally, the
-  relationship target rejection matrix did not explicitly cover URI schemes,
-  drive paths, backslashes, query strings, fragments, percent escapes,
-  single-dot segments, empty segments or the positive one-leading-slash case.
-- **Root causes:** Worksheet preflight treated only `<c>` and `<mergeCell>` as
-  possible OpenPyXL materializers; SpreadsheetML `<hyperlink ref>` ranges were
-  omitted. Mapping validation was coupled to visible row emission instead of
-  workbook-sheet validation. Target normalization implemented the intended
-  rules, but tests covered only authority/traversal/missing/type cases.
-- **Ruling and final design:** Keep `_WorksheetPreflight.physical_coordinates`
-  strictly equal to actual XML `<c>` coordinates. Validate every hyperlink ref
-  before either workbook load with the same range syntax and XLSX coordinate
-  maxima used for merges. Conservatively charge physical `<c>` count plus each
-  unique merge/hyperlink rectangle against the existing
-  `max_physical_cells`; retain the merge-specific single/aggregate limits and
-  errors. Exact duplicate materializing rectangles within a sheet count once;
-  distinct overlaps and physical cells inside rectangles may be overcounted,
-  which is deliberately fail-safe and avoids building a second potentially
-  million-coordinate union. Over-budget hyperlinks reuse
-  `TABLE_PHYSICAL_CELL_LIMIT_EXCEEDED`; malformed refs use `XLSX_MALFORMED`.
-  Consume `_physical_cells` once for every formula/cached sheet pair before a
-  hidden sheet is skipped. Both mappings may contain nonphysical extras only
-  when each extra is a `MergedCell` or a real `Cell` with preserved hyperlink
-  evidence; only actual preflight physical coordinates are yielded as table
-  data.
-- **Rejected approaches:** A new hyperlink-specific setting/error was rejected
-  because the existing physical materialization budget and safe error fully
-  express this bound. Adding hyperlink coordinates to `physical_coordinates`
-  was rejected because it would violate the interface and risk treating
-  relationship/location text as table data. Expanding rectangle unions during
-  preflight was rejected because the safety check itself could allocate up to
-  the configured million-cell bound. Rejecting every multi-cell hyperlink was
-  unnecessary because current OpenPyXL preserves hyperlink evidence on each
-  generated formula and cached `Cell`. Validating hidden mappings after the
-  visibility branch was rejected because it preserves the bypass.
-- **TDD RED and characterization evidence:** Before production changes,
-  `.venv/bin/python -m pytest tests/unit/parsing/test_tabular.py -k 'hyperlink
-  or hidden_sheet_mapping_contract or relationship_corruption or package_root'
-  -q` produced `7 failed, 15 passed, 36 deselected`. The seven failures proved
-  over-budget/malformed hyperlinks reached the fail-fast loader, a safe bounded
-  hyperlink was rejected after loading, and a corrupt hidden mapping was
-  skipped. All 15 target normalization/package-root cases passed against the
-  old production code and are recorded as characterization rather than
-  fabricated RED evidence.
-- **GREEN and regression evidence:** The same focused command produced `22
-  passed, 36 deselected`. The amended settings/tabular suite produced `67
-  passed`. The full suite produced `277 passed, 1 skipped` with the existing
-  Starlette/httpx deprecation warning. Compilation and `git diff --check`
-  exited zero.
-- **Fix commit to be created:** `fix: preflight xlsx hyperlink materialization`.
-- **Residual risk/status:** Conservative overlap accounting may reject a
-  workbook whose true materialized-coordinate union fits exactly under the
-  budget; this is an intentional safety/complexity tradeoff. The accepted extra
-  cells still rely on OpenPyXL preserving per-cell hyperlink evidence in both
-  normal-mode workbooks, and fail closed if that private behavior changes. No
-  new public setting or error code was introduced. Implementation is complete
-  pending commit and re-review.
-
-### SAFE-004 Task 2 — Bounded parser and preview warnings
-
-- **Source, reproduction and symptoms:** The collector RED could not import
-  `rag_modules.parsing.warnings` because no bounded warning abstraction existed.
-  A generated visible XLSX sheet containing a header and 1,000 formulas without
-  cached values produced 1,000 `FORMULA_CACHE_UNAVAILABLE` objects instead of
-  one aggregate. A two-sheet workbook produced one warning for every formula
-  plus an empty-sheet warning without a document cap. Preview preserved a
-  parser `WARNINGS_TRUNCATED` object as an ordinary document warning and then
-  appended every later parser/segmenter warning, returning seven warnings where
-  the configured response limit was five.
-- **Impact and root cause:** Parser memory and preview serialization grew with
-  source-controlled formula/warning cardinality even though preview chunks were
-  independently bounded. XLSX appended warnings inside the physical-cell loop,
-  and preview eagerly extended a list. Neither layer reserved space for a safe
-  truncation summary or folded a lower-layer omission count.
-- **Ruling:** A limit includes its summary slot. Fewer than `N` ordinary
-  warnings retain all; reaching `N` retains the first `N - 1` and summarizes
-  the remainder. A preexisting summary folds only when `omitted_count` is a
-  positive non-boolean integer. Missing, zero, negative, boolean and string
-  counts are suppressed and deterministically contribute one omission, without
-  retaining or reproducing their metadata. Visible-sheet formula aggregation
-  occurs after its row generator is fully consumed and keeps only the first
-  configured coordinates. Hidden sheets retain Task 1 mapping validation but
-  are not extracted and do not emit formula warnings.
-- **Rejected approaches:** Retaining the first `N` warnings and appending a
-  summary was rejected because it violates the configured cap. Replacing the
-  `N`th retained warning only after overflow was rejected because it retains an
-  object/metadata that never belongs in the result. Nesting lower-layer
-  summaries was rejected because it obscures the total and can preserve unsafe
-  metadata. Adding formula text to aggregate metadata was rejected as needless
-  source disclosure. Skipping hidden-sheet iteration was rejected because it
-  reopens the private-mapping validation bypass fixed by Task 1. A broader lazy
-  preview API was rejected as out of scope; the exact generic collector API
-  means each overflow parser warning is briefly converted to a `PreviewWarning`,
-  but the collector immediately releases it and retains no omitted object or
-  metadata.
-- **Final implementation and compatibility cost:** Added generic
-  `BoundedWarningCollector[T]` over a small `WarningLike` protocol, plus positive
-  parser/preview settings with defaults of 100 warnings and five formula
-  samples. XLSX now accumulates count and ordered coordinate samples per visible
-  sheet, emits one aggregate after row consumption, and routes hidden, empty,
-  formula and summary warnings through the document collector. Preview routes
-  document-qualified parser and segmenter warnings through the same collector
-  and emits a neutral empty-document summary. Existing ordinary-warning order,
-  source blocks, documents, chunks and `total_chunks` are unchanged; clients now
-  receive bounded warnings and the aggregate formula metadata replaces the old
-  per-cell `cell` shape.
-- **TDD RED evidence:** `.venv/bin/python -m pytest
-  tests/unit/parsing/test_warning_collector.py -q` failed during collection with
-  `ModuleNotFoundError: rag_modules.parsing.warnings`. After adding only the
-  collector/settings, `.venv/bin/python -m pytest
-  tests/unit/parsing/test_tabular.py -k 'formula and warning' -q` produced `2
-  failed, 58 deselected`: 1,000 warnings remained and the two-sheet result was
-  unbounded. After XLSX GREEN, `.venv/bin/python -m pytest
-  tests/unit/services/test_preview_service.py -k 'warning' -q` produced `1
-  failed, 1 passed, 19 deselected`: the unbounded nested response did not match
-  the five-slot folded result.
-- **GREEN and regression evidence:** Collector/settings produced `29 passed`.
-  Formula warning tests produced `3 passed, 58 deselected`, including hidden
-  formula-sheet behavior. Preview warning tests produced `2 passed, 19
-  deselected`. The final focused Task 2 regression produced `97 passed`. The
-  fresh full suite produced `301 passed, 1 skipped`. Confirmed runs contained
-  only the repository's existing Starlette/httpx deprecation warning.
-- **Fix commit to be created:** `fix: bound parser and preview warnings`.
-- **Residual risk/status:** Preview conversion of omitted warnings is transient
-  allocation rather than retained growth; changing that would require an API
-  outside this task. The collector assumes producers expose the documented
-  `code` and mapping-shaped `metadata`. Implementation is complete pending final
-  verification, commit and independent review.
-
-### SAFE-005 Task 3 — Segmentation CPU budget and delimiter fidelity (executed 2026-09-04)
-
-- **Source, reproduction and symptoms:** A 5,000,000-character source with a
-  1,000,000-character maximum and 999,999-character overlap has a hard and
-  minimum advance of one character, so the proven worst case is 4,000,001 split
-  iterations. The previous emitted-record check reached `_boundary_end` before
-  rejecting either the general or parent-child child path. Boundary scans had no
-  separate request cap, allocated `text[start:limit]`, and could restart their
-  effective allowance for every source. Separately, full-document fallback
-  materialized standalone `\n\n` sources; the public nonblank filter then dropped
-  them, reconstructing prose/code/prose as `aax = 1bb` instead of
-  `aa\n\nx = 1\n\nbb` (and likewise around a table row).
-- **Impact and root cause:** The output limit bounded retained records but not
-  work performed before those records existed. Extreme overlap could therefore
-  consume millions of iterations and repeated full-window scans. Boundary
-  progress only required an advance greater than overlap, rather than a proven
-  floor tied to the hard advance. Delimiter fidelity failed because synthetic
-  delimiter-only parents conflicted with the correct rule that public search
-  records must be nonblank; the fallback did not attach delimiter capacity to
-  real adjacent text.
-- **Ruling:** One request-local state owns the remaining emitted-record and
-  boundary-scan budgets across all general sources, parents and children.
-  Projection uses integers only: `hard_advance = maximum - overlap`,
-  `minimum_advance = max(1, (hard_advance + 1) // 2)`, and either one range or
-  `1 + ceil((length - maximum) / minimum_advance)`. Projection rejects but does
-  not reserve records; only actual nonblank parent/child/general emission
-  decrements the authoritative record count. Every `rfind` charges its exact
-  `[start, limit)` search window before scanning. A preferred boundary must
-  advance by at least `minimum_advance`; otherwise the hard maximum wins.
-  Fallback keeps fitting code/table blocks standalone, tries the preceding
-  non-atomic source without splitting, then the following source, and only then
-  splits adjacent non-atomic text or the two newline characters as needed.
-  Impossible delimiters are omitted and counted in one fidelity warning.
-- **Rejected approaches:** Continuing to stop only on emitted records was
-  rejected because output cardinality is not a CPU budget. Reserving projected
-  records was rejected because later real emission would double-decrement the
-  same capacity. Floating-point ceiling arithmetic was unnecessary and weaker
-  for large lengths. Per-source scan counters, charging after `rfind`, retaining
-  the window slice, and accepting every merely-positive advance were rejected
-  because they fail the request-wide, fail-before-work, allocation, or progress
-  contracts. Publishing delimiter-only parents, silently dropping all fallback
-  delimiters, modifying a fitting atomic block, and splitting a full preceding
-  prose block before trying a fitting following block were rejected for fidelity
-  or atomicity reasons.
-- **Final implementation and compatibility cost:** Added the default
-  100,000,000-character scan budget and a private request-local work-budget
-  object. `_split_ranges` now preflights its worst case, streams ranges, enforces
-  the minimum advance, and uses indexed `str.rfind` without a window substring.
-  Capacity-aware fallback streams bounded sources in source order, retains exact
-  ordinary `\n\n` concatenation, can split a delimiter one newline to each
-  eligible side at a two-character parent maximum, preserves fitting atomic
-  blocks and traceable metadata, and emits `SEGMENT_DELIMITER_OMITTED` once with
-  the aggregate count only when retention is impossible. The stable
-  `SEGMENTATION_LIMIT_EXCEEDED` exception remains compatible with PreviewService's
-  existing safe mapping.
-- **TDD RED evidence:** `.venv/bin/python -m pytest
-  tests/unit/segmentation/test_segmenters.py -k 'projected or boundary_scan or
-  extreme_overlap' -q` produced `4 failed, 29 deselected`: both 5,000,000-character
-  cases called the fail-fast boundary spy and both scan cases rejected the
-  missing constructor parameter. `.venv/bin/python -m pytest
-  tests/unit/segmentation/test_segmenters.py -k 'delimiter or
-  fallback_preserves' -q` produced `5 failed, 28 deselected`: the too-early
-  delimiter won, both atomic reconstructions lost newlines, and maximums one and
-  two lacked the aggregate warning. Self-review added two narrower cases;
-  `-k 'uses_following_prose or splits_delimiter_across'` produced `2 failed, 33
-  deselected` before the precedence and split-delimiter refinement.
-- **GREEN and regression evidence:** The prescribed work selector produced `4
-  passed, 29 deselected`; the initial delimiter selector produced `5 passed, 28
-  deselected`; and the two self-review cases produced `2 passed, 33 deselected`.
-  `.venv/bin/python -m pytest tests/unit/segmentation
-  tests/unit/services/test_preview_service.py -q` produced `56 passed`. The
-  fresh full suite produced `310 passed, 1 skipped`. Runs contained only the
-  repository's existing Starlette/httpx deprecation warning.
-- **Fix commit to be created:** `fix: bound segmentation work and preserve
-  delimiters`.
-- **Residual risk/status:** Projection intentionally uses the proven worst case
-  and can reject inputs whose actual preferred boundaries would require fewer
-  records. Boundary prefix validation remains linear but performs no substring
-  allocation and is coupled to a charged lookup window. Fallback keeps bounded
-  per-block attachment state under the existing source-block cap; pathological
-  whitespace already impossible to represent as nonblank public records remains
-  outside the delimiter-specific warning. No public request or response schema
-  changed. Implementation is complete pending final verification and commit.
-
-### SAFE-005 Review Fix Round 1 — Joint delimiter allocation (executed 2026-09-04)
-
-- **Review symptom and root cause:** With three non-atomic blocks `AA`, `B`, and
-  ` C` at parent maximum three, the greedy boundary allocator committed both
-  characters of the first delimiter as a prefix on `B`. It then could not fit
-  the second delimiter around the same one-character middle block or before the
-  leading-space final block, so it emitted parents `AA`, `\n\nB`, and ` C` plus
-  omission count one. That omission was false: the bounded nonblank allocation
-  `AA\n`, `\nB\n`, `\n C` preserves both delimiters exactly. The root cause was
-  making each boundary irrevocably without accounting for the prefix/suffix
-  contention it creates on the next block.
-- **Rejected approaches:** A fixture-specific redistribution rule was rejected
-  because longer consecutive prose runs create the same contention. Retrying
-  only the immediately failed boundary was rejected because correcting it may
-  require revisiting an earlier attachment and can cascade. Exhaustive global
-  search/backtracking was rejected because its state space grows exponentially.
-  Treating a retainable delimiter as omitted, modifying fitting atomic blocks,
-  weakening direct-fit precedence, or changing Task 3 CPU projection/scan logic
-  were also rejected as violations or unrelated scope expansion.
-- **Final bounded algorithm:** Delimiter ownership is a path problem with only
-  three prefix states per block: zero, one, or two newline characters received
-  from the preceding boundary. A reverse dynamic program considers the three
-  suffix allocations plus one omission transition, validates the joint
-  prefix/suffix capacity of the current block, and stores one backpointer per
-  state. Its lexicographic objective minimizes omitted boundaries first, then
-  incremental hard-chunk count, then the deterministic preceding/following
-  direct-fit preference. Fitting atomic code/table blocks accept only the zero/
-  zero state. Reconstruction assigns exactly two newline characters per retained
-  boundary and increments the aggregate count exactly once per omission. Runtime
-  is O(blocks × 3 × 4), memory is O(blocks × 3), and both remain bounded by the
-  existing 100,000-source-block cap; split ranges remain streamed.
-- **TDD RED evidence:** `.venv/bin/python -m pytest
-  tests/unit/segmentation/test_segmenters.py -k
-  'three_block_delimiter_contention' -q` on `3eee2ac` produced `1 failed, 35
-  deselected`. The literal mismatch was `['AA', '\\n\\nB', ' C']` versus
-  `['AA\\n', '\\nB\\n', '\\n C']`; the old result also carried the false
-  `SEGMENT_DELIMITER_OMITTED` warning.
-- **GREEN and regression evidence:** The isolated review regression produced `1
-  passed, 35 deselected`. The legacy delimiter selector first produced `7
-  passed, 29 deselected`. A compact max-two/three/four consecutive-prose matrix
-  then produced `3 passed, 36 deselected`, proving exact reconstruction without
-  duplicated or lost delimiters. The final covering delimiter selector produced
-  `10 passed, 29 deselected`; segmentation plus PreviewService produced `60
-  passed`; and the full suite produced `314 passed, 1 skipped` in 5.35 seconds.
-  The final pre-commit gate repeated `60 passed`, the unchanged CPU-budget
-  selector produced `4 passed, 35 deselected`, segmentation bytecode compilation
-  exited zero, and `git diff --check` exited zero. Runs contained only the
-  existing Starlette/httpx deprecation warning.
-- **Fix commit to be created:** `fix: resolve delimiter allocation contention`.
-- **Residual risk/status:** The secondary grouping objective estimates added
-  hard chunks from lengths; it may choose a different valid grouping than a
-  separator-aware optimum, but omission feasibility is determined independently
-  and always takes priority. The DP retains three small backpointer entries per
-  source block rather than constant memory, within the pre-existing source-block
-  bound. Existing pathological source-internal whitespace caveats remain; no CPU
-  budget, public API, warning schema, or fitting-atomic behavior changed.
-
-### SAFE-006 Task 4 — YAML event preflight and stable recursion fallback (executed 2026-09-04)
-
-- **Issue and reproduction:** Front matter containing 1,500 nested block
-  sequences (`- ` repeated on one line) or 1,500 nested flow sequences contained
-  no aliases or anchors and stayed below the 65,536-character raw limit, but both
-  escaped `MarkdownParser.parse()` as `RecursionError` from PyYAML composition.
-  A shallow 10,000-item sequence also produced more than 10,000 parser events
-  while remaining below the raw-character limit and reached value construction.
-- **Root cause and impact:** The existing YAML token scan rejected aliases and
-  anchors, while `_normalize_front_matter` bounded depth and nodes only after
-  `_BoundedSafeLoader` had recursively composed and constructed the complete
-  value. That post-construction check was too late to protect the Python stack or
-  limit parser-event work. The fallback caught YAML, type and value errors but
-  omitted recursion failures, so malformed metadata could prevent otherwise
-  ordinary Markdown body blocks from being returned.
-- **Ruling and final design:** Stream `yaml.parse(raw, Loader=yaml.SafeLoader)`
-  before `_BoundedSafeLoader` construction, `yaml.load`, and normalization. Count
-  every event against the existing 10,000-node constant and collection starts
-  against the existing depth constant of 20; reject aliases, an anchor on any
-  event, negative depth, nonzero final depth and parser errors. Retain the token
-  scan as defense in depth. Keep scanning, loading and normalization inside the
-  existing front-matter-only fallback boundary, adding only `RecursionError` to
-  its `TypeError`, `ValueError` and `yaml.YAMLError` tuple. Preserve body parsing
-  outside that boundary, and let `MemoryError`, cancellation, other
-  `BaseException` subclasses and unrelated programmer errors propagate.
-- **Rejected approaches:** Relying on normalization alone was rejected because
-  it requires constructing the dangerous graph first. Catching recursion only
-  around `yaml.load` was rejected because event scanning and normalization can
-  also recurse. Replacing the event stream with a second constructed node tree
-  or overriding PyYAML parser internals was rejected as either too late or
-  coupled to private state. Removing the token scan was rejected because the
-  event pass is an additional preflight, not a replacement. Catching
-  `Exception`, `BaseException`, or wrapping the entire Markdown parse was
-  rejected because memory exhaustion, cancellation and body-parser defects are
-  not recoverable malformed-metadata conditions.
-- **TDD RED evidence:** Before production changes, `.venv/bin/python -m pytest
-  tests/unit/parsing/test_text_markdown.py -k 'deep or recursion or event_budget'
-  -q --tb=short` produced `6 failed, 30 deselected`: both real deep fixtures
-  leaked recursion, the event flood reached a fail-fast `yaml.load` patch,
-  `yaml.parse` was never called, and recursion from load and normalization
-  escaped. The direct preflight/narrow-catch selector produced `5 failed, 36
-  deselected`: the interface was absent for scalar-anchor, alias, negative-depth
-  and unbalanced-depth cases, and a patched `yaml.parse` `MemoryError` was never
-  reached.
-- **GREEN and regression evidence:** The prescribed selector produced `6
-  passed, 35 deselected`; the direct event-invariant and memory-exhaustion
-  selector produced `5 passed, 36 deselected`. Markdown plus registry produced
-  `48 passed`; the phase regression produced `245 passed`; and the final complete
-  backend suite produced `327 passed, 1 skipped`. Runs contained only the
-  repository's existing Starlette/httpx deprecation warning.
-- **Fix commit to be created:** `fix: preflight markdown front matter`.
-- **Residual risk/status:** Safe token scanning, safe event parsing and safe
-  loading make up to three bounded passes over accepted front matter, trading a
-  small deterministic CPU cost for defense in depth. Event counting is
-  intentionally conservative because stream/document/scalar events share the
-  10,000 budget with collection events. PyYAML may still raise an allowed
-  recursion or parse exception before the configured threshold on a different
-  runtime, but the same bounded-raw fallback handles it without exposing source
-  text beyond 65,536 characters. No public parser or registry contract changed.
-
-### SAFE-007 Whole-plan Fix W1 — PDF/XLS parser warning caps (executed 2026-09-04)
-
-- **Whole-review finding and impact:** `XlsxParser` applied the configured
-  per-document warning cap, but `PdfParser` and `XlsParser` accumulated ordinary
-  warning lists. A PDF could retain one `PDF_EMPTY_PAGE` warning for every page
-  before later valid text, up to the separate 500-page ceiling, and an XLS file
-  could retain one warning for every hidden or data-empty sheet before a valid
-  sheet. This violated the parser-level warning bound used by direct parser and
-  future indexing-worker consumers.
-- **Root cause and boundary ruling:** PDF and XLS predated the shared
-  `BoundedWarningCollector` integration used by XLSX. Preview's collector was
-  insufficient because it runs after parsing: each parser had already retained
-  its complete warning list, and callers that consume parsers directly never
-  pass through PreviewService. The cap therefore belongs at each producing
-  parser, not only at an HTTP response boundary.
-- **Rejected approach:** A broad `ParserRegistry` wrapper was rejected because
-  it would hide noncompliance in individual parsers, risk changing every parser's
-  ordering and error boundary, and still allow direct parser instances to bypass
-  the cap. Copying the XLSX truncation factory into PDF and XLS was rejected to
-  prevent warning-code, message, or metadata drift.
-- **Implementation:** Added one shared `parser_warning_summary(omitted_count)`
-  factory in `parsing/warnings.py`. PDF and XLS now add warnings to a
-  request-local `BoundedWarningCollector` configured by
-  `max_warnings_per_document`; XLSX reuses the same factory with byte-for-byte
-  equivalent code, message, and `{"omitted_count": int}` metadata. Existing
-  block extraction, warning order, malformed-input handling, resource cleanup,
-  and no-extractable-text errors remain unchanged.
-- **TDD RED evidence:** Before production edits, the focused PDF/XLS command
-  produced `3 failed, 1 warning`: both the exact-limit and over-limit PDF cases
-  returned raw `PDF_EMPTY_PAGE` entries instead of a summary, and XLS returned
-  four raw hidden/empty-sheet warnings instead of its bounded prefix and summary.
-  The later valid PDF paragraph and XLS table block assertions already passed.
-- **GREEN and regression evidence:** The focused command produced `3 passed, 1
-  warning`. Collector plus parsing plus PreviewService produced `159 passed, 1
-  warning`. The single full-suite run produced `330 passed, 1 skipped, 1
-  warning` in 5.78 seconds. The warning was the repository's existing
-  Starlette/httpx deprecation warning.
-- **Fix commit to be created:** `fix: enforce parser warning caps`.
-- **Residual risk/status:** The collectors bound retained output and metadata,
-  but parsers still construct one short-lived warning object per skipped page or
-  sheet so omission counts remain exact; the independent PDF page, spreadsheet
-  structure, and parser timeout/work limits bound that traversal. Other parsers
-  were not wrapped broadly and retain their existing producer-specific warning
-  strategies. No public parser model or warning schema changed.
-
-### SAFE-008 Final integration review and fresh phase verification (executed 2026-09-04)
-
-- **Review outcome:** Task-scoped review found and fixed two previously missed
-  cross-layer XLSX conditions (hyperlink-range materialization and hidden-sheet
-  mapping validation), one delimiter-capacity contention case, and the final
-  cross-parser PDF/XLS warning-cap gap. Each Critical/Important finding received
-  a separate fix commit and scoped re-review. The final W1 re-review found the
-  PDF/XLS warning cap addressed with no new Critical or Important breakage.
-- **Implementation commit chain after plan start `70c4e92`:** `e95360e` bounded
-  relationship-resolved XLSX worksheet materialization; `60092d1` preflighted
-  hyperlink materialization and validated hidden sheets; `68cba8e` bounded
-  parser/preview warnings and aggregated formula warnings; `3eee2ac` bounded
-  segmentation work and restored delimiters; `196f082` resolved joint delimiter
-  allocation contention; `2cc45a4` preflighted Markdown front matter; and
-  `c74d502` enforced PDF/XLS parser warning caps.
-- **Fresh phase command:** `.venv/bin/python -m pytest
-  tests/unit/config/test_settings.py tests/unit/parsing tests/unit/segmentation
-  tests/unit/services/test_preview_service.py
-  tests/api/test_indexing_preview_api.py tests/unit/object_storage
-  tests/unit/repositories/test_document_repository.py -q` exited zero with `250
-  passed, 1 warning in 5.26s`.
-- **Fresh complete-suite command:** `.venv/bin/python -m pytest -q` exited zero
-  with `330 passed, 1 skipped, 1 warning in 5.73s`. The one warning in both test
-  runs is the pre-existing `StarletteDeprecationWarning` from FastAPI's
-  `testclient.py` concerning the httpx compatibility package; no new parser,
-  segmentation, preview, storage, repository, or API warning appeared.
-- **Static and repository gates:** `.venv/bin/python -m compileall -q rag_modules
-  main.py tests`, `git diff --check`, and `git status --short` each exited zero;
-  the first two produced no output and the status was empty before this final
-  documentation append. After this append, the documentation-only commit and a
-  second diff/status check close the repository gate without changing runtime
-  code.
-- **Process problems and ruling:** The approved SDD workflow exposed two
-  execution-process issues worth retaining for future work. First, a Task 4
-  implementation turn remained in final self-review after all required gates
-  were green; the controller interrupted it and resumed a narrowly scoped
-  commit/report turn. Second, a new final-review agent could not be created
-  because the session thread limit was reached. The controller therefore reused
-  a read-only task reviewer in a new whole-branch review turn, then reused a
-  different read-only reviewer as the fresh W1 implementer. No controller
-  product-code edit, destructive action, merge, push, or external deployment was
-  performed.
-- **Final residual risks:** OpenPyXL `_cells` and hyperlink evidence remain
-  isolated fail-closed private-API dependencies that must be revalidated on an
-  OpenPyXL upgrade. XLSX rectangle-overlap accounting and segmentation
-  projection deliberately favor safe over-rejection. Accepted YAML front matter
-  receives three bounded passes. Warning producers construct bounded-lifetime
-  transient objects to retain exact omission counts. These risks are documented,
-  finite, and do not reopen the reviewed resource, disclosure, fidelity, or
-  response-cardinality boundaries.
-
-### EMB-001 Phase 4 Task 1 — OpenAI-compatible embedding boundary (executed 2026-09-04)
-
-- **Problem and impact:** Phase 4 required a real high-quality indexing boundary
-  that could call an OpenAI-compatible embedding service without trusting its
-  response order or shape, leaking private inputs or backend details, retrying
-  permanent failures, or returning mutable vectors. The repository had embedding
-  configuration and public model discovery but no embedding client or typed
-  result/error contract.
-- **Root cause and design:** Added `EmbeddingBatch`, `EmbeddingError`, and
-  `OpenAICompatibleEmbeddingClient`. The client resolves only enabled configured
-  model IDs, validates all input before I/O, posts the configured backend model
-  name and text batch to a normalized `/embeddings` endpoint, applies the model's
-  per-request timeout, and reuses one `httpx.AsyncClient`. Each response is
-  validated and reordered by its local indexes before immutable float tuples are
-  appended in original global input order. An injected HTTP client remains owned
-  by its caller; `aclose` and async context exit close only an internally created
-  client.
-- **Stable safe errors:** Unknown or disabled models use
-  `EMBEDDING_MODEL_UNAVAILABLE` / `Embedding model is unavailable.`; empty,
-  blank, non-string, or over-limit input uses `EMBEDDING_INPUT_INVALID` /
-  `Embedding input is invalid.`; 401/403 uses `EMBEDDING_AUTH_FAILED` /
-  `Embedding authentication failed.`; transport and HTTP failures use
-  `EMBEDDING_REQUEST_FAILED` / `Embedding request failed.`; malformed count,
-  indexes, vector shapes, JSON, types, or non-finite values use
-  `EMBEDDING_RESPONSE_INVALID` / `Embedding response is invalid.`; and
-  within-response, adaptive-child, or later-batch dimensional disagreements use
-  `EMBEDDING_DIMENSION_MISMATCH` / `Embedding dimensions do not match.`. Only an
-  exhausted timeout/network or 429/502/503/504 error is marked retryable. These
-  errors never include model configuration exceptions, API keys, input text,
-  response bodies, transport details, or vectors.
-- **Boundary rulings and edge cases:** An empty text sequence is rejected before
-  I/O because no truthful positive dimension can be returned. Empty or
-  whitespace-only elements are rejected consistently. Response data must have
-  the exact batch count and indexes exactly `0..n-1`; boolean indexes and vector
-  values are rejected even though Python treats booleans as integers. Vectors
-  must be non-empty JSON lists of finite JSON integers or floats. Extremely large
-  integers that overflow float conversion are also sanitized as invalid
-  responses. Dimension consistency is enforced within one response, across 413
-  child requests, and across configured batches in one `embed` run.
-- **Retry and adaptive-batch ruling:** An initial request plus at most
-  `max_retries` transient retries uses bounded exponential delays and never sleeps
-  after its final attempt. HTTP 413 is the sole adaptive-size signal: it is not
-  retried at the failing size, splits the batch into smaller ordered halves, and
-  terminates as a non-retryable request error at size one. HTTP 400 was not used
-  as a split signal because no trusted machine-readable backend contract exists.
-  Authentication, other permanent HTTP failures, invalid input, model lookup,
-  and malformed responses never cause a split.
-- **Rejected approaches:** Creating a new HTTP client per request was rejected
-  because it forfeits pooling and makes lifecycle ownership unclear. Closing an
-  injected client was rejected because that resource belongs to its caller.
-  Returning backend order or mutable lists was rejected because both violate the
-  consumer contract. Using exception strings, response text, or configuration
-  errors in public failures was rejected as a disclosure risk. Retrying 413 at
-  the same size or treating every 400 as evidence of an oversized batch was
-  rejected as wasteful or unsafe. Accepting empty input with dimension zero was
-  rejected because downstream collection setup requires a discovered positive
-  dimension.
-- **TDD RED evidence:** Before production files existed, `.venv/bin/python -m
-  pytest tests/unit/embeddings/test_openai_compatible.py -q --tb=short` failed
-  collection with `ModuleNotFoundError: rag_modules.embeddings`, proving the new
-  protocol suite exercised an absent feature. The first implementation run had
-  `37 passed, 4 failed`; all four failures identified test-fixture assumptions
-  (`httpx.Request` has no `.json()` helper and httpx's response JSON encoder
-  refuses NaN/Infinity), which were corrected by decoding request bytes and
-  supplying raw non-finite JSON. A later valid-JSON huge-integer test failed with
-  an escaping `OverflowError` while 11 sibling malformed-response cases passed;
-  the narrow float-conversion guard made it GREEN. A separate dimension-code
-  test failed with `EMBEDDING_RESPONSE_INVALID` instead of
-  `EMBEDDING_DIMENSION_MISMATCH`; the classification was then corrected.
-- **GREEN and verification evidence:** The complete embedding protocol suite
-  finished with `43 passed, 1` pre-existing warning. Embedding plus configuration
-  regression finished with `57 passed, 1` pre-existing warning. A fresh complete
-  backend run finished with `373 passed, 1 skipped, 1` pre-existing warning in
-  6.19 seconds. The warning remains FastAPI's existing Starlette/httpx test-client
-  deprecation warning.
-- **Commit:** Base `28b3cb0`; task commit subject `feat: add openai compatible
-  embeddings`.
-- **Residual risk/status:** Backoff is deliberately deterministic and capped at
-  two seconds; it does not interpret provider-specific retry headers or add
-  jitter. Recursive 413 subdivision is bounded by the configured maximum batch
-  size of 512 and terminates at one item. The client does not impose a separate
-  response-byte ceiling, so deployment transport/proxy limits remain responsible
-  for bounding a maliciously large body. Callers that do not inject a shared
-  client must close the wrapper or use its async context manager. No logging,
-  PostgreSQL vector persistence, Milvus operation, indexing orchestration, or
-  Celery behavior was added.
-
-### EMB-002 Task 1 Fix Round 1 — closed-client lifecycle guard (executed 2026-09-04)
-
-- **Review finding and impact:** Calling `embed` after closing an internally owned
-  client reached `httpx.AsyncClient.post` and leaked httpx's raw `RuntimeError`.
-  Closing an injected wrapper did not prevent later calls at all, and repeated
-  owned closure delegated twice to the transport. This violated the typed safe
-  failure boundary and left wrapper lifetime dependent on transport ownership.
-- **Root cause:** `aclose()` delegated resource cleanup but did not record wrapper
-  lifecycle state. `embed()` therefore had no state guard before model resolution,
-  input validation, or I/O. Its deliberately narrow `httpx.RequestError` handler
-  correctly did not catch an unrelated `RuntimeError`, exposing the missing state
-  transition rather than an exception-classification problem.
-- **Ruling and implementation:** Wrapper lifetime is now independent of transport
-  ownership. `aclose()` first transitions any wrapper to closed, is idempotent,
-  and physically closes an internally owned HTTP client exactly once. It never
-  closes an injected HTTP client. After direct close or async-context exit,
-  `embed()` checks the wrapper state before model lookup, input processing, and
-  network use and raises non-retryable `EMBEDDING_CLIENT_CLOSED` with the stable
-  message `Embedding client is closed.` No broad `RuntimeError` catch was added.
-- **TDD RED evidence:** Before the production edit, the lifecycle selector had
-  `3 failed, 1 passed`: direct owned reuse leaked `RuntimeError: Cannot send a
-  request, as the client has been closed.`, an injected wrapper remained usable,
-  and repeated owned close called the transport twice. The context-exit test was
-  also run directly and failed because `EMBEDDING_MODEL_UNAVAILABLE` won before
-  the required closed-client error, proving the guard-order defect.
-- **GREEN and regression evidence:** The complete lifecycle selector produced `5
-  passed, 41 deselected`. Embedding plus configuration produced `60 passed`; the
-  fresh complete backend suite produced `376 passed, 1 skipped` in 6.04 seconds.
-  Each run contained only the repository's existing Starlette/httpx deprecation
-  warning.
-- **Fix commit:** `fix: guard closed embedding clients` (separate from `23a725a`).
-- **Rejected approaches and residual risk:** Broadly catching `RuntimeError` was
-  rejected because it could conceal unrelated programming or transport defects.
-  Treating injected-wrapper `aclose()` as a no-op was rejected because identical
-  wrapper APIs would then have ownership-dependent reuse semantics. The guard
-  defines sequential lifecycle behavior; callers must still coordinate a close
-  racing with active `embed()` operations. No secret, input, backend response, or
-  vector is included in the lifecycle failure.
-
-### IDX-001 Phase 4 Task 2 — deterministic economy keywords (executed 2026-09-04)
-
-- **Problem and impact:** Economy indexing required a local, retry-stable keyword
-  path without an Embedding, Milvus, Celery, network, or logging dependency. The
-  repository had `jieba` pinned but no indexing package or keyword contract, so
-  later economy indexing could otherwise drift into nondeterministic token order,
-  case-split English terms, lossy identifier handling, or unbounded caller output.
-- **Design and rulings:** `KeywordExtractor.extract(text, limit=15)` rejects
-  non-string text with `TypeError`, returns `[]` for blank text, rejects boolean
-  or non-integer limits with `TypeError`, and rejects non-positive limits with
-  `ValueError`. Contiguous Han spans are owned only by a private per-extractor
-  `jieba.Tokenizer` with HMM disabled; non-Han Unicode word spans are owned only
-  by a Unicode regex. This disjoint ownership prevents a mixed token such as
-  `A001` from being counted once by each tokenizer. Explicit immutable English
-  and Chinese stopword sets are filtered. Ordinary words lowercase; an ASCII
-  alphanumeric identifier containing both a letter and a digit canonicalizes to
-  uppercase while preserving internal `.`, `_`, or `-` (for example `a001` to
-  `A001`). Rank is descending frequency plus a fixed identifier bonus, then the
-  normalized term's lexical order; slicing guarantees output never exceeds the
-  requested positive limit.
-- **Resource and isolation ruling:** The input is scanned once, raw tokens are
-  streamed, and the counter retains one entry per accepted distinct term, giving
-  linear token-processing and distinct-term memory rather than materializing a
-  second full token list. The implementation does not configure jieba globals,
-  add dynamic dictionary entries, write a user dictionary, import external index
-  clients, or perform I/O.
-- **Rejected approaches:** Applying regex extraction to the whole input in
-  addition to jieba was rejected because it double-counts mixed-script spans.
-  Keeping jieba's default shared tokenizer or mutating its dictionary/log level
-  was rejected to avoid global behavior changes. First-seen or tokenizer-native
-  ordering was rejected because it can make equal-score results retry-dependent.
-  Unicode locale-sensitive casing and preserving raw ID spelling were rejected
-  because `a001` and `A001` must have one exact canonical representation.
-- **TDD RED evidence:** Before production files existed, `.venv/bin/python -m
-  pytest tests/unit/indexing/test_keywords.py -v` failed collection with
-  `ModuleNotFoundError: rag_modules.indexing`. The system `python` lacked pytest,
-  so the project `.venv` command is the recorded test runner. The first GREEN
-  candidate had one assertion correction: `客户` and `订单` were tied and the
-  approved lexical tie-break correctly ranked `客户` first; no production change
-  was required for that test expectation.
-- **GREEN and verification evidence:** Focused tests passed `17 passed`; keyword,
-  embedding, and segmentation regression passed `102 passed`; and a fresh full
-  suite passed `393 passed, 1 skipped` in 6.63 seconds. Each command emitted only
-  the repository's existing FastAPI/Starlette httpx deprecation warning and the
-  dependency's `pkg_resources` deprecation warning from jieba. `compileall` for
-  `rag_modules/indexing` also exited successfully.
-- **Commit:** `feat: extract economy index keywords` (base `0cbdbc3`).
-- **Residual risk/status:** Chinese semantic token boundaries necessarily follow
-  the pinned jieba dictionary; final extractor ranking is nevertheless owned and
-  tested independently of jieba emission order. Very large inputs still require
-  linear work and memory proportional to their distinct accepted terms, which is
-  deliberate for this pure local extractor; upstream parsing and segmentation
-  limits bound document-sized production calls. No external/vector/orchestration
-  behavior was added.
-
-### IDX-002 Task 2 Fix Round 1 — astral Han ownership and quiet initialization (executed 2026-09-04)
-
-- **Review findings and impact:** The initial Han range covered only BMP code
-  points. An astral Extension B character (`U+20000`) or CJK Compatibility
-  Ideographs Supplement character (`U+2F800`) adjacent to `A001` was consumed by
-  the non-Han word regex, producing `𠀀a001` or `丽a001` and losing the required
-  canonical identifier. Separately, the private tokenizer's first Han extraction
-  invoked jieba's lazy initializer, which emitted four debug records and stderr
-  lines. Both defects violated the pure, deterministic local boundary.
-- **Root causes and ruling:** The explicit class omitted astral Unified
-  Ideographs Extensions B through H and the compatibility supplement. Inspection
-  of the installed jieba 0.42.1 (within the declared `jieba>=0.42,<1` range)
-  showed `Tokenizer.initialize()` accepts no instance logger and writes directly
-  to `jieba.default_logger`; redirecting stderr alone would leave log records,
-  while changing the shared logger's level, handlers, or propagation would leak
-  behavior to concurrent consumers. The extractor now
-  explicitly owns Unified Ideographs, Extensions A through J, and both
-  compatibility ranges; it still does not use Unicode category/locale guesses
-  that would absorb unrelated scripts. A private `_QuietTokenizer` mirrors only
-  the observed initializer's dictionary-cache and lock behavior while omitting its
-  initializer logging calls. It does not mutate global logger configuration and
-  preserves shared dictionary-cache locking for concurrent initialization.
-- **Rejected fixes:** Widening the regex to every Unicode letter/word character
-  was rejected because it would merge unrelated scripts. Using a global
-  `jieba.setLogLevel`, adding/removing logger handlers or filters, monkeypatching
-  `jieba.default_logger`, and broad stdout/stderr redirection were rejected as
-  global, observable, or concurrency-unsafe. Calling the shared default
-  tokenizer was rejected because it would restore shared mutable state and its
-  initializer chatter.
-- **TDD RED evidence:** The new selected test run reported `3 failed, 17
-  deselected`: both astral inputs returned a merged lowercase word instead of
-  separate `A001`, and the capture test recorded four `jieba` initializer debug
-  records (and matching stderr output). The expected values are literal external
-  behavior, not derived from extractor helpers.
-- **GREEN and verification evidence:** After the narrow repair, the selector
-  reported `3 passed, 17 deselected`; the full keyword suite reported `20 passed`;
-  `compileall` completed; and the final fresh full suite reported `397 passed, 1
-  skipped` in 6.68 seconds. The only warnings were FastAPI/Starlette's existing
-  httpx deprecation and jieba dependency's import-time `pkg_resources`
-  deprecation; the new capture test verifies no runtime initializer output or
-  jieba log record from the operation.
-- **Fix commit:** `fix: handle unicode keywords quietly` (separate from
-  `dcfd768`; recorded after commit).
-- **Residual risk/status:** `_QuietTokenizer` deliberately tracks the
-  initialization/cache behavior observed in jieba 0.42.1 but the project permits
-  `jieba>=0.42,<1`; a public CJK initialization/tokenization regression and an
-  explicit required-internal-attribute guard make an incompatible upgrade fail
-  visibly, and any upgrade still requires a narrow compatibility re-review.
-  Character ownership intentionally covers only named CJK Unified Ideograph and
-  compatibility blocks, not radicals, strokes, or unrelated East Asian scripts.
-  No Embedding, Milvus, Celery, network, application logging, or user-dictionary
-  behavior was added.
-
-### VEC-001 Phase 4 Task 3 — full Milvus vector-store protocol (executed 2026-09-04)
-
-- **Problem and takeover:** The prior Task 3 implementer left only uncommitted
-  configuration and Milvus tests, then became unresponsive. A replacement
-  implementer audited those tests before production edits. During takeover, one
-  rejected combined delete/add patch briefly left `milvus.py` deleted in the
-  uncommitted worktree; the complete intended replacement was restored with
-  `apply_patch` and immediately passed `py_compile` before any other edit or test.
-- **Contract and configuration rulings:** `VectorEntity` is frozen, strict, and
-  contains exactly the seven approved persistence fields. Milvus collections use
-  an explicit non-dynamic schema with a caller-supplied positive dimension,
-  VARCHAR(36) identifiers, nullable `parent_id`, INT64 `position`, and an HNSW
-  COSINE index with `M=16` and `efConstruction=200`. Only COSINE is accepted.
-  Batch size defaults to 500 and is bounded to 1..10000; consistency polling
-  defaults to five attempts and 0.05 seconds, bounded to 2..100 attempts and
-  0..5 seconds; connection timeout defaults to five seconds and is bounded to
-  1..120 seconds.
-- **Safety and lifecycle rulings:** Each store lazily creates and caches at most
-  one client from its injected zero-argument factory. Disabled operational calls
-  fail before client creation, while legacy disabled provisioning remains a
-  compatible skip. Only `MilvusException` is translated at the SDK boundary;
-  unrelated programming errors propagate. Public errors expose only fixed codes,
-  retryability, and safe messages—never collection or entity identifiers, URI,
-  credentials, backend details, or vectors. Known non-Milvus providers fail with
-  `VECTOR_PROVIDER_NOT_IMPLEMENTED`; unknown providers fail with the sanitized
-  `VECTOR_PROVIDER_INVALID` configuration error.
-- **Operation rulings:** Existing collections are checked through the two
-  approved PyMilvus 2.5 mapping/attribute description shapes, with missing or
-  ambiguous schema/index data treated as a mismatch. Upsert validates the entire
-  payload before I/O, re-discovers and caches the actual dimension after process
-  restart, chunks writes, and requires an exact SDK write count. Empty upsert or
-  ID deletion returns zero without creating a client. ID deletion validates all
-  IDs before I/O, performs stable deduplication, and chunks requests. Document
-  deletion accepts only trusted compact or hyphenated UUID text before building
-  an equality filter. Drop is idempotent and invalidates cached schema state.
-  Count flushes once and observes at most the configured attempt count; it returns
-  only after two consecutive equal, valid, nonnegative row counts, sleeps only
-  between observations, and otherwise raises retryable `VECTOR_COUNT_UNSTABLE`.
-- **Rejected approaches:** Dynamic schemas, auto-generated IDs, content fields,
-  non-COSINE metrics, and trusting configured rather than introspected dimensions
-  were rejected because they weaken the persistence contract. Returning the last
-  unstable count was rejected because it fabricates consistency. Broad exception
-  catches were rejected because they hide programmer errors and cancellation-like
-  failures. Interpolating arbitrary document text into a filter was rejected in
-  favor of strict UUID validation. Eager or per-operation client construction was
-  rejected because the store owns one reusable lazy client boundary.
-- **TDD RED evidence:** With inherited tests present and production untouched,
-  `.venv/bin/python -m pytest tests/unit/vector_stores/test_milvus_store.py -v`
-  collected no tests and failed import with missing `VectorConsistencyError`.
-  The expanded Milvus-plus-settings run failed at the same import boundary. The
-  first implemented focused run collected 62 tests and reported 54 passed / 8
-  failed; all failures exposed one test-oracle defect: the input identifier was
-  literally `collection`, while the assertion prohibited that generic noun in
-  safe messages such as `Vector collection schema does not match.` The tests now
-  use a distinctive private identifier and verify that exact value is absent.
-- **GREEN and verification evidence:** The corrected Milvus, settings, and
-  factory set passed `62 passed` with one pre-existing Starlette/httpx warning.
-  The single fresh full-suite run passed `445 passed, 1 skipped` in 6.83 seconds,
-  with only the existing Starlette/httpx and jieba/pkg_resources deprecations.
-  The restored adapter also passed direct `py_compile` before work resumed.
-- **Scope and residual risk:** The 494-line adapter remains cohesive: its public
-  methods are the required store protocol, and its private helpers centralize
-  adapter-specific validation, batching, safe response parsing, and the two SDK
-  introspection shapes. It was not split solely for line count. No embedding,
-  keyword, PostgreSQL persistence, Task 4/5/6 orchestration, Celery, or live
-  Milvus integration behavior was added. A real-service compatibility check
-  remains Phase 4 Task 6; this task uses representative PyMilvus shapes only.
-
-### VEC-002 Task 3 Fix Round 1 — validation boundaries (executed 2026-09-04)
-
-- **Review findings and impact:** Four Important cases crossed their intended
-  safe boundaries. `VectorEntity.position` accepted `2**63` for a Milvus INT64
-  field. A decimal string longer than Python 3.11's integer-conversion digit
-  limit escaped `_row_count` and `_positive_int` as raw `ValueError`. A valid
-  nested index description hid contradictory direct `index_type`, `metric_type`,
-  `M`, and `efConstruction`. Finally, explicit falsy factory inputs selected the
-  configured provider and could construct it instead of returning
-  `VECTOR_PROVIDER_INVALID`.
-- **Root causes:** Position had only a nonnegative Pydantic bound. Both metadata
-  parsers treated `isdecimal()` as sufficient proof that `int()` was safe and
-  bounded. Index validation selected one representation instead of accounting
-  for every present representation. Factory selection used `provider or
-  default`, conflating an absent argument with invalid falsy values.
-- **Rulings and implementation:** Position is constrained to the exact inclusive
-  signed-INT64 range `0..9223372036854775807`; the existing adapter translation
-  turns model rejection into `VectorValidationError` before any client, schema,
-  or write access. String metadata conversion now checks a maximum of 19
-  characters, ASCII decimal syntax, and signed-INT64 value before returning an
-  integer. Count treats rejection as an invalid observation through all bounded
-  attempts before `VectorConsistencyError`; schema and index validation classify
-  it as `VectorSchemaMismatch`. If nested and direct index representations
-  coexist, both normalize independently and both must match
-  HNSW/COSINE/16/200; the two legitimate one-shape forms remain accepted. Only
-  `provider is None` selects configuration; `""`, `0`, and `False` all fail with
-  sanitized `VECTOR_PROVIDER_INVALID` before provider construction.
-- **Rejected approaches:** Catching `ValueError` only at public operation
-  boundaries was rejected because it would hide unrelated defects and still
-  perform the oversized conversion attempt. Calling `int()` and then applying a
-  numeric bound was rejected for the same resource reason. Trusting the nested
-  index while ignoring direct fields, or permitting incomplete coexisting
-  representations, was rejected as ambiguous. Retaining truthiness-based
-  fallback or special-casing only the empty string was rejected because other
-  explicit falsy non-string values would still broaden default dispatch.
-- **TDD RED evidence:** After a clean pre-edit focused baseline of `62 passed`,
-  the exact new selector reported `8 failed, 39 deselected`. The oversized
-  position and conflicting mixed-index cases failed with `DID NOT RAISE`; the
-  huge row-count, schema-dimension, and index-parameter cases each exposed the
-  Python 3.11 `5000 digits` conversion `ValueError`; and `""`, `0`, and `False`
-  each reached a patched constructor sentinel rather than the expected safe
-  validation error.
-- **GREEN and verification evidence:** The unchanged selector passed 8 tests
-  with 39 deselected. The full Milvus/settings/factory set passed `70 passed` with
-  the existing Starlette/httpx warning. Direct `py_compile` of the three
-  production modules and the Milvus test module exited 0. The single fresh full
-  suite passed `453 passed, 1 skipped` in 6.82 seconds with only the repository's
-  existing Starlette/httpx and jieba/pkg_resources deprecations.
-- **Fix commit:** `fix: harden milvus validation boundaries` (separate from
-  `3d60c28`; recorded after commit).
-- **Residual risk/status:** Textual metadata larger than signed INT64 is
-  deliberately invalid even if Python could represent it; this matches the
-  target field/count boundary and keeps conversion bounded. Live PyMilvus 2.5.14
-  metadata and service behavior remain Task 6 scope. This fix round continues to
-  cover only the two approved representative one-shape descriptions plus
-  contradictory mixed metadata; it makes no live-service compatibility claim.
-
-### VEC-003 Task 3 Fix Round 2 — validate before provider caching (executed 2026-09-04)
-
-- **Review finding and impact:** Explicit unhashable provider values such as an
-  empty list or dictionary raised raw `TypeError` instead of the sanitized
-  non-retryable `VECTOR_PROVIDER_INVALID`. This left the public factory's safe
-  configuration boundary dependent on whether an unsupported runtime value was
-  hashable. Review also required cache identity to remain consistent for the
-  configured default and the same explicit valid provider.
-- **Root cause:** `lru_cache` decorated the public function, so its wrapper
-  hashed positional arguments before the function body could normalize or
-  validate them. The decorator also keyed an omitted call, an explicit `None`,
-  and an explicit `"milvus"` separately even when all selected the same provider.
-- **Ruling and implementation:** `get_vector_store` is now an uncached public
-  validator/normalizer. Only `None` resolves the configured default; every other
-  value must already be a supported string or it raises the fixed safe error.
-  The normalized string is passed to a private `lru_cache` constructor, so only
-  validated hashable values reach caching and equivalent configured/explicit
-  providers share one instance. The facade retains its existing `cache_clear`
-  test hook by delegating to the private cache. Known non-Milvus providers still
-  raise `VECTOR_PROVIDER_NOT_IMPLEMENTED`; unknown strings and falsy hashable
-  values still safe-fail before construction.
-- **Rejected approaches:** Catching `TypeError` around the public call was
-  rejected because decorator hashing occurs outside the body and a broad catch
-  could conceal constructor defects. Converting lists/dictionaries to strings
-  or special-casing only those two containers was rejected because it broadens
-  or fragments provider validation. Removing caching was rejected because store
-  identity is intentional. Keeping separate cache keys for `None` and its
-  resolved provider was rejected because equivalent selection should reuse the
-  same store.
-- **TDD RED evidence:** The new selector reported `3 failed, 47 deselected`.
-  Empty list and dictionary inputs each leaked `TypeError: unhashable type`; the
-  identity test showed an explicit `"milvus"` call and the configured-default
-  call returned distinct `MilvusVectorStore` objects.
-- **GREEN and verification evidence:** The unchanged selector passed 3 tests
-  with 47 deselected. The full Milvus/settings/factory scope passed `73 passed` with
-  the existing Starlette/httpx warning. Direct `py_compile` of the factory and
-  Milvus test module exited 0. The single fresh full suite passed `456 passed, 1
-  skipped` in 6.81 seconds with only the existing Starlette/httpx and
-  jieba/pkg_resources deprecations.
-- **Fix commit:** `fix: validate vector providers before caching` (separate from
-  `87623fc`; recorded after commit).
-- **Residual risk/status:** The public function's dynamic runtime validation is
-  intentionally broader than its static type annotation so malformed Python
-  callers receive the stable error. The attached `cache_clear` attribute is a
-  compatibility/testing hook backed directly by the private cache; construction
-  identity is keyed only by normalized provider string. Live PyMilvus 2.5.14
-  remains Task 6 scope.
-
-### SEG-001 Phase 4 Task 4 — deterministic document-segment persistence (executed 2026-09-04)
-
-- **Problem and approved boundary:** The indexing design required deterministic,
-  retry-safe PostgreSQL `document_segments` staging that can later be activated
-  only after a vector-store validation step. The repository had segment ORM
-  columns but no stable identity/hash contract, no transaction-neutral staging
-  boundary, no preview-parent-to-database-parent mapping, and no narrowly
-  scoped activation/previous-version deletion operations.
-- **Rulings and implementation:** `SegmentStagingCommand` carries dataset,
-  document, target-index, job, technique, and segmentation snapshot values into
-  `SegmentRepository.stage(command, segments)`. Content normalizes CRLF/CR to
-  LF and Unicode NFC. Metadata recursively applies the same string treatment,
-  accepts only finite JSON-compatible values, preserves list order, normalizes
-  mapping keys, rejects duplicate normalized keys, and serializes using sorted,
-  compact canonical JSON. SHA-256 hashes the canonical object containing both
-  normalized content and metadata. A fixed application UUID namespace plus
-  target index, document, deterministic persisted parent ID, position, and hash
-  produces compact UUIDv5 retry IDs. Thus a configuration/index-version change
-  changes identities even for identical text.
-- **Parent, status, and transaction rulings:** Parent candidates are identified
-  in a first in-memory pass; the subsequent pass resolves children from preview
-  local IDs to those deterministic database IDs, so child-before-parent preview
-  order remains valid. Missing/non-parent links, duplicate local IDs and derived
-  IDs reject before any row is added. New rows stage as `indexing`; parents and
-  all economy rows are `not_required` for embeddings while high-quality general
-  and child rows wait. Exact retries return pre-existing immutable-equivalent
-  records without creating duplicates or changing original job attribution;
-  mismatched hash/content/metadata or immutable identity raises a safe conflict.
-  All repository operations use `flush`, never `commit`; activation is limited
-  to an explicit dataset/index/document's nondeleted staging records, and old
-  rows are soft-deleted only for an explicit previous dataset index after later
-  orchestration makes the replacement active. Timestamps come from aware UTC
-  `utcnow`. Vectors are neither accepted nor stored or logged.
-- **Encountered symptoms and root causes:** The initial test RED correctly
-  failed module collection because `rag_modules.indexing.ids` did not exist. The
-  first implementation test run then exposed a strict-plugin fixture authoring
-  issue (`async fixture ... no plugin or hook`) caused by use of `@pytest.fixture`
-  instead of `@pytest_asyncio.fixture`. It also exposed an existing ORM dialect
-  mapping problem: actual SQLite table creation failed because its compiler does
-  not support the PostgreSQL `ARRAY(Text)` keyword column. A SQLite-only JSON
-  type variant restores real async-SQLite ORM testing while retaining PostgreSQL
-  ARRAY and GIN behavior; no PostgreSQL schema column was changed. A later
-  economy/parent-child design test intentionally REDed with `DID NOT RAISE`,
-  revealing the missing command-level consistency check.
-- **Rejected approaches:** Mock repository assertions and test-local SQL tables
-  were rejected because the required test is real async SQLite behavior through
-  the actual ORM mapping. Random IDs, source-metadata insertion order,
-  content-only hashes, serial parent insertion dependency, mutation of exact
-  retry rows, and automatic stage-time activation were rejected because they
-  break reproducibility, linkage, audit history, or safe version switching.
-- **TDD evidence to date:** `.venv/bin/python -m pytest
-  tests/unit/indexing/test_segment_persistence.py -v` first failed collection
-  with `ModuleNotFoundError`; after implementation it passed `12 passed, 2
-  warnings in 0.08s`. The additive economy/parent-child test first produced `1
-  failed, 11 passed`, then passed unchanged. Relevant db/repository/segmentation
-  /keyword regressions passed `65 passed, 2 warnings in 0.94s`. The warnings are
-  repository-existing Starlette/httpx and jieba/pkg_resources deprecations.
-- **Final verification:** `py_compile` of every changed Python module and the
-  persistence test exited zero; `git diff --check` exited zero; one fresh
-  `.venv/bin/python -m pytest -v` run passed `468 passed, 1 skipped, 2 warnings
-  in 6.96s`. The skip is the opt-in MinIO integration test and warnings are the
-  existing Starlette/httpx and jieba/pkg_resources deprecations. Final review
-  reconfirmed no vector payload/persistence/logging, no repository commit, and
-  no Task 5 engine/activation invocation.
-- **Final commit:** `feat: stage deterministic document segments` (its SHA is
-  recorded in the Task 4 handoff after Git creates the commit).
-- **Residual risk:** SQLite establishes actual asynchronous mapped persistence,
-  but it cannot prove PostgreSQL locking or a cross-PostgreSQL/Milvus atomic
-  transaction. A concurrent identical staging race still relies on the database
-  primary key and Phase 5's transaction/retry orchestration to reload safely.
-
-### SEG-002 Phase 4 Task 4 Fix Round 1 — race-safe batch segment staging (executed 2026-09-04)
-
-- **Review finding and root cause:** `stage`'s sequential select then ORM
-  add/flush flow allowed concurrent transactions to both observe missing IDs.
-  The loser received a primary-key `IntegrityError`, which failed its entire
-  caller-owned SQLAlchemy transaction. Thus an exact retry did not consistently
-  return the existing row, while a conflicting collision did not become the
-  public `SegmentPersistenceError` either.
-- **Deterministic reproduction:** New real SQLite file tests use one async
-  repository session and an independent committed connection. A cursor event
-  inserts the competing row precisely when the repository begins its insert, so
-  no wall-clock timing or mock assertions are involved. Before the fix, the
-  focused suite reported `2 failed, 12 passed`; both race cases produced
-  `sqlite3.IntegrityError: UNIQUE constraint failed: document_segments.id` at
-  the unprotected flush. The test then requires staging a distinct document in
-  the same outer session, which the old failure cannot safely do.
-- **Ruling and fix:** Staging now uses one dialect-native batch `INSERT ... ON
-  CONFLICT (id) DO NOTHING` for missing records (PostgreSQL production and
-  SQLite real-behavior tests), then reloads every requested ID and checks the
-  full immutable identity, content hash, normalized content, and metadata before
-  it returns. An exact raced row therefore succeeds idempotently; an incompatible
-  raced row safely fails only after reload; no expected collision exceptions or
-  outer transaction rollback occur. This is batch-safe and avoids O(n) per-row
-  savepoints. The method is still commit-free and uses the caller's transaction.
-  Non-unique constraint/database/program failures are not caught or relabeled.
-- **Timestamp correction:** Earlier tests asserted only the in-memory aware UTC
-  value assigned by `utcnow`. They now refresh after persistence and assert the
-  timestamp exists. SQLite does not round-trip timezone-awareness, so that
-  limitation is documented rather than overclaimed; PostgreSQL remains mapped
-  with `DateTime(timezone=True)` and receives aware UTC values.
-- **Rejected approaches:** Broad `IntegrityError` catches would hide FKs/checks
-  and unrelated failures. Per-row savepoints preserve a caller transaction but
-  add avoidable O(n) write/rollback work and still require reload validation.
-  Timing-dependent concurrent tasks were rejected for deterministic cursor-event
-  injection through two actual database connections.
-- **Final verification:** The unchanged focused persistence suite passed `14
-  passed, 2 warnings in 0.10s`; relevant db/repository/segmentation/keyword
-  regressions passed `65 passed, 2 warnings in 0.94s`; direct `py_compile` and
-  `git diff --check` passed. One fresh complete `.venv/bin/python -m pytest -v`
-  run passed `470 passed, 1 skipped, 2 warnings in 7.04s`; the skip is opt-in
-  MinIO, and warnings remain the existing Starlette/httpx and jieba/pkg_resources
-  notices. Final review verified no catch/commit/vector behavior in the race
-  path and exact validation after the all-ID reload.
-- **Final commit:** `fix: make segment staging race-safe` (the SHA is recorded
-  in the Task 4 Fix Round 1 handoff after Git creates the commit).
-- **Residual risk:** SQLite proves the ORM conflict result and continued
-  transaction usability but not PostgreSQL deployment lock timeouts/isolation.
-  PostgreSQL `ON CONFLICT` resolves a concurrent primary-key contender before
-  the following reload under normal Read Committed semantics; production must
-  retain ordinary database timeout/retry policy for disconnects or lock timeouts.
-
-### IDX-001 Phase 4 Task 5 — single-document indexing engine (completed and approved 2026-09-04)
-
-- **Approved boundary and ruling:** The single-document engine owns only
-  `download -> parse -> split -> stage -> embed-or-keywords -> vector-upsert -> validate`.
-  It checks cancellation between stages and batches, uses deterministic safe
-  progress, and never activates rows or deletes previous versions. Existing
-  high-quality targets come from the immutable command; building targets are
-  resolved once from the first non-empty embedding dimension. Economy remains
-  PostgreSQL-only. Parser, segmenter, keyword extraction, and Milvus calls are
-  synchronous and must run off the event-loop thread; storage and Embedding stay
-  asynchronous, with the storage context deterministically exited.
-- **Vector-count ruling and cost:** Per-document validation is the exact sum of
-  successful upsert return counts against this document's indexable row count.
-  Calling `count(collection)` was rejected because its collection-wide value is
-  invalid when documents append or execute in parallel. Independent whole-index
-  cardinality validation and activation remain Phase 5 work; Task 5 proves only
-  the provider's acknowledged counts for this document.
-- **PostgreSQL vector ruling:** `DocumentSegmentRecord.vector` remains
-  intentionally unmapped. Staging and engine APIs accept no PostgreSQL vector;
-  embeddings exist only in `VectorEntity` batches sent to Milvus, leaving the
-  legacy physical PostgreSQL column untouched/NULL. Adding pgvector or a shadow
-  Python attribute merely to satisfy an illustrative assertion was rejected.
-- **Initial tooling symptom/root cause:** The plan's literal `python -m pytest`
-  selected `/Users/fitch/miniconda3/bin/python`, where pytest is not installed.
-  This was an interpreter-selection error and not accepted as feature RED. The
-  repository `.venv/bin/python` is the authoritative test interpreter.
-- **Initial TDD RED:** Before production edits, `.venv/bin/python -m pytest
-  tests/unit/indexing/test_document_engine.py -v` failed collection with
-  `ModuleNotFoundError: No module named 'rag_modules.indexing.engine'`, exactly
-  demonstrating the missing Task 5 engine.
-- **Repository mutation defect and rejected approach:** The first atomicity
-  probe passed only because SQLite happened to return the invalid row first; it
-  was rejected as evidence. Deterministically ordering a valid row before an
-  invalid row exposed partial in-memory mutation (`keywords=['valid']` and a
-  completed child) before the safe error. Validation and mutation shared one
-  loop. The fix validates the entire batch and materializes bounded keyword
-  lists before changing any record, then flushes once. Relying on query row
-  order or rolling back the caller's whole transaction was rejected.
-- **Additional validation/lifecycle symptoms:** A leading-digit collection,
-  non-string separator, and dimension 32,769 crossed the engine's validation
-  boundary even though the Milvus adapter rejects them. The engine now matches
-  the consumed adapter's exact collection grammar and `1..32768` dimension
-  ceiling and validates the entire command before storage I/O. Plain
-  `asyncio.to_thread` also allowed cancellation to close a source stream while
-  its parser thread was still running. Sync work is now shielded and joined
-  before resource release/cancellation propagation; worker defects remain
-  visible rather than being relabeled.
-- **TDD GREEN and final verification:** The engine suite grew from the initial
-  valid missing-module RED to 38 collected cases. Repository API RED was `2
-  failed, 1 passed`, then `3 passed`; deterministic atomicity RED was `2
-  failed`, then `2 passed`; validation REDs were `3 failed` and later `2
-  failed`, then passed unchanged; lifecycle RED was `1 failed`, then passed.
-  The final required engine/Embedding/vector/keyword selector passed `155
-  passed`; repository/parser/segmentation regressions passed `197 passed`;
-  direct `py_compile` and `git diff --check` exited zero; one fresh full suite
-  passed `513 passed, 1 skipped, 2 warnings in 7.10s`. The skip is opt-in live
-  MinIO and warnings are existing deprecations.
-- **Residual risk:** External boundaries are deterministic unit fakes here;
-  live multi-service integration remains later scope. Per-upsert acknowledgement
-  is not independent collection cardinality proof. Phase 5 still owns caller
-  transaction disposition after partial external success, whole-index
-  validation, compensation, activation, and previous-version deletion.
-- **Final commit:** `feat: index one document into postgres and milvus` (SHA is
-  recorded in the Task 5 handoff after Git creates the commit).
-
-### IDX-002 Task 5 Fix Round 1 — cancellation and document-sized vector retention (completed and approved 2026-09-04)
-
-- **Review findings:** Cancellation during a synchronous successful Milvus
-  upsert propagated before acknowledgment validation and PostgreSQL status
-  flush, leaving the written batch `waiting`. A second cancellation interrupted
-  the cleanup join and could close a stream beneath its parser. Separately, the
-  engine retained every batch's vectors until all document Embeddings finished,
-  allowing multi-gigabyte retention at the approved segment/dimension ceilings.
-  Economy mutation had no check after its final progress callback; repository
-  mutation APIs allowed cross-technique state corruption; syntactically valid
-  arbitrary warning codes could carry secret-looking data.
-- **Root causes:** One helper conflated ordinary non-abandonable sync execution
-  with a vector operation critical section. Its cleanup await was unshielded.
-  Embedding and vector writes were implemented as two document-sized materialized
-  phases. Repository validation checked segment type but not technique-derived
-  embedding state. Warning filtering checked grammar rather than a closed
-  producer set. Economy checked cancellation before extraction and after the
-  eventual mutation, not at the progress-to-mutation boundary.
-- **Rulings/rejected approaches:** Process exactly one vector batch at a time
-  and defer cancellation through upsert acknowledgment plus matching status
-  flush. A task-completion-bounded repeated-shield loop is permitted; suppressing
-  cancellation, abandoning a live thread, or adding an independent unbounded
-  wait/retry loop is rejected. Worker/ack/status defects win over pending
-  cancellation so programmer/dependency failures remain visible. Repository
-  technique comes from the established `embedding_status` invariant rather
-  than duplicating technique parameters. Unknown warning codes map to one fixed
-  generic code; syntax filtering is rejected. Collection count, activation,
-  deletion, logging, and orchestration remain out of scope.
-- **TDD RED:** The focused engine selector reported `5 failed, 37 deselected`,
-  reproducing every engine finding. The real SQLite repository selector reported
-  `3 failed, 19 deselected`, reproducing both cross-technique writes and
-  non-idempotent completed timestamp mutation.
-- **Additional cancellation-boundary RED:** A final state-aware progress test
-  proved streaming batch two had no cancellation check between its Embedding
-  result and vector write (`DID NOT RAISE CancelledError`). The explicit check
-  now occurs after every validated/resolved Embedding batch, not only the first
-  stage update; the unchanged selector passed.
-- **GREEN and final verification:** The six-finding engine selector passed `6
-  passed`; the real SQLite repository selector passed `3 passed`; worker-error
-  precedence plus repeated cancellation passed `3 passed`; full Task 5 files
-  passed `64 passed`. The final focused Task 5/Embedding/vector/keyword scope
-  passed `161 passed`; repository/parser/segmentation regressions passed `200
-  passed`; direct `py_compile` and `git diff --check` exited zero. One fresh
-  full suite passed `522 passed, 1 skipped, 2 warnings in 7.31s`; the skip and
-  warnings remain the existing opt-in MinIO/deprecation set.
-- **Residual risk:** Peak vectors are bounded to one configured batch, not zero;
-  the maximum batch of 1,024 can still be sizable for extreme dimensions.
-  Robust join cannot terminate a dependency call that itself never returns,
-  though it cannot outlive a completed task and never abandons the live thread.
-  Worker/ack/status defects deliberately win over a pending cancellation.
-  High-quality progress announces the approved stages monotonically while
-  later Embedding/upsert pairs stream internally. Phase 5 still owns process
-  deadlines, transaction/failure mapping, compensation, and activation.
-- **Fix commit:** `fix: bound indexing batches and cancellation` (SHA is recorded
-  in the fix-round handoff after Git creates the commit).
-
-### IDX-003 Phase 4 Task 6 — live Milvus 2.5.14 compatibility verification (2026-09-04)
-
-- **Scope and environment:** Task 6 exercised the existing Compose
-  `milvusdb/milvus:v2.5.14` standalone service through the project virtualenv
-  (`Python 3.11.15`, resolved `pymilvus 3.0.1`). The shell-default Python was
-  3.14.6 and had no PyMilvus installed; that was an interpreter-selection
-  condition, not an adapter failure. The declared dependency remains
-  `pymilvus>=2.5.0`; no pin or downgrade was made.
-- **Compose preflight and rejected cleanup:** Compose interpolates the complete
-  file before selecting services. Without a worktree `.env`,
-  `docker compose config --services` initially required unrelated RabbitMQ,
-  Neo4j, and PostgreSQL variables. Process-only benign integration placeholders
-  for those required interpolations plus dedicated MinIO credentials allowed
-  config expansion; no `.env` or credential values were persisted. The plan was
-  to start only `etcd`, `minio`, and `standalone`. Direct sandbox Docker access
-  was denied at `/Users/fitch/.docker/run/docker.sock`, so elevated Docker
-  access was requested rather than bypassed. Startup then found fixed container
-  name `milvus-etcd` already owned by the primary-worktree Compose project.
-  Removing, renaming, stopping, pruning, `down -v`, or touching shared volumes
-  was rejected. Targeted inspection instead established that the existing
-  `graph-rag` containers were `milvus-etcd` (v3.5.18, Up/healthy),
-  `milvus-standalone` (v2.5.14, Up/healthy), and `milvus-minio`
-  (RELEASE.2024-05-28T17-19-04Z, Up/unhealthy). An elevated localhost health
-  probe returned `OK` from standalone. Sandbox-localhost isolation initially
-  made both port 19530 and health port 9091 unreachable; elevated test execution
-  was required to reach the already-running service. The application MinIO
-  adapter was neither exercised nor changed by this test, but Milvus standalone
-  remains configured against that pre-existing MinIO backend; its unhealthy
-  state is therefore a residual environment concern even though the vector path
-  passed.
-- **Isolated test and skip evidence:** Added an opt-in `RUN_INTEGRATION=1`
-  fixture with explicit safe localhost/default-database configuration and a
-  unique `test_<uuid>` collection per test. With integration disabled,
-  `tests/integration/test_milvus_index.py -v` reported `2 skipped, 1 warning`.
-  The main test creates/revalidates the exact schema and HNSW/COSINE index,
-  repeats a stable-ID upsert, checks count one, deletes it, checks count zero,
-  and drops only its own collection in `finally`. A second test deliberately
-  raises an assertion inside its body and proves the same owned-collection
-  `finally` cleanup path. No broad fixture enumerates or drops collections.
-- **Schema compatibility RED/root cause/fix:** The first elevated live run
-  reached Milvus but failed on the second `ensure_collection`: the adapter
-  rejected the schema it had just created. A fresh owned diagnostic collection
-  (dropped in `finally`, `cleanup_exists=False`) showed the real server/SDK
-  response omits `nullable` for every non-nullable field while retaining
-  `nullable=True` for `parent_id`. The prior strict comparison required an
-  explicit `False`. A focused unit regression first failed (`1 failed,
-  50 deselected`), then passed after normalizing only a missing nullable value
-  to the Milvus non-nullable default. Explicit invalid values and missing
-  nullable metadata for `parent_id` still fail schema validation. Pinning or
-  downgrading PyMilvus and weakening all schema checks were rejected.
-- **Logical-count compatibility RED/root cause/fix:** After the schema fix,
-  repeated same-primary-key upserts produced physical
-  `get_collection_stats().row_count == 2`, while a same-ID query returned one
-  logical row. A second owned diagnostic confirmed
-  `query(output_fields=['count(*)'])` returns logical count one even after the
-  duplicate physical/tombstone statistic; it and a return-wrapper probe each
-  ended with `cleanup_exists=False`. PyMilvus 3.0.1 returns a
-  `HybridExtraList` that is iterable/indexable as one `{'count(*)': N}` mapping.
-  The focused logical-count TDD regression first failed (`1 failed,
-  50 deselected`) because the old stats path returned zero in the fake, then
-  passed after the adapter kept its existing flush/two-equal-observations
-  polling but read and validates the one-row logical aggregate query instead.
-  Retaining physical `row_count`, treating it as an upsert-idempotency oracle,
-  or adding arbitrary sleeps were rejected: physical records include replaced
-  versions and the adapter already uses bounded condition polling.
-- **GREEN/live and cleanup evidence:** The focused schema/count/mismatch suite
-  passed `14 passed, 37 deselected, 1 warning`. Controller-run fresh live
-  verification of the approved command reported schema subset `8 passed,
-  43 deselected` and `RUN_INTEGRATION=1` integration `2 passed, 1 warning in
-  13.96s`. The successful test exercises its own `finally` drop; the separate
-  failure-path test passed. Each diagnostic used a generated `test_<uuid>` name
-  and separately proved only that owned name absent afterward; this does not
-  claim an inventory of arbitrary shared collections. Output and durable notes
-  intentionally contain no tokens, passwords, or raw backend exception
-  payloads.
-- **Residual risks:** Live coverage is one local existing service stack, not a
-  clean Compose lifecycle test, because fixed shared names prevented a second
-  stack and scope prohibited destructive resolution. The MinIO healthcheck is
-  unhealthy but outside this vector-only test. Future PyMilvus response shapes
-  can change, though the observed omitted-default and aggregate wrapper shapes
-  now have focused regressions. Collection-wide logical count is appropriate to
-  this adapter API; Task 5 continues to use per-document acknowledged upsert
-  counts for concurrent document validation.
-
-### IDX-004 Task 6 Fix Round 1 — sanitize cleanup verification failures (2026-09-04)
-
-- **Review finding/root cause:** The integration-only `_collection_exists()`
-  evidence helper reached the private raw Milvus client. If that check raised a
-  `MilvusException`, pytest could display its backend detail even though the
-  application adapter sanitizes its public boundary.
-- **TDD RED:** A deterministic no-live fake client raised MilvusException with
-  a distinctive backend-only detail. The focused test failed as the raw SDK
-  exception (`1 failed, 2 deselected`), proving the disclosure path without
-  creating or changing any collection.
-- **Fix and rejection:** The helper now catches only `MilvusException` and
-  raises one fixed generic `AssertionError` with `from None`. The no-chaining
-  test verifies the fixed text, absence of the distinctive detail, no cause, and
-  suppressed context. Catching arbitrary exceptions was rejected so programmer
-  errors remain visible.
-- **GREEN/verification:** Focused sanitizer GREEN was `1 passed, 2 deselected`.
-  With `RUN_INTEGRATION` absent the module now reports `1 passed, 2 skipped`;
-  the pure sanitizer runs locally and only the two live tests skip. Elevated
-  live verification against Milvus 2.5.14 passed `3 passed, 1 warning in
-  14.19s`. No Compose startup, container mutation, broad cleanup, or live
-  collection outside a generated test-owned name occurred.
-
-### IDX-005 Phase 4 Final Fix Wave — persistence, retry, and physical-unit contracts (2026-09-04)
-
-- **A — storage disclosure symptom and root cause:** `SegmentRepository`
-  allowed raw SQLAlchemy execute/flush failures to escape. Those exceptions can
-  retain rendered statements, bound `content`/`source_metadata`, backend text,
-  parameters, causes, and contexts, which could then reach job errors or logs.
-  The repository now catches only `SQLAlchemyError` at each database operation
-  and raises a fixed `SegmentStorageError` outside the handler with `from None`.
-  Operational, interface, disconnect, timeout, and invalidated-connection
-  failures are conservatively retryable; data, integrity, and other SQLAlchemy
-  failures are not. Validation errors, cancellation, and programmer errors keep
-  their original behavior. Runtime-generated private values prove the public
-  exception, `str`, `repr`, chain, and formatted traceback are content-free,
-  without persisting a test value here. All runtime, legacy, and Alembic async
-  engine factories now set `hide_parameters=True` as a second boundary.
-- **A — rejected approaches and cost:** Copying a backend message or original
-  exception into the public type was rejected because either can retain bound
-  data. Catching `Exception`, or wrapping validation and statement-building
-  code, was rejected because it would misclassify cancellation and defects.
-  Parameter hiding alone was rejected because exception objects still expose
-  parameter structures. The fixed boundary intentionally sacrifices backend
-  detail at the public edge; private operational diagnostics must come from a
-  separately controlled observability path.
-- **B — bind-ceiling symptom, root cause, and ruling:** A valid 10,000-segment
-  preview produced one PostgreSQL multi-values insert with roughly fourteen
-  binds per row and one all-ID `IN` reload. Both could cross PostgreSQL's bind
-  ceiling. Staging now fully prevalidates first, then emits dialect-native
-  `ON CONFLICT (id) DO NOTHING` inserts in explicit groups of at most 500 and
-  reloads all candidates in groups of at most 500, combines them by ID, and
-  performs the same immutable recheck in original preview order. Exact mutation
-  reads use the same bound. The transaction remains caller-owned, and the
-  existing deterministic SQLite race semantics remain unchanged.
-- **B — rejected approaches and cost:** Lowering the public 10,000-segment
-  ceiling or relying on an ORM/driver to split statements was rejected because
-  neither preserves the approved contract. A single expanded `IN` clause and
-  per-row queries were rejected. The conservative constant avoids dependence on
-  current column-count arithmetic but adds bounded database round trips: a full
-  10,000-row stage uses twenty inserts, twenty existence-read statements, and
-  twenty post-insert reload statements.
-- **C — lifecycle symptom, root cause, and ruling:** Exact retry comparison
-  previously ignored `status`, deletion, and embedding state, so terminal,
-  activated, deleted, or cross-technique rows could be treated as mutable
-  staging. Repository equality now requires a non-deleted `indexing` row;
-  high-quality general/child rows allow `waiting` or `completed`, while parents
-  and economy rows require `not_required`. The engine independently validates
-  every returned staged record before resolver, Embedding, or Milvus access and
-  emits one fixed non-retryable state error on violation. A partial
-  high-quality retry skips already-completed records, processes only waiting
-  records, and does not change existing attribution.
-- **C — result ruling, rejected approaches, and cost:** On successful return,
-  `vector_count` is total ready indexable rows for this document: completed rows
-  accepted from staging plus newly acknowledged writes. It is not writes made
-  during this invocation. Re-embedding/upserting completed rows and requiring a
-  new acknowledgement for them were rejected because they defeat idempotent
-  partial retry. Calling collection count was rejected because concurrent
-  documents make it the wrong per-document invariant. The engine therefore
-  trusts the completed staging marker until Phase 5 performs collection-wide
-  reconciliation; that trust is an explicit recovery boundary.
-- **D — physical-batch symptom, root cause, and ruling:** The engine accepted a
-  1,024 batch while the selected Embedding model normally permits at most 512
-  and Milvus writes default to 500, so one apparent engine unit could silently
-  become several HTTP and vector operations with misaligned cancellation and
-  status acknowledgements. `IndexDocumentCommand` now snapshots and validates
-  separate `embedding_batch_size` and `vector_batch_size` values. The effective
-  streaming unit is their minimum with the 1,024 engine ceiling. Each normal
-  high-quality unit is embedded, dimension-validated/resolved when first, sent
-  as one bounded upsert, and marked completed only after its exact
-  acknowledgement; cancellation is checked before the next unit.
-- **D — rejected approaches and cost:** Reaching into adapter private settings,
-  treating adapter-side defensive chunking as the engine contract, or resolving
-  dimension after multiple batches were rejected. The new required immutable
-  command field makes Phase 5 snapshot vector configuration explicitly. The
-  Embedding client's bounded adaptive split after an HTTP size rejection remains
-  an internal exception to one-request normal behavior, and Milvus keeps its
-  defensive split for direct callers.
-- **E — keyword symptom, root cause, and ruling:** The extractor could emit a
-  256–1,024-character word/identifier that the repository correctly rejected at
-  its 255-character storage boundary. A dependency-free shared
-  `MAX_KEYWORD_LENGTH = 255` now controls both sides. Extraction omits an
-  overlong normalized token; persistence still validates defensively. Truncation
-  was rejected because different source terms could collide. A real SQLite
-  repository/engine economy regression proves an overlong-only token completes,
-  stores only valid bounded keywords (possibly none), and makes no external
-  vector calls.
-- **F1–F2 — characterization findings:** Stable segment ID tests now vary
-  dataset index, document, parent, position, and content hash independently,
-  parse the result as UUID version 5, and require 32 lowercase hexadecimal
-  characters. PostgreSQL compilation proves `keywords` is `ARRAY(Text)` with
-  the intended GIN index while SQLite remains JSON. Both new tests passed during
-  RED, so production already honored these contracts and no artificial code
-  change was made.
-- **F3–F6 — small review findings:** The indexing package initializer eagerly
-  imported the engine and therefore PyMilvus, breaking dependency-light economy
-  imports. It now exposes the same API through lazy module attributes, with a
-  subprocess regression that blocks PyMilvus and verifies engine/vector modules
-  stay unloaded. Milvus logical-count parsing now rejects a direct Python int
-  above signed INT64 while accepting the exact maximum, matching the existing
-  decimal-string bound. Historical Task 2 status and Task 5 retrospective
-  headings now state their completed/approved state. Obsolete collection-stats
-  fields and methods were removed from the unit `RecordingMilvusClient`; no
-  production stats API was reintroduced.
-- **F3–F6 — rejected approaches and cost:** Moving PyMilvus imports into economy
-  code, swallowing blocked imports, or narrowing the public package API were
-  rejected; lazy exports preserve compatibility at the cost of first-access
-  resolution. Converting arbitrary direct integers through the existing string
-  parser was rejected in favor of an explicit signed-INT64 check. The already
-  conforming F1/F2 behavior was not rewritten, and the fake-only stats cleanup
-  deliberately changes no adapter behavior.
-- **TDD RED:** Before production edits, `.venv/bin/python -m pytest
-  tests/unit/config/test_settings.py tests/unit/db/test_indexing_models.py
-  tests/unit/indexing/test_import_boundaries.py
-  tests/unit/indexing/test_keywords.py
-  tests/unit/indexing/test_segment_persistence.py
-  tests/unit/indexing/test_document_engine.py
-  tests/unit/vector_stores/test_milvus_store.py -q` reported `28 failed, 169
-  passed, 2 warnings`: A accounted for twelve failures, B one, C nine, D one,
-  E three, F3 one, and F4 one. F1 and F2 passed as valid characterization.
-  Strengthened early batch validation then reported `4 failed`, and the Alembic
-  engine-boundary regression separately reported `1 failed`. These were the
-  expected missing contracts, not environment failures.
-- **TDD GREEN and verification:** A/B/C selectors passed `46 passed, 2
-  warnings`; D selectors passed `5 passed, 2 warnings`; E/F selectors passed
-  `27 passed, 2 warnings`; and the Alembic boundary passed `1 passed, 1
-  warning`. The combined new focused set passed `201 passed, 2 warnings in
-  2.25s`. Repository/indexing/Embedding/vector/config/db unit scopes passed
-  `251 passed, 2 warnings in 2.53s`; parser/segmentation regressions passed `177
-  passed, 1 warning in 0.78s`; the default integration-disabled Milvus module
-  passed `1 passed, 2 skipped, 1 warning`. Direct `py_compile` and `git diff
-  --check` exited zero. One fresh default suite passed `561 passed, 3 skipped,
-  2 warnings in 8.39s`; skips remain opt-in Milvus/MinIO and warnings are the
-  existing Starlette/httpx and jieba/pkg_resources deprecations. A final
-  post-documentation verification is recorded in the phase fix report.
-- **Commits:** Production and regression coverage are in `de2e4b2` (`fix:
-  harden phase 4 indexing contracts`). The documentation/status update is in
-  `docs: record phase 4 final fix wave`, the commit containing this section.
-- **Residual risks:** PostgreSQL dialect compilation deterministically proves
-  statement shape and bind counts, but no live PostgreSQL load/concurrency test
-  ran in this wave. Existing SQLite race tests cover exact and incompatible
-  contenders. Completed-row retry relies on persisted acknowledgement until
-  Phase 5 reconciliation. Adaptive HTTP splitting can still make a configured
-  engine unit more than one transport request after a size rejection. Fixed
-  storage errors intentionally omit backend diagnostics, so deployments need a
-  separate sanitized operator-only signal. No live Docker run was warranted
-  because production Milvus adapter behavior changed only by the direct integer
-  bound.
-
-### 2026-09-05 — Phase 4 final scoped re-review and controller verification
-
-- **Review result:** The same independent final reviewer re-examined only the
-  permitted final-fix range `600db7e..8f0ec6f`. Findings A-E and F1-F6 were all
-  marked resolved. The reviewer confirmed that `8f0ec6f` is evidence-only and
-  accurately describes the 10,000-record test as twenty inserts, twenty initial
-  existence reads, and twenty post-insert reloads. No new Critical or Important
-  issue was found; the verdict was `Ready to merge: Yes`.
-- **Process symptom:** After completing technical inspection, the review turn
-  remained active through repeated 60- and 120-second waits and did not render
-  its verdict. A normal convergence reminder did not resolve the delay.
-- **Ruling and recovery:** The controller interrupted the hanging response and
-  resumed the same reviewer with a strict instruction to run no more commands,
-  read no new files, and only format the already-collected A-F evidence. This
-  remained the single allowed scoped re-review; no second reviewer, fix wave,
-  test mutation, or repository mutation was introduced. The recovery produced
-  the complete itemized verdict above.
-- **Independent final evidence:** The controller, rather than relying on the
-  implementer's report, reran the default suite (`561 passed, 3 skipped, 2
-  warnings`), Embedding/indexing/vector units (`217 passed, 2 warnings`), and
-  repository/config/database units (`34 passed, 1 warning`). The integration
-  module in default opt-out mode reported `1 passed, 2 skipped, 1 warning`.
-  With explicit approval to access the existing local service, the live Milvus
-  2.5.14 suite reported `3 passed, 1 warning`; its tests created and cleaned only
-  generated owned collections. `compileall` and `git diff --check
-  28b3cb0..8f0ec6f` exited zero, and tracked worktree status was clean.
-- **Known non-blockers:** The two warnings remain the existing Starlette/httpx
-  and jieba/pkg_resources deprecations. The default skips remain the explicit
-  opt-in Milvus and MinIO tests. This final run does not add live PostgreSQL load
-  evidence; PostgreSQL statement shape/bind bounds remain covered through the
-  real dialect compiler and retry races through the SQLite concurrency tests.
-
-### 2026-09-05 — Post-merge verification environment mismatch
-
-- **Symptom:** After `feature/source-change-sync` fast-forwarded local `main`,
-  running `.venv/bin/python -m pytest -q` from the main worktree stopped before
-  collection with `No module named pytest`.
-- **Root cause evidence:** Both worktrees use CPython 3.11.15 but own independent
-  virtual environments. `importlib.util.find_spec("pytest")` returned `None` in
-  the main worktree environment and a concrete site-packages module spec in the
-  feature worktree environment. Git status remained clean, so the merge had not
-  removed or changed a tracked test dependency; the main environment had simply
-  never installed the test toolchain.
-- **Rejected approaches:** Installing packages into the main environment was
-  unnecessary mutation during branch cleanup. Treating the launcher failure as
-  a product test failure, skipping merged-result verification, or testing from
-  the feature source directory would not establish the merged `main` result.
-- **Resolution:** The already-validated feature-worktree Python interpreter was
-  invoked with the main repository as its current working directory. Dependency
-  imports therefore came from that environment while application/test imports
-  came from merged `main`. The full merged-result suite passed `561 passed, 3
-  skipped, 2 warnings in 8.01s`.
-- **Follow-up:** Local contributors should install the project test dependencies
-  into the main worktree environment before expecting its local `.venv` to run
-  pytest directly. This is an environment bootstrap issue, not an application
-  defect or a reason to retain the completed feature branch.
+## 一、最早期接口和数据库问题
+
+### KB-001——知识库列表接口返回 404
+
+- **现象：** `GET /api/knowledge_base/list?status=all&visibility=all` 返回
+  `404 Not Found`，前端无法加载知识库列表。
+- **根因：** 前端调用路径和后端路由尚未形成稳定契约；早期代码仍带有本地教程
+  式实现，而不是完整的数据集接口。
+- **裁决：** 接口以 PostgreSQL 的 `datasets` 为数据源，并提供独立知识库和文档
+  路由；不能为了绕过 404 再增加 JSON 文件兜底。
+- **证据：** 提交 `a34a3bd`、`044098e`、`4739752`、`7cef002`、`f134257`；
+  `rag_modules/api/knowledge_base_api.py` 注册精确路由，
+  `tests/test_api_routes.py` 和 `tests/api/test_dataset_api.py` 验证契约。
+- **状态：** 已解决。出现 404 时应先清点路由并补契约测试，而不是引入第二套
+  数据源。
+
+### KB-002——废弃的 `data/knowledge_base.json` 和 `knowledge_bases.json`
+
+- **现象：** 旧 JSON 文件让人无法判断知识库数据来自 PostgreSQL 还是本地文件。
+- **根因：** 教程阶段的本地持久化仍与新数据库方案并存。
+- **裁决：** PostgreSQL 是业务元数据唯一事实来源；旧 JSON 及 `main.py` 中的
+  引用不得重新引入。
+- **状态：** 运行时引用已删除。删除文件时必须同时检查导入、兜底分支、启动
+  代码、文档和测试。
+
+### CFG-001——PostgreSQL 意外使用用户 `fitch` 认证
+
+- **现象：** 出现
+  `asyncpg.exceptions.InvalidPasswordError: password authentication failed for user "fitch"`，
+  用户不知道凭据来源。
+- **根因：** 配置模型顶层字段是 `database`，Pydantic 使用
+  `env_nested_delimiter="__"`。`PG_DATABASE__...` 不会写入
+  `Settings.database`；用户给出的 `PG_DATABASE_HOST` 还只使用一个下划线，
+  与其他变量不一致。
+- **裁决：** 在 `rag_modules/config/.env` 使用 `DATABASE__TYPE`、
+  `DATABASE__HOST`、`DATABASE__PORT`、`DATABASE__DATABASE`、
+  `DATABASE__USERNAME`、`DATABASE__PASSWORD`。密码必须与 PostgreSQL 服务一致，
+  但本文绝不记录真实密码。
+- **证据：** `rag_modules/config/settings.py` 中的
+  `Settings.database: DatabaseSettings`、`env_nested_delimiter="__"`，以及提交
+  `716ef3e`。
+- **状态：** 配置约定已解决。排错只输出非敏感主机、库名和用户名，不能输出密码。
+
+### DB-001——ORM 表名和现有 DDL 不一致
+
+- **现象：** 正式 DDL 使用 `datasets`、`documents`、`document_segments`，旧模型
+  却使用知识库名称作为物理表名。
+- **根因：** 产品术语“知识库”被误用为数据库表名，部署结构实际采用 Dify 风格。
+- **裁决：** 接口和领域层可继续使用“知识库”，但 ORM 的 `__tablename__` 和外键
+  必须精确匹配三个物理表。
+- **证据：** 提交 `162fa1d`、`716ef3e`、`e7e5aad` 至 `f134257`。
+- **状态：** 已解决。产品词汇和物理结构必须分离，并用真实 DDL 验证 ORM 元数据。
+
+## 二、产品和基础设施裁决
+
+### ARC-001——前端流程与 Dify 不一致
+
+- **需求：** 先创建知识库，再上传文件；创建页不能暴露 Milvus 配置。
+- **裁决：** 创建时只填写名称、描述、权限，完成后进入文档页；上传后再配置和
+  预览。Milvus 只在后台使用。索引提供“高质量”和“经济”两种模式，支持普通
+  分段、父子分段和真实预览。
+- **证据：** 设计提交 `4739752`，路线图提交 `7cef002`。
+- **状态：** 后端基础与索引能力已实现，完整前端仍属于后续阶段。
+
+### ARC-002——文件格式和索引技术栈
+
+- **裁决：** 支持 `.txt`、`.md`、`.pdf`、`.docx`、`.xls`、`.xlsx`、`.csv`；
+  本期不支持 OCR 和 `.doc`。使用 OpenAI 兼容嵌入、PostgreSQL
+  元数据、后台 Milvus、MinIO、Celery 和 RabbitMQ；Redis 不作为消息代理或结果
+  存储。
+- **证据：** `4739752`、`7cef002`、`45b743b`、`ebcd12c`、`bb0f90d` 至
+  `02a21e5`。
+- **状态：** 解析、嵌入、Milvus 和单文档索引已实现；Celery 编排属于
+  后续阶段。
+
+### ARC-003——数据源变更同步
+
+- **用户方案：** 为文档内容计算哈希，通过轮询和监听检测新增、修改、删除；
+  高实时性场景通过消息队列秒级入库。
+- **裁决：** 把变更作为带版本构建：先幂等生成新分段和向量，验证并安全切换，
+  再异步清理旧向量。不能在替代版本准备完成前删除当前索引。
+- **证据：** 设计 `459e886`、计划 `20e9416` 和数据源同步第 8～11 阶段。
+- **状态：** 设计已通过，待索引第 5 阶段编排实施。
+
+## 三、解析、分段和预览问题
+
+### PARSE-001——文本解码可能静默损坏内容
+
+- **现象：** UTF-8 曾绕过质量检查；无 BOM 的 UTF-16 可能被误判；“包含 ASCII
+  且 GB18030 往返一致就接受”的旧方案会把 Shift-JIS、Big5、CP1251 解码成
+  貌似中文的乱码。
+- **已被取代的裁决：** 往返编码一致只能证明可逆，不能证明原始字符集。
+- **最终裁决：** 接受 UTF-8、UTF-8-SIG 和有结构证据的 UTF-16；模糊旧编码
+  返回 `TEXT_ENCODING_UNCERTAIN`。其他输入先转成 UTF-8，或等待显式字符集设置。
+- **证据：** `a3b6909`、`f94960b`、`ab8284f`、`8fb64f4`，以及四类编码回归。
+- **状态：** 已解决。
+
+### PARSE-002——Markdown 前置元数据不安全
+
+- **现象：** 平面解析会丢弃嵌套、列表和标量 YAML；宽松 `safe_load` 仍允许
+  锚点、别名、循环和放大结构。约 1500 层且无别名的 YAML 还会在构造阶段抛出
+  `RecursionError`。
+- **裁决：** 安全的 JSON 兼容 YAML 保留结构，其他情况保存受限原始文本；只认
+  第 0 列精确 `---`；拒绝锚点、别名、重复键、循环、节点/深度/标量超限和非有限
+  数值；构造前先做事件流预检。
+- **状态：** 最初部分解决，最终由 SAFE-006 完成。
+
+### PARSE-003——DOCX 异常边界先过窄、后过宽
+
+- **现象：** 损坏 OOXML 曾泄露 `XMLSyntaxError`；第一次修复又捕获过宽异常，
+  可能把程序缺陷伪装成文件损坏。
+- **裁决：** 只在第三方库加载/解析边界转换异常；损坏文件映射为
+  `DOCX_MALFORMED`，提取逻辑中的程序错误继续暴露。
+- **证据：** `cdc5e4e`，随后由 `7ae1198` 缩窄边界。
+- **状态：** 已解决并通过独立审查。
+
+### PARSE-004——表格规范化和预算不一致
+
+- **现象：** XLS/CSV 空值、XLS 布尔值不一致；不规则 CSV 的表头可能漂移；行
+  预算按工作表重置；OpenPyXL 声明尺寸会把远端样式单元格当成真实边界。
+- **裁决：** 统一标量和空值语义；生成无冲突表头；在全部可见工作表累计非空
+  逻辑行；使用物理和值证据，不使用声明尺寸。
+- **证据：** `e9a2cd7` 和表格样例。
+- **状态：** 功能问题已解决，物理工作预算在后续 SAFE 任务补齐。
+
+### SEG-001——优先边界与重叠可能不前进
+
+- **现象：** 优先边界前进量不超过重叠量时，`_split_ranges` 可能重复或后退，
+  例如最大 8、重叠 2 的 `a。abcdefgh`。
+- **裁决：** 优先边界必须满足最小前进量，否则使用硬上限，并断言起点严格递增。
+- **证据：** `175d4cb` 及普通/父子分段回归。
+- **状态：** 前进问题已解决，极端重叠 CPU 风险由 SAFE-005 解决。
+
+### SEG-002——全文兜底丢失分隔符
+
+- **现象：** 把 `\n\n` 表示为独立空白块，再统一过滤空白块，使
+  `aa\n\nx = 1\n\nbb` 变成 `aax = 1bb`。
+- **根因：** “分段不能纯空白”和“分隔符单独成块”两个局部规则组合后冲突。
+- **裁决：** 把分隔符附着到相邻非空受限块；只有容量病态到确实无法保留时才
+  允许省略，并生成汇总警告。
+- **状态：** 由 SAFE-005 及其审查修复完成。
+
+### PREVIEW-001——阻塞 MinIO 读取绕过超时
+
+- **现象：** `stream.read()` 使用 `abandon_on_cancel=False`；50 毫秒截止时间会
+  等待约 359 毫秒读取，传输永不返回时可能无限等待。
+- **裁决：** 增加受限 `ObjectStorage.get_bytes`；单一工作线程完整拥有
+  `get_object -> read -> close -> release_conn`，请求可以安全放弃等待。
+- **证据：** `59be47f` 和慢存储生命周期测试。
+- **状态：** 已解决。
+
+### PREVIEW-002——HTTP 序列化不在请求截止时间内
+
+- **现象：** 服务超时只覆盖模型构造，FastAPI 响应校验和 JSON 渲染发生在范围外。
+- **裁决：** 从处理器入口启动外层截止时间，在可放弃工作线程内完成模型校验和
+  `JSONResponse` 渲染；保留内部超时保护直接调用者。
+- **证据：** `59be47f`；缓慢 `model_dump` 返回 504，依赖自己的
+  `TimeoutError` 仍返回 503。
+- **状态：** 已解决。
+
+### PREVIEW-003——错误结构与生产只读证明不一致
+
+- **现象：** OpenAPI 声明一种 422 结构，实际 Pydantic 返回 `detail`；无写测试
+  替换整个服务，无法证明生产依赖组合不写库、不调用外部服务。
+- **裁决：** 预览专用 `APIRoute` 统一
+  `code/message/detail/request_id` 和请求 ID 响应头；生产组合测试只替换数据库和
+  存储，数据库只允许查询，外部客户端构造器设置为立即失败。
+- **证据：** `8fb64f4` 和最终定向审查。
+- **状态：** 已解决。
+
+## 四、整体安全审查发现
+
+### SAFE-001——XLSX 预检绕过和单元格物化放大
+
+- **复现：** 关系目标 `sheet1.XML` 会绕过小写文件名匹配；一个真实单元格加
+  `A1:Z100` 合并区可生成约 2600 个 `_cells` 占位对象。
+- **根因：** 预检按 ZIP 文件名，而不是工作簿关系发现工作表；加载前也没有计算
+  合并区和超链接区的物化成本。
+- **裁决：** 从关系文件解析大小写精确目标；拒绝不安全路径/关系；在 OpenPyXL
+  前限制单个和累计矩形面积。
+- **状态：** 已由 SAFE-001 任务和第一轮修复解决。
+
+### SAFE-002——分段数量上限不是 CPU 上限
+
+- **复现：** 接近 100% 重叠时每次只前进一个字符。100 万字符配 20 万窗口约
+  0.36 秒，500 万字符配 100 万窗口约 1.79 秒；10000 输出上限仍可允许数十亿
+  字符扫描。
+- **裁决：** 切分前计算最坏迭代量；使用请求级扫描预算；每次搜索前扣减真实窗口；
+  使用带索引的 `str.rfind`，不复制窗口。
+- **状态：** 已由 SAFE-005 解决。
+
+### SAFE-003——普通场景分隔符保真回归
+
+- **说明：** 第一轮整体修复把空白过滤扩展到普通场景，超出“只在病态容量下
+  允许省略”的约定。
+- **状态：** 已由 SAFE-005 和联合分配修复解决。
+
+### SAFE-004——公式警告可能膨胀到近百万对象
+
+- **现象：** 每个缺失公式缓存的单元格产生一条警告，响应没有独立上限。
+- **裁决：** 按工作表和错误码聚合，只保留总数及最多五个坐标；文档和响应都设
+  上限，溢出折叠为 `WARNINGS_TRUNCATED`，不保留省略项元数据。
+- **状态：** 已由 SAFE-004 和 SAFE-007 解决。
+
+### SAFE-005——深层 YAML 在规范化前递归失败
+
+- **复现：** 约 1500 层流式序列可在 `yaml.load` 抛出 `RecursionError`，后续
+  深度检查无法运行。
+- **裁决：** 先扫描安全事件并限制深度/事件数；扫描、加载、规范化中的递归错误
+  都降级为受限原始元数据。
+- **状态：** 已由 SAFE-006 解决。
+
+## 五、执行过程问题
+
+### PROCESS-001——分任务审查遗漏跨属性组合问题
+
+- **现象：** 单任务审查通过后，整体审查仍发现超时与被放弃工作、逻辑/物理预算、
+  非空/保真、序列化/元数据图之间的组合缺陷。
+- **纠正：** 最终审查成对验证：输出与 CPU 都受限、非空与重建都正确、安全加载
+  与安全构造、解析器警告与响应上限、预检与依赖库物化行为。
+
+### PROCESS-002——第一位最终修复执行者长时间无有效产出
+
+- **现象：** 长时间无状态回应，起初工作树没有变化；被中断后只有部分修改，没有
+  完整报告。
+- **纠正：** 接管者审计并保留部分差异，按组报告，最终从
+  `15 failed, 73 passed` 收敛到提交 `8fb64f4`。
+- **经验：** 大修必须尽早给出可观察的失败测试和有界状态更新，不得随意重置共享
+  工作树中的部分修改。
+
+### PROCESS-003——大型最终修复仍需对抗性复审
+
+- **现象：** `8fb64f4` 通过 240 项测试后，审查仍发现两个严重问题和三个重要
+  问题。
+- **根因：** 新测试没有覆盖关系文件名大小写、合并区物化、扫描复杂度、构造期
+  递归和警告数量。
+- **纠正：** 每类风险建立独立任务、对抗样例和独立审查。测试数量不能替代风险
+  分析。
+
+### PROCESS-004——最终审查完成技术检查后迟迟不输出
+
+- **现象：** 同一审查回合经历多次 60 秒和 120 秒等待仍不返回裁决。
+- **裁决：** 中断并恢复同一审查者，禁止新命令、新文件和新探针，只整理已有
+  A～F 证据；仍视为唯一一次定向复审。
+- **结果：** A～E、F1～F6 全部解决，没有新增严重或重要阻断，可以合并。
+
+### PROCESS-005——整体重写文档时补丁操作冲突
+
+- **现象：** 第一次中文化补丁试图在同一个 `apply_patch` 中先删除再新增同一路径，
+  工具以“同一路径存在多个操作”拒绝，原文件没有改变。
+- **根因：** 编辑工具不允许一个补丁对同一路径同时执行两种文件级操作。
+- **处理：** 改为两个连续且明确的 `apply_patch`：先删除旧文件，再新增中文版本；
+  随后执行 Git 差异、英文残留和格式检查。
+
+## 六、安全加固实施记录
+
+### SAFE-001 任务 1——按关系解析 XLSX 并限制物化
+
+- **失败证据：** 大小写目标、外部关系、主机路径、`..`、缺失成员、重复 ID/目标、
+  错误关系类型和非法合并区都曾到达加载钩子。初始两组测试分别
+  `12 failed` 和 `7 failed, 1 passed`。
+- **路径裁决：** OPC 包内恰好一个开头斜杠可规范化为大小写精确的 `xl/...`；
+  `//`、URI、驱动器路径、反斜杠、查询、片段、百分号转义、空段、`.` 和穿越
+  都非法。
+- **实现：** 用加固 lxml 解析工作簿和关系，只接受精确工作表关系 URI；按工作簿
+  顺序预检。单个合并面积默认 100000，累计 1000000。统一适配器只读取预检
+  坐标，跳过 `MergedCell`，不调用会生成坐标的 `.cell()`。
+- **验证：** 关系测试 `12 passed`，合并测试 `8 passed`，相关回归
+  `51 passed`。
+- **风险：** 仍依赖 OpenPyXL 私有 `_cells`，但已隔离并在契约变化时关闭式失败。
+
+### SAFE-001 第一轮修复——超链接和隐藏工作表
+
+- **审查发现：** 只有 `A1` 的文件若有 `<hyperlink ref="B2:C3">`，OpenPyXL
+  会生成 `B2:C3` 单元格；隐藏工作表还会在映射验证前被跳过。
+- **裁决：** `physical_coordinates` 仍只表示真实 `<c>`；加载前校验超链接矩形，
+  把真实单元格、唯一合并矩形、唯一超链接矩形保守计入同一预算。全部公式/缓存
+  工作表先校验，再跳过隐藏表。
+- **证据：** 从 `7 failed, 15 passed` 变为 `22 passed`；相关套件
+  `67 passed`，完整套件 `277 passed, 1 skipped`。
+- **取舍：** 保守重叠计算可能拒绝真实并集未超限的文件，以避免安全检查自身构建
+  百万坐标并集。
+
+### SAFE-004 任务 2——限制解析器和预览警告
+
+- **复现：** 1000 个无缓存公式产生 1000 条警告；配置响应上限为 5 时仍可返回
+  7 条。
+- **裁决：** 上限包含汇总槽；不足 N 全保留，到达 N 保留前 N-1 并汇总。只有
+  正整数且非布尔的 `omitted_count` 可折叠，非法计数只贡献一次省略。
+- **实现：** 增加 `BoundedWarningCollector`；默认每文档 100 条、公式坐标 5 个；
+  XLSX、预览以及后续 PDF/XLS 使用同一汇总策略。
+- **证据：** 收集器最初模块不存在；公式测试 `2 failed`，预览测试
+  `1 failed, 1 passed`。修复后分别 `29 passed`、`3 passed`、`2 passed`，完整
+  套件 `301 passed, 1 skipped`。
+- **风险：** 省略项仍短暂构造后立即释放；彻底消除需改变解析器接口。
+
+### SAFE-005 任务 3——限制分段 CPU 并恢复分隔符
+
+- **复现：** 500 万字符、最大 100 万、重叠 999999 时最坏为 4000001 次迭代；
+  旧代码在拒绝前搜索边界，并为每个源重置预算。
+- **裁决：** 请求级状态统一管理记录和扫描预算。使用
+  `hard_advance = maximum - overlap`、
+  `minimum_advance = max(1, (hard_advance + 1) // 2)` 预测最坏数量；每次
+  `rfind` 前按窗口扣减预算；优先边界不满足最小前进就使用硬上限。
+- **分隔符：** 先保持可容纳的代码/表格原子块，再尝试前侧、后侧，最后才切文本
+  或换行；无法保留时只生成一条 `SEGMENT_DELIMITER_OMITTED`。
+- **证据：** CPU 测试从 `4 failed` 到 `4 passed`；分隔符从 `5 failed` 到
+  `5 passed`；补充用例从 `2 failed` 到 `2 passed`；完整套件
+  `310 passed, 1 skipped`。
+- **取舍：** 最坏情况投影可能安全拒绝实际边界更优的输入。
+
+### SAFE-005 审查修复——相邻分隔符联合分配
+
+- **发现：** `AA`、`B`、` C` 且上限为 3 时，贪心算法错误省略第二处分隔符；
+  `AA\n`、`\nB\n`、`\n C` 实际可完整保留。
+- **实现：** 反向动态规划，每块只有收到 0、1、2 个前导换行三种状态；优先最小
+  省略，再最小额外硬切块，最后保持确定性偏好。复杂度
+  `O(blocks × 3 × 4)`，内存 `O(blocks × 3)`。
+- **证据：** 审查回归从 `1 failed` 到 `1 passed`；矩阵 `3 passed`；最终
+  分隔符选择 `10 passed`；完整套件 `314 passed, 1 skipped`。
+
+### SAFE-006 任务 4——YAML 事件预检
+
+- **复现：** 1500 层序列泄露 `RecursionError`；10000 个浅层元素产生超过
+  10000 个事件仍进入值构造。
+- **裁决：** 在 `_BoundedSafeLoader` 和 `yaml.load` 前，用
+  `yaml.parse(raw, Loader=yaml.SafeLoader)` 流式预检；事件上限 10000、深度上限
+  20；拒绝别名、锚点、负深度和非零结束深度。保留 token 扫描作为纵深防御。
+- **异常边界：** 只为前置元数据增加 `RecursionError` 兜底；`MemoryError`、取消
+  和程序错误继续抛出。
+- **证据：** 两组测试从 `6 failed`、`5 failed` 变为 `6 passed`、`5 passed`；
+  完整套件 `327 passed, 1 skipped`。
+
+### SAFE-007——PDF/XLS 警告上限
+
+- **发现：** PDF 可为最多 500 页保留空页警告，XLS 可为每个隐藏或空表保留
+  警告；预览层限制执行得太晚。
+- **裁决：** 每个生产者内部应用上限，不在注册器外统一包裹，以免直接实例调用
+  绕过。
+- **实现：** 共享 `parser_warning_summary(omitted_count)`；PDF、XLS、XLSX 使用
+  相同收集器和汇总结构。
+- **证据：** 从 `3 failed` 到 `3 passed`；相关范围 `159 passed`；完整套件
+  `330 passed, 1 skipped`。
+
+### SAFE-008——安全阶段最终验证
+
+- **结果：** 超链接物化、隐藏表映射、分隔符容量竞争和 PDF/XLS 警告上限均有
+  独立修复和复审，没有新增阻断。
+- **提交链：** `e95360e`、`60092d1`、`68cba8e`、`3eee2ac`、`196f082`、
+  `2cc45a4`、`c74d502`。
+- **验证：** 安全阶段 `250 passed, 1 warning`；完整套件
+  `330 passed, 1 skipped, 1 warning`；`compileall`、`git diff --check` 和工作树
+  检查通过。
+
+## 七、嵌入、关键词、Milvus 和持久化
+
+### EMB-001——OpenAI 兼容嵌入客户端
+
+- **问题：** 已有模型配置和公开列表，但没有真实客户端、类型化结果和安全错误。
+- **实现：** 新增 `EmbeddingBatch`、`EmbeddingError`、
+  `OpenAICompatibleEmbeddingClient`；只解析启用模型，I/O 前验证，调用规范化
+  `/embeddings`，按索引重排，返回不可变有限浮点元组，并跨批次校验维度。
+- **错误边界：** 固定使用 `EMBEDDING_MODEL_UNAVAILABLE`、
+  `EMBEDDING_INPUT_INVALID`、`EMBEDDING_AUTH_FAILED`、
+  `EMBEDDING_REQUEST_FAILED`、`EMBEDDING_RESPONSE_INVALID`、
+  `EMBEDDING_DIMENSION_MISMATCH`；不包含密钥、输入、响应正文、传输细节或向量。
+- **重试裁决：** 网络/超时耗尽和 429、502、503、504 可重试；只有 413 触发
+  顺序二分，单元素失败时终止；普通 400 不视为批次过大。
+- **证据：** 初始模块不存在；第一版 `37 passed, 4 failed` 揭示夹具问题，随后
+  大整数溢出和维度分类各有真实失败。最终协议 `43 passed`，相关范围
+  `57 passed`，完整套件 `373 passed, 1 skipped`。
+- **提交与风险：** 提交 `23a725a`。未单独限制响应
+  字节数，仍依赖部署代理和传输上限。
+
+### EMB-002——关闭后调用客户端
+
+- **发现：** 内部客户端关闭后会泄露 httpx `RuntimeError`；注入包装器关闭后仍
+  可调用；重复关闭重复委托传输层。
+- **实现：** 包装器独立记录关闭状态；`aclose()` 幂等，内部客户端只关一次，
+  注入客户端不代关；后续调用在所有处理前返回
+  `EMBEDDING_CLIENT_CLOSED`。不扩大捕获 `RuntimeError`。
+- **证据：** 从 `3 failed, 1 passed` 变为 `5 passed`；相关范围 `60 passed`；
+  完整套件 `376 passed, 1 skipped`。
+- **提交：** `0cbdbc3`。
+
+### IDX-001——确定性的经济关键词
+
+- **目标：** 纯本地、可重试、确定性，不依赖嵌入服务、Milvus、Celery、网络
+  或运行时日志。
+- **实现：** 汉字交给每实例私有 jieba 且关闭 HMM；非汉字 Unicode 词段由正则
+  独占，避免双重计数。普通英文小写；同时含字母数字的 ASCII 标识符大写并保留
+  `. _ -`。按频率和标识符加权降序，再按规范词字典序决胜。
+- **资源：** 单次扫描，只保留不同有效词；不修改 jieba 全局状态、词典或日志。
+- **证据：** 初始缺少 `rag_modules.indexing`；最终 `17 passed`，相关范围
+  `102 passed`，完整套件 `393 passed, 1 skipped`。
+- **提交：** `dcfd768`。
+
+### IDX-002——扩展区汉字和静默初始化
+
+- **发现：** BMP 范围漏掉 `U+20000`、`U+2F800`，紧邻 `A001` 时会合并并丢失
+  规范标识符；jieba 首次初始化还输出四条调试日志。
+- **实现：** 明确覆盖统一汉字扩展 A～J 和兼容区；私有 `_QuietTokenizer` 复用
+  jieba 0.42.1 缓存锁行为但不输出日志，也不改全局日志器。
+- **证据：** 从 `3 failed` 到 `3 passed`；关键词 `20 passed`；完整套件
+  `397 passed, 1 skipped`。
+- **提交与风险：** 提交 `cf9c6c1`；升级 jieba 时必须复审
+  私有初始化契约。
+
+### VEC-001——Milvus 向量存储协议
+
+- **过程问题：** 原实现者无响应；接管时一次组合补丁被拒，`milvus.py` 短暂处于
+  未提交删除状态。立即用 `apply_patch` 恢复并先通过 `py_compile`。
+- **契约：** `VectorEntity` 冻结且只含七个字段；使用非动态结构；VARCHAR(36)
+  标识符；可空 `parent_id`；INT64 `position`；HNSW/COSINE，`M=16`、
+  `efConstruction=200`；只接受 COSINE。
+- **配置：** 批次默认 500、范围 1～10000；轮询默认 5 次、间隔 0.05 秒，范围
+  2～100 次和 0～5 秒；连接超时默认 5 秒、范围 1～120 秒。
+- **安全：** 延迟创建一个客户端；禁用时在创建前失败；只转换
+  `MilvusException`；错误不含集合、实体、URI、凭据、后端细节或向量。
+- **操作：** 全量验证后分批写入或更新并要求精确写入数；删除 ID 先验证和稳定去重；
+  文档删除只接受 UUID；删除集合保持幂等；计数要求两个连续相等的合法值。
+- **证据：** 初始缺少 `VectorConsistencyError`；第一版
+  `54 passed, 8 failed` 揭示测试秘密标识符选词不当。修正后 `62 passed`，完整
+  套件 `445 passed, 1 skipped`。
+
+### VEC-002——Milvus 验证边界
+
+- **发现：** `position` 可超过 INT64；超长十进制字符串泄露 `ValueError`；嵌套
+  索引可掩盖冲突直接字段；显式空提供方参数错误落回默认值。
+- **实现：** 位置范围 `0..9223372036854775807`；字符串先校验最多 19 位 ASCII
+  十进制和 INT64 再转换；两种索引表示共存时必须完整一致；只有
+  `provider is None` 使用默认，`""`、`0`、`False` 均安全失败。
+- **证据：** 从 `8 failed` 到 `8 passed`；相关范围 `70 passed`；完整套件
+  `453 passed, 1 skipped`。
+- **提交：** `87623fc`。
+
+### VEC-003——提供方参数验证必须早于缓存
+
+- **发现：** 列表或字典形式的提供方参数在公开函数外层 `lru_cache` 哈希时泄露
+  `TypeError`；默认和显式 `"milvus"` 还创建不同实例。
+- **实现：** 公开函数只验证/规范化，不缓存；私有构造器只缓存有效字符串；等价
+  provider 共享实例；保留 `cache_clear` 钩子。
+- **证据：** 从 `3 failed` 到 `3 passed`；相关范围 `73 passed`；完整套件
+  `456 passed, 1 skipped`。
+- **提交：** `c945636`。
+
+### SEG-001——确定性的文档分段持久化
+
+- **实现：** `SegmentStagingCommand` 携带数据集、文档、目标索引、任务、技术和
+  分段快照。内容统一为 `LF` 换行并执行 Unicode `NFC` 规范化；元数据递归规范化，拒绝非有限值和重复
+  规范键。规范内容与元数据计算 SHA-256；固定命名空间加索引、文档、父 ID、位置、
+  哈希生成 UUIDv5。
+- **父子/状态：** 两遍处理先确定父块再解析子块；新记录为 `indexing`；父块和经济
+  模式为 `not_required`；高质量普通块/子块为 `waiting`。精确重试返回已有等价行，
+  不改原任务归属。
+- **事务：** 只 `flush`，不 `commit`；激活和旧版本软删除由编排层显式执行；接口
+  不接受向量，PostgreSQL 旧 `vector` 列保持 NULL。
+- **实施问题：** 异步测试夹具装饰器错误；SQLite 不支持 PostgreSQL
+  `ARRAY(Text)`，因此增加 SQLite 的 JSON 类型变体，PostgreSQL 的 ARRAY/GIN
+  结构不变。
+- **证据：** 初始模块不存在；实现后 `12 passed`；一致性约束先
+  `1 failed, 11 passed` 再通过；相关范围 `65 passed`；完整套件
+  `468 passed, 1 skipped`。
+- **提交：** `f21c0d4`。
+
+### SEG-002——并发安全的暂存
+
+- **发现：** 先查再插允许并发事务都认为 ID 不存在，失败方收到主键
+  `IntegrityError` 并破坏调用者事务。
+- **复现：** 真实 SQLite 文件、独立连接和游标事件精确插入竞争行；初始
+  `2 failed, 12 passed`，不依赖时间竞争。
+- **修复：** PostgreSQL/SQLite 使用批量
+  `INSERT ... ON CONFLICT (id) DO NOTHING`，随后重载全部 ID 并完整校验身份、
+  哈希、内容和元数据；不捕获其他数据库或程序错误。
+- **时间戳：** 持久化后刷新并断言存在；不再声称 SQLite 保留时区，PostgreSQL
+  仍用 `DateTime(timezone=True)`。
+- **证据：** `14 passed`，相关范围 `65 passed`，完整套件
+  `470 passed, 1 skipped`。
+- **提交：** `6d8e1f6`。
+
+## 八、单文档索引和真实服务
+
+原始执行记录在不同任务阶段重复使用了 `IDX-001` 和 `IDX-002` 编号。为保持与
+提交历史、审查报告和原复盘一致，下面保留这些原始编号，不在翻译过程中重新编号。
+
+### IDX-001——第四阶段任务 5：单文档索引引擎
+
+- **边界：** 只执行
+  `download -> parse -> split -> stage -> embed-or-keywords -> vector-upsert -> validate`；
+  不激活、不删旧版本。经济模式只写 PostgreSQL；新高质量目标由第一批非空
+  嵌入结果的维度解析一次。
+- **线程：** 同步解析、分段、关键词和 Milvus 离开事件循环；取消时先等待工作线程
+  完成再释放流。存储和嵌入请求保持异步。
+- **计数：** 单文档比较每批写入或更新的精确成功数，不调用集合级计数；全索引对账和
+  激活留给第五阶段。
+- **向量：** `DocumentSegmentRecord.vector` 不映射；向量只存在于发往 Milvus 的
+  `VectorEntity`，不引入 pgvector。
+- **实施问题：** 系统 Python 没有 pytest，不能作为功能失败；项目 `.venv` 下的
+  真实失败是缺少 `rag_modules.indexing.engine`。数据访问层边验证边修改还会留下
+  部分内存状态，改为全量验证后统一修改。
+- **验证：** 相关范围 `155 passed`；回归 `197 passed`；完整套件
+  `513 passed, 1 skipped`。
+- **提交：** `8af7f45`。
+
+### IDX-002——任务 5 第一轮修复：取消语义和向量内存
+
+- **发现：** 向量写入或更新成功时，取消可在写入确认校验和 PostgreSQL 状态刷新前传播；第二次
+  取消会打断清理等待；整篇文档向量曾全部保留，极限下可达数 GB。经济模式最后
+  进度回调后也没有取消检查，数据访问层允许跨技术状态，警告码只按语法过滤。
+- **裁决：** 一次处理一个向量批次；写入确认和对应状态刷新完成前延迟传播取消；
+  工作线程、写入确认、状态错误优先。使用受任务完成状态约束的重复屏蔽等待，不引入无界
+  等待。警告码使用生产者闭合集合，未知值映射固定通用码。
+- **证据：** 引擎初始 `5 failed`，repository `3 failed`，批次取消另有一次失败；
+  修复后任务文件 `64 passed`，相关范围 `161 passed`，回归 `200 passed`，完整
+  套件 `522 passed, 1 skipped`。
+- **提交与风险：** 提交 `fe3f7c0`。峰值降为一个
+  批次；永不返回的依赖调用仍需进程级超时。
+
+### IDX-003——第四阶段任务 6：Milvus 2.5.14 真实兼容
+
+- **环境：** 现有 `milvusdb/milvus:v2.5.14`，项目 Python 3.11.15、PyMilvus
+  3.0.1；系统 Python 3.14.6 未安装 PyMilvus，不是适配器故障。
+- **Compose 问题：** 整份文件先插值，缺少工作树 `.env` 时要求无关 RabbitMQ、
+  Neo4j、PostgreSQL 变量。只使用进程内非敏感占位值。Docker 套接字在沙箱被拒，
+  按权限提升。固定容器名已被共享栈占用，拒绝停止、删除、清理和 `down -v`。
+- **服务：** etcd 和 Milvus 正常；共享 MinIO 运行中但健康检查失败。应用 MinIO
+  适配器未测试，但 Milvus 把它作为后端，属于环境残余风险。
+- **隔离：** 仅 `RUN_INTEGRATION=1` 运行；每次唯一 `test_<uuid>`，`finally` 只
+  清理自己的集合，不枚举或删除共享集合。
+- **结构问题：** 服务省略非空字段的 `nullable=False`；只把缺失值规范为默认
+  非空，`parent_id` 缺失仍失败。
+- **计数问题：** 同主键重复 upsert 后物理 `row_count` 为 2，逻辑行数为 1；改用
+  `query(output_fields=['count(*)'])` 并保持两个连续相等值的有界轮询。
+- **证据：** 两项回归各先失败后通过；相关范围 `14 passed`；控制者真实结构
+  `8 passed`，真实集成先 `2 passed`，最终 `3 passed`。
+
+### IDX-004——任务 6 第一轮修复：清理验证异常脱敏
+
+- **发现：** 集成辅助函数直接调用私有客户端，`MilvusException` 可能把后端细节
+  输出到 pytest。
+- **修复：** 只捕获 `MilvusException`，用 `from None` 抛固定
+  `AssertionError`；验证没有私密文本、cause 和可见 context。程序错误继续暴露。
+- **证据：** 从 `1 failed` 到本地 `1 passed, 2 skipped`；真实 Milvus
+  `3 passed`。
+
+## 九、第四阶段最终修复
+
+### IDX-005——第四阶段最终修复波次
+
+### A——SQLAlchemy 异常可能泄露内容
+
+- **问题：** 原始 execute/flush 异常可能保留 SQL、`content`、
+  `source_metadata`、参数、后端文本和异常链。
+- **修复：** 每个数据库 I/O 边界只捕获 `SQLAlchemyError`，处理块外用
+  `raise ... from None` 抛固定 `SegmentStorageError`；连接类错误可重试，数据和
+  完整性错误不可重试；验证、取消、程序错误不转换。所有异步引擎设置
+  `hide_parameters=True`。
+- **验证：** 随机私密标识在 `str`、`repr`、异常链和 traceback 中均不可见。
+
+### B——10000 分段超过绑定参数上限
+
+- **问题：** 单次约 14×10000 个绑定参数，另有全部 ID 的 `IN` 查询。
+- **修复：** 完整预验证后按 500 批量执行
+  `ON CONFLICT (id) DO NOTHING`；初始读取、插入后重载、修改读取全部按 500。
+- **成本：** 最大文档为 20 次插入、20 次初始读取、20 次重载；每次插入 7000
+  个绑定，查询 ID 不超过 500。
+
+### C——精确重试缺少生命周期检查
+
+- **修复：** 必须未删除且 `status="indexing"`；高质量普通块/子块允许
+  `waiting` 或 `completed`，父块和经济块必须 `not_required`。外部调用前再由
+  引擎独立验证。
+- **部分重试：** 跳过 `completed`，只处理 `waiting`；`vector_count` 是原已完成加
+  本次精确写入确认的总就绪数。
+- **边界：** 第五阶段负责全集合对账；单文档不能用集合计数。
+
+### D——三个批次边界不一致
+
+- **问题：** 引擎 1024、模型最多 512、Milvus 默认 500，取消、维度、写入确认、状态
+  无法对齐。
+- **修复：** 命令快照 `embedding_batch_size` 和 `vector_batch_size`；实际单位为
+  `min(1024, embedding_batch_size, vector_batch_size)`，每单位依次完成
+  嵌入请求、维度校验、一次写入或更新、写入确认、状态更新。
+- **例外：** 413 自适应拆分和 Milvus 对直接调用者的防御分块保留在适配器内部。
+
+### E——关键词长度契约不一致
+
+- **问题：** 提取器可产生 256～1024 字符，数据访问层上限 255。
+- **修复：** 共享 `MAX_KEYWORD_LENGTH = 255`；生产侧省略超长词，存储侧继续
+  防御性拒绝；不截断，避免不同标识符碰撞。
+- **证据：** 真实 SQLite 经济引擎回归完成且没有任何外部向量调用。
+
+### F1～F6——审查小项
+
+- **F1：** 每个身份输入独立变化，结果可解析为 UUIDv5 和 32 位小写十六进制。
+- **F2：** PostgreSQL 编译为 `ARRAY(Text)` 和 GIN，SQLite 为 JSON。
+- **F3：** `rag_modules.indexing` 延迟导出；经济导入不加载引擎、向量或 PyMilvus。
+- **F4：** Python 整数的逻辑计数也限制在有符号 INT64。
+- **F5：** 历史任务状态标题改为已完成并通过审查。
+- **F6：** 删除测试替身中过时的集合物理统计接口。
+
+### 最终修复测试证据
+
+- **失败阶段：** `28 failed, 169 passed`，其中 A 十二项、B 一项、C 九项、D
+  一项、E 三项、F3 一项、F4 一项；F1/F2 首次即通过，作为特征测试保留。补强
+  批次验证后另有 `4 failed`，Alembic 参数隐藏另有 `1 failed`。
+- **通过阶段：** A/B/C `46 passed`，D `5 passed`，E/F `27 passed`，Alembic
+  `1 passed`；组合 `201 passed`；相关单元范围 `251 passed`；解析/分段
+  `177 passed`；默认集成 `1 passed, 2 skipped`。
+- **完整验证：** `561 passed, 3 skipped, 2 warnings`；`py_compile`、
+  `compileall`、`git diff --check` 通过。跳过项是显式集成，警告是已有
+  Starlette/httpx 和 jieba/pkg_resources 弃用提示。
+- **提交：** `de2e4b2`、`e5b45e3`、`8f0ec6f`。
+- **残余风险：** PostgreSQL 语句形状由真实方言编译证明，但没有真实 PostgreSQL
+  大批量并发负载；SQLite 双连接证明精确竞争。运维仍需独立脱敏观测通道。
+
+## 十、最终复审、合并和环境问题
+
+### 2026-09-05——最终定向复审
+
+- 同一独立审查者只检查 `600db7e..8f0ec6f`；A～E、F1～F6 全部解决，没有新增
+  严重或重要问题，可以合并。
+- `8f0ec6f` 只澄清文档：10000 条测试为 20 次插入、20 次初始读取、20 次重载。
+- 控制者独立重跑：完整 `561 passed, 3 skipped, 2 warnings`；嵌入/索引/
+  向量 `217 passed`；数据访问层/配置/数据库 `34 passed`；默认集成
+  `1 passed, 2 skipped`；真实 Milvus 2.5.14 为 `3 passed`。
+- 真实测试只创建和清理随机命名、自有集合；`compileall`、`git diff --check`、
+  工作树检查通过。
+
+### 2026-09-05——合并后主虚拟环境缺少 pytest
+
+- **现象：** 快进合并到 `main` 后，主工作树执行测试时报
+  `No module named pytest`。
+- **根因：** 两个工作树各有独立 Python 3.11.15 虚拟环境；主环境
+  `find_spec("pytest")` 为 `None`，功能环境有明确 site-packages 位置。Git 状态
+  干净，说明不是合并删除依赖。
+- **拒绝方案：** 清理阶段不临时安装依赖；不把启动器问题当成功能失败；不跳过
+  合并结果验证。
+- **解决：** 使用功能环境解释器，以主仓库为当前目录加载合并后源码；结果
+  `561 passed, 3 skipped, 2 warnings in 8.01s`。
+- **后续：** 功能工作树和环境已删除；若要在主目录直接测试，需要先向主 `.venv`
+  安装测试依赖。
+
+### 2026-09-05——最终仓库状态
+
+- `feature/source-change-sync` 已快进合并到本地 `main`，功能分支和工作树已
+  安全删除，没有推送远端。
+- 第四阶段的嵌入、经济关键词、PostgreSQL 分段暂存、Milvus、单文档索引
+  和真实服务验证均完成。
+- 第五阶段继续负责：从真实模型和向量配置填充批次快照；全量对账 PostgreSQL 与
+  Milvus；处理部分外部成功的补偿；激活和切换版本；清理旧版本。
+- 生产仍建议增加真实 PostgreSQL 大批量/隔离验证、干净 Compose 生命周期验证
+  和仅面向运维的脱敏观测。
