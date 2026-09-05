@@ -1883,3 +1883,28 @@ After every task, append:
   opt-in Milvus and MinIO tests. This final run does not add live PostgreSQL load
   evidence; PostgreSQL statement shape/bind bounds remain covered through the
   real dialect compiler and retry races through the SQLite concurrency tests.
+
+### 2026-09-05 — Post-merge verification environment mismatch
+
+- **Symptom:** After `feature/source-change-sync` fast-forwarded local `main`,
+  running `.venv/bin/python -m pytest -q` from the main worktree stopped before
+  collection with `No module named pytest`.
+- **Root cause evidence:** Both worktrees use CPython 3.11.15 but own independent
+  virtual environments. `importlib.util.find_spec("pytest")` returned `None` in
+  the main worktree environment and a concrete site-packages module spec in the
+  feature worktree environment. Git status remained clean, so the merge had not
+  removed or changed a tracked test dependency; the main environment had simply
+  never installed the test toolchain.
+- **Rejected approaches:** Installing packages into the main environment was
+  unnecessary mutation during branch cleanup. Treating the launcher failure as
+  a product test failure, skipping merged-result verification, or testing from
+  the feature source directory would not establish the merged `main` result.
+- **Resolution:** The already-validated feature-worktree Python interpreter was
+  invoked with the main repository as its current working directory. Dependency
+  imports therefore came from that environment while application/test imports
+  came from merged `main`. The full merged-result suite passed `561 passed, 3
+  skipped, 2 warnings in 8.01s`.
+- **Follow-up:** Local contributors should install the project test dependencies
+  into the main worktree environment before expecting its local `.venv` to run
+  pytest directly. This is an environment bootstrap issue, not an application
+  defect or a reason to retain the completed feature branch.
