@@ -30,7 +30,7 @@ def _collection_exists(store: MilvusVectorStore, collection_name: str) -> bool:
 
 
 def test_collection_cleanup_verification_sanitizes_milvus_failure():
-    """A failed test-owned cleanup check must not expose backend details."""
+    """测试专属资源的清理检查失败时，不得暴露后端细节。"""
     distinctive_backend_detail = "distinctive-backend-detail"
 
     class FailingClient:
@@ -52,14 +52,14 @@ def test_collection_cleanup_verification_sanitizes_milvus_failure():
 
 @pytest.mark.integration
 def test_milvus_collection_upsert_count_delete_and_drop(real_milvus_store: MilvusVectorStore):
-    """A changed explicit schema/index or primary-key upsert must fail this test."""
+    """显式结构、索引或按主键更新插入的行为发生变化时，本测试必须失败。"""
     collection_name = f"test_{uuid4().hex}"
     segment_id = uuid4().hex
 
     try:
         real_milvus_store.ensure_collection(collection_name, 3, "COSINE")
-        # The second call reads the actual server schema and index through the
-        # adapter, so a non-explicit schema or non-HNSW/COSINE index is rejected.
+        # 第二次调用通过适配器读取服务端的实际结构和索引，
+        # 因此会拒绝非显式结构或不采用 HNSW/COSINE 的索引。
         real_milvus_store.ensure_collection(collection_name, 3, "COSINE")
         assert real_milvus_store.upsert(
             collection_name,
@@ -82,7 +82,7 @@ def test_milvus_collection_upsert_count_delete_and_drop(real_milvus_store: Milvu
 def test_milvus_cleanup_drops_only_its_collection_after_assertion_failure(
     real_milvus_store: MilvusVectorStore,
 ):
-    """The test-owned collection is removed even when its body raises."""
+    """即使测试主体抛出异常，也必须删除测试专属集合。"""
     collection_name = f"test_{uuid4().hex}"
 
     with pytest.raises(AssertionError, match="intentional cleanup exercise"):

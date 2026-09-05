@@ -34,7 +34,7 @@ def _pdf_with_empty_pages_then_text(empty_pages: int, text_pdf: bytes) -> bytes:
 
 
 def test_pdf_parser_preserves_page_numbers_and_normalizes_wrapped_text(fixture_bytes):
-    """Dropping page metadata or line-wrap cleanup loses source context."""
+    """丢失页码元数据或未清理自动换行，会丢失源内容上下文。"""
     parsed = PdfParser().parse(
         io.BytesIO(fixture_bytes("two-pages.pdf")),
         ParseContext("doc-1", "two-pages.pdf"),
@@ -48,7 +48,7 @@ def test_pdf_parser_preserves_page_numbers_and_normalizes_wrapped_text(fixture_b
 
 
 def test_pdf_parser_warns_for_empty_pages_but_keeps_text_from_other_pages(fixture_bytes):
-    """Treating one blank page as document failure loses extractable content."""
+    """因一个空白页就认定整份文档失败，会丢失其他可提取内容。"""
     parsed = PdfParser().parse(
         io.BytesIO(fixture_bytes("text-and-empty-page.pdf")),
         ParseContext("doc-1", "mixed.pdf"),
@@ -72,7 +72,7 @@ def test_pdf_parser_warns_for_empty_pages_but_keeps_text_from_other_pages(fixtur
 def test_pdf_parser_bounds_empty_page_warnings_and_keeps_later_text(
     monkeypatch, fixture_bytes, empty_pages, omitted_count
 ):
-    """An empty-page run must not bypass the per-document warning cap."""
+    """连续空白页不得绕过每份文档的警告数量上限。"""
     monkeypatch.setattr(settings.parser, "max_warnings_per_document", 3)
     payload = _pdf_with_empty_pages_then_text(
         empty_pages, fixture_bytes("two-pages.pdf")
@@ -99,7 +99,7 @@ def test_pdf_parser_bounds_empty_page_warnings_and_keeps_later_text(
 
 
 def test_scanned_pdf_reports_specific_error(fixture_bytes):
-    """Returning success for a no-text PDF would conceal the OCR boundary."""
+    """对没有文本的 PDF 返回成功，会掩盖需要 OCR 才能继续处理的边界。"""
     with pytest.raises(DocumentParseError) as error:
         PdfParser().parse(
             io.BytesIO(fixture_bytes("image-only.pdf")),
@@ -111,7 +111,7 @@ def test_scanned_pdf_reports_specific_error(fixture_bytes):
 
 
 def test_pdf_parser_rejects_encrypted_documents_that_cannot_be_decrypted(fixture_bytes):
-    """Parsing password-protected bytes without a successful decrypt is unsafe."""
+    """未成功解密就解析受密码保护的字节数据是不安全的。"""
     with pytest.raises(DocumentParseError) as error:
         PdfParser().parse(
             io.BytesIO(fixture_bytes("encrypted.pdf")), ParseContext("d", "locked.pdf")
@@ -122,7 +122,7 @@ def test_pdf_parser_rejects_encrypted_documents_that_cannot_be_decrypted(fixture
 
 
 def test_pdf_parser_reports_corrupt_pdf_with_stable_error(fixture_bytes):
-    """Leaking a library-specific read error breaks the parser boundary."""
+    """直接暴露特定库的读取错误，会破坏解析器边界。"""
     with pytest.raises(DocumentParseError) as error:
         PdfParser().parse(
             io.BytesIO(fixture_bytes("corrupt.pdf")), ParseContext("d", "broken.pdf")
@@ -133,7 +133,7 @@ def test_pdf_parser_reports_corrupt_pdf_with_stable_error(fixture_bytes):
 
 
 def test_pdf_parser_enforces_configured_page_limit(monkeypatch, fixture_bytes):
-    """Reading pages beyond the configured ceiling permits oversized documents."""
+    """读取超出配置页数上限的页面，会放过过大的文档。"""
     monkeypatch.setattr(settings.parser, "max_pdf_pages", 1)
 
     with pytest.raises(DocumentParseError) as error:
@@ -147,7 +147,7 @@ def test_pdf_parser_enforces_configured_page_limit(monkeypatch, fixture_bytes):
 
 
 def test_docx_preserves_headings_lists_tables_and_source_order(fixture_bytes):
-    """Walking separate paragraph and table collections would reorder DOCX content."""
+    """分别遍历段落和表格集合，会改变 DOCX 内容的原始顺序。"""
     parsed = DocxParser().parse(
         io.BytesIO(fixture_bytes("heading-table.docx")), ParseContext("d", "x.docx")
     )
@@ -162,7 +162,7 @@ def test_docx_preserves_headings_lists_tables_and_source_order(fixture_bytes):
 
 
 def test_docx_heading_levels_replace_only_their_same_or_deeper_ancestors(fixture_bytes):
-    """Incorrect heading-stack trimming attaches later text to the wrong section."""
+    """错误裁剪标题栈，会将后续文本归入错误章节。"""
     parsed = DocxParser().parse(
         io.BytesIO(fixture_bytes("nested-headings.docx")), ParseContext("d", "nested.docx")
     )
@@ -177,7 +177,7 @@ def test_docx_heading_levels_replace_only_their_same_or_deeper_ancestors(fixture
 
 
 def test_docx_parser_normalizes_malformed_ooxml_inside_a_valid_zip(fixture_bytes):
-    """Leaking lxml XML errors would violate the parser's stable error boundary."""
+    """直接暴露 lxml 的 XML 错误，会违反解析器的稳定错误边界。"""
     with pytest.raises(DocumentParseError) as error:
         DocxParser().parse(
             io.BytesIO(fixture_bytes("malformed-ooxml.docx")),
@@ -191,7 +191,7 @@ def test_docx_parser_normalizes_malformed_ooxml_inside_a_valid_zip(fixture_bytes
 def test_docx_parser_does_not_mislabel_internal_extraction_type_errors(
     monkeypatch, fixture_bytes
 ):
-    """A formatter or body-walk defect must remain debuggable, not look malformed."""
+    """格式化器或正文遍历的程序缺陷必须保留可调试信息，不能伪装成文档格式错误。"""
 
     def fail_body_extraction(_document):
         raise TypeError("injected extraction bug")

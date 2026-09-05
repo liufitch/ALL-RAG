@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from rag_modules.upload_formats import SUPPORTED_UPLOAD_EXTENSIONS
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent.parent
 APP_ENV = os.getenv("APP_ENV", "dev").lower()
 VALID_ENVS = {"dev", "qa", "prod"}
 DBType = Literal["sqlite", "postgresql", "mysql", "oceanbase", "seekdb"]
@@ -258,7 +259,9 @@ class Settings(BaseSettings):
     indexing: IndexingSettings = Field(default_factory=IndexingSettings)
 
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env" if APP_ENV == "dev" else None,
+        # 开发配置优先读取项目根目录（与 .env.example 一致），兼容旧 config/.env。
+        # tuple 中后面的文件优先；系统环境变量仍高于两份 dotenv 配置。
+        env_file=(BASE_DIR / ".env", PROJECT_DIR / ".env") if APP_ENV == "dev" else None,
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore", #- 环境变量里多出来、模型里没有定义的字段直接忽略，不报错

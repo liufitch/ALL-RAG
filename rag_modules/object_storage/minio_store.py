@@ -11,7 +11,7 @@ from .base import ObjectStorageUnavailable, StoredObject
 
 
 class MinioObjectStorage:
-    """Async facade over MinIO's synchronous client."""
+    """MinIO 同步客户端的异步封装。"""
 
     def __init__(self, client: Any, bucket: str):
         self.client = client
@@ -46,7 +46,7 @@ class MinioObjectStorage:
         )
 
     async def get_bytes(self, object_key: str, max_bytes: int) -> bytes:
-        """Download bounded bytes while one worker owns the response lifecycle."""
+        """下载大小受限的字节数据，并由同一个工作线程管理响应的完整生命周期。"""
         try:
             return await anyio.to_thread.run_sync(
                 partial(self._get_bytes_sync, object_key, max_bytes),

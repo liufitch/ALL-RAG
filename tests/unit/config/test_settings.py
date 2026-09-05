@@ -1,4 +1,7 @@
 import pytest
+import importlib.util
+import sys
+from pathlib import Path
 
 from rag_modules.config.settings import (
     DatabaseSettings,
@@ -10,8 +13,32 @@ from rag_modules.config.settings import (
 )
 
 
+def test_project_env_loads_credentials_with_legacy_fallback_and_environment_priority(tmp_path, monkeypatch):
+    import rag_modules.config.settings as source
+
+    # 用独立目录验证默认查找路径，不读取或修改开发者的真实 .env。
+    config_dir = tmp_path / "rag_modules" / "config"
+    config_dir.mkdir(parents=True)
+    module_path = config_dir / "settings.py"
+    module_path.write_text(Path(source.__file__).read_text())
+    (config_dir / ".env").write_text("OBJECT_STORAGE__ACCESS_KEY=legacy-key\nOBJECT_STORAGE__SECRET_KEY=legacy-secret\n")
+    (tmp_path / ".env").write_text("OBJECT_STORAGE__ACCESS_KEY=project-key\n")
+    monkeypatch.setenv("APP_ENV", "dev")
+    monkeypatch.delenv("OBJECT_STORAGE__ACCESS_KEY", raising=False)
+    monkeypatch.delenv("OBJECT_STORAGE__SECRET_KEY", raising=False)
+    spec = importlib.util.spec_from_file_location("settings_probe", module_path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "settings_probe", module)
+    spec.loader.exec_module(module)
+    loaded = module.Settings()
+    assert loaded.object_storage.access_key.get_secret_value() == "project-key"
+    assert loaded.object_storage.secret_key.get_secret_value() == "legacy-secret"
+    monkeypatch.setenv("OBJECT_STORAGE__ACCESS_KEY", "environment-key")
+    assert module.Settings().object_storage.access_key.get_secret_value() == "environment-key"
+
+
 def test_nested_embedding_catalog_and_secrets_are_loaded(monkeypatch):
-    """Removing nested embedding support would break environment configuration."""
+    """移除嵌套嵌入配置支持会破坏环境变量配置。"""
     monkeypatch.setenv("EMBEDDING__BASE_URL", "http://embed:8000/v1")
     monkeypatch.setenv("EMBEDDING__API_KEY", "secret-value")
     monkeypatch.setenv("EMBEDDING__DEFAULT_MODEL", "bge-m3")
@@ -28,7 +55,7 @@ def test_nested_embedding_catalog_and_secrets_are_loaded(monkeypatch):
 
 
 def test_default_embedding_model_must_be_enabled(monkeypatch):
-    """Accepting an absent default would defer a configuration error until indexing."""
+    """接受不存在的默认项，会把配置错误推迟到建立索引时才暴露。"""
     monkeypatch.setenv("EMBEDDING__DEFAULT_MODEL", "missing")
     monkeypatch.setenv("EMBEDDING__MODELS", "[]")
 
@@ -37,7 +64,7 @@ def test_default_embedding_model_must_be_enabled(monkeypatch):
 
 
 def test_indexing_runtime_settings_are_available_with_approved_defaults():
-    """Changing approved segmentation defaults would change later indexing behavior."""
+    """修改约定的分段默认值会改变后续索引行为。"""
     loaded = Settings(_env_file=None)
 
     assert loaded.object_storage.bucket == "graph-rag-uploads"
@@ -116,7 +143,7 @@ def test_upload_settings_reject_extensions_outside_approved_formats():
 
 
 def test_spreadsheet_merged_cell_limits_have_approved_defaults():
-    """Changing either merge bound can silently alter accepted XLSX work."""
+    """修改任一合并单元格限制，都可能在无提示的情况下改变可接受的 XLSX 处理范围。"""
     parser = ParserSettings()
 
     assert parser.max_merged_cell_area == 100_000
@@ -152,13 +179,13 @@ def test_warning_limits_reject_values_outside_their_safe_bounds(
     "field_name", ("max_merged_cell_area", "max_total_merged_cell_area")
 )
 def test_spreadsheet_merged_cell_limits_must_be_positive(field_name):
-    """A non-positive merge bound would make the parser contract nonsensical."""
+    """非正数的合并限制会使解析器契约失去合理含义。"""
     with pytest.raises(ValueError):
         ParserSettings(**{field_name: 0})
 
 
 def test_total_merged_cell_limit_cannot_be_smaller_than_single_range_limit():
-    """Allowing the total below one legal range creates contradictory limits."""
+    """允许总量上限低于单个合法范围，会产生相互矛盾的限制。"""
     with pytest.raises(ValueError, match="total merged-cell area"):
         ParserSettings(
             max_physical_cells=10,
@@ -168,7 +195,7 @@ def test_total_merged_cell_limit_cannot_be_smaller_than_single_range_limit():
 
 
 def test_total_merged_cell_limit_cannot_exceed_physical_cell_limit():
-    """Merge expansion must stay within the parser's overall materialization cap."""
+    """合并单元格展开必须受解析器总体实体化数量上限约束。"""
     with pytest.raises(ValueError, match="total merged-cell area"):
         ParserSettings(
             max_physical_cells=5,

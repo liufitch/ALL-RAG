@@ -1,4 +1,4 @@
-"""Lazy public exports for dependency-light indexing primitives."""
+"""按需导出依赖较少的索引基础组件。"""
 
 from importlib import import_module
 

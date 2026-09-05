@@ -54,10 +54,10 @@ class _BatchTooLarge(Exception):
 
 
 class OpenAICompatibleEmbeddingClient:
-    """Async client for the OpenAI-compatible embeddings protocol.
+    """兼容 OpenAI 嵌入协议的异步客户端。
 
-    The client owns and closes its HTTP client only when one was not injected.
-    All public failures contain stable, sanitized codes and messages.
+    仅在未注入 HTTP 客户端时，由本客户端负责创建和关闭连接。
+    所有对外异常均使用稳定、已脱敏的错误码和消息。
     """
 
     def __init__(
@@ -95,7 +95,7 @@ class OpenAICompatibleEmbeddingClient:
                 raise EmbeddingError(*_DIMENSION_ERROR)
             vectors.extend(result.vectors)
 
-        # Empty input is rejected above, so a successful run always discovers it.
+        # 前面已拒绝空输入，因此执行成功时必然已确定向量维度。
         assert dimension is not None
         return EmbeddingBatch(vectors=tuple(vectors), dimension=dimension)
 

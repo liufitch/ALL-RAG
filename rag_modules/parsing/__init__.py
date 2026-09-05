@@ -1,4 +1,4 @@
-"""Common contracts and dispatch for document parsers."""
+"""文档解析器共用的数据契约和分派机制。"""
 
 from rag_modules.parsing.base import ParseContext, Parser
 from rag_modules.parsing.models import (

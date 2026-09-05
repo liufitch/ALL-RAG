@@ -1,4 +1,4 @@
-"""Deterministic, local keyword extraction for economy indexing."""
+"""供经济模式索引使用的本地确定性关键词提取。"""
 
 from __future__ import annotations
 
@@ -16,19 +16,19 @@ import jieba
 from .constants import MAX_KEYWORD_LENGTH
 
 _CJK_CHARACTERS = (
-    r"\u3400-\u4dbf"  # Extension A
-    r"\u4e00-\u9fff"  # Unified Ideographs
-    r"\uf900-\ufaff"  # Compatibility Ideographs
-    r"\U00020000-\U0002a6df"  # Extension B
-    r"\U0002a700-\U0002b73f"  # Extension C
-    r"\U0002b740-\U0002b81f"  # Extension D
-    r"\U0002b820-\U0002ceaf"  # Extension E
-    r"\U0002ceb0-\U0002ebef"  # Extension F
-    r"\U0002ebf0-\U0002ee5f"  # Extension I
-    r"\U0002f800-\U0002fa1f"  # Compatibility Ideographs Supplement
-    r"\U00030000-\U0003134f"  # Extension G
-    r"\U00031350-\U000323af"  # Extension H
-    r"\U000323b0-\U0003347f"  # Extension J
+    r"\u3400-\u4dbf"  # 扩展 A 区
+    r"\u4e00-\u9fff"  # 统一表意文字区
+    r"\uf900-\ufaff"  # 兼容表意文字区
+    r"\U00020000-\U0002a6df"  # 扩展 B 区
+    r"\U0002a700-\U0002b73f"  # 扩展 C 区
+    r"\U0002b740-\U0002b81f"  # 扩展 D 区
+    r"\U0002b820-\U0002ceaf"  # 扩展 E 区
+    r"\U0002ceb0-\U0002ebef"  # 扩展 F 区
+    r"\U0002ebf0-\U0002ee5f"  # 扩展 I 区
+    r"\U0002f800-\U0002fa1f"  # 兼容表意文字补充区
+    r"\U00030000-\U0003134f"  # 扩展 G 区
+    r"\U00031350-\U000323af"  # 扩展 H 区
+    r"\U000323b0-\U0003347f"  # 扩展 J 区
 )
 _TOKEN_PATTERN = re.compile(
     rf"(?P<cjk>[{_CJK_CHARACTERS}]+)"
@@ -96,14 +96,13 @@ _JIEBA_INITIALIZATION_ATTRIBUTES = frozenset(
 
 
 class _QuietTokenizer(jieba.Tokenizer):
-    """Private jieba tokenizer that preserves initialization without its logs.
+    """私有 jieba 分词器，保留初始化行为并省略初始化日志。
 
-    The supported jieba API exposes no instance logger. Its inherited initializer
-    writes four records through the module-global logger, so this private override
-    retains its cache and lock behavior while omitting only those calls. It never
-    changes the shared logger, handler, level, or propagation state. Required
-    jieba internals are checked explicitly so an incompatible upgrade fails
-    visibly and receives a compatibility review instead of silently diverging.
+    当前支持的 jieba API 不提供实例级日志器。继承的初始化方法会通过模块级日志器
+    写入四条日志，因此这里通过私有重写保留缓存和锁行为，仅省略这些日志调用。
+    此实现不修改共享日志器、处理器、日志级别或传播状态。
+    显式检查所依赖的 jieba 内部接口，遇到不兼容升级时明确报错并进行兼容性审查，
+    避免行为在无提示的情况下发生偏离。
     """
 
     def __init__(self) -> None:
@@ -177,21 +176,19 @@ class _QuietTokenizer(jieba.Tokenizer):
 
 
 class KeywordExtractor:
-    """Extract a bounded, repeatable list of local economy keywords.
+    """提取数量受限、结果可重复的本地经济模式关键词列表。
 
-    The input is scanned once and raw tokens are streamed: contiguous CJK
-    spans are owned solely by :mod:`jieba`, while non-CJK Unicode word spans
-    are owned solely by the regex.  This avoids duplicate counting at mixed
-    boundaries.  The counter retains at most one entry per distinct accepted
-    term, so its memory use is linear in the input's distinct token count.
+    仅扫描一次输入，并以流式方式生成原始词元：连续的中日韩字符片段仅由
+    :mod:`jieba` 处理，其他 Unicode 单词片段仅由正则表达式处理，避免混合边界重复计数。
+    计数器为每个被接受的不同词项最多保留一条记录，内存占用与不同词元的数量成正比。
     """
 
     def __init__(self) -> None:
-        """Keep tokenizer state private instead of changing jieba globals."""
+        """将分词器状态保存在私有实例中，避免修改 jieba 全局状态。"""
         self._tokenizer = _QuietTokenizer()
 
     def extract(self, text: str, limit: int = 15) -> list[str]:
-        """Return at most ``limit`` keywords, sorted by score then term."""
+        """最多返回 ``limit`` 个关键词，先按分数排序，再按词项排序。"""
         self._validate_inputs(text, limit)
         if not text.strip():
             return []

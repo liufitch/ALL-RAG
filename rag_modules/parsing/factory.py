@@ -14,7 +14,7 @@ from rag_modules.parsing.xlsx_parser import XlsxParser
 
 @lru_cache(maxsize=1)
 def get_parser_registry() -> ParserRegistry:
-    """Build the complete approved parser dispatch table once per process."""
+    """每个进程仅构建一次完整的允许格式解析器分派表。"""
     return ParserRegistry(
         {
             ".txt": TextParser(),

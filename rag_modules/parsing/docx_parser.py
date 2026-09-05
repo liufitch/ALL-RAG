@@ -22,7 +22,7 @@ from rag_modules.parsing.text_parser import normalize_text
 
 
 class DocxParser:
-    """Extract body paragraphs and tables from non-executed DOCX content."""
+    """提取 DOCX 正文段落和表格，不执行文档内容。"""
 
     source_type = "docx"
 

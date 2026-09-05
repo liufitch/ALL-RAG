@@ -1,4 +1,4 @@
-"""Transaction-neutral persistence for deterministic staged document segments."""
+"""暂存结果确定的文档分段，事务的提交与回滚由调用方管理。"""
 
 from __future__ import annotations
 
@@ -35,11 +35,11 @@ SEGMENT_STATEMENT_CHUNK_SIZE = 500
 
 
 class SegmentPersistenceError(ValueError):
-    """A safe validation/conflict failure raised before unsafe segment mutation."""
+    """在执行不安全的分段修改前抛出的安全校验或冲突异常。"""
 
 
 class SegmentStorageError(Exception):
-    """A fixed, content-free database failure safe for job error persistence."""
+    """固定且不包含文档内容的数据库异常，可安全保存到任务错误信息中。"""
 
     def __init__(self, code: str, retryable: bool, safe_message: str) -> None:
         super().__init__(safe_message)
@@ -60,7 +60,7 @@ class _Candidate:
 
 
 class SegmentRepository:
-    """Stage, activate, and retire document segments without committing a transaction."""
+    """暂存、激活和淘汰文档分段，本类不提交事务。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -70,11 +70,10 @@ class SegmentRepository:
         command: SegmentStagingCommand,
         segments: tuple[PreviewSegment, ...] | list[PreviewSegment],
     ) -> list[DocumentSegmentRecord]:
-        """Flush deterministic staging records, returning retries without mutation.
+        """将结果确定的暂存记录写入数据库缓冲；重试时返回已有记录，不重复修改。
 
-        All preview and parent-link validation happens before the first database
-        mutation. This method deliberately does not commit: the caller owns the
-        later vector-write, activation, and index-version-switch transaction.
+        所有预览数据和父子关联校验均在首次数据库修改之前完成。
+        本方法不提交事务，后续向量写入、激活和索引版本切换的事务由调用方管理。
         """
         self._validate_command(command)
         candidates = self._build_candidates(command, tuple(segments))
@@ -91,14 +90,14 @@ class SegmentRepository:
             await self._execute(self._insert_missing_statement(command, batch))
         existing_by_id = await self._load_by_id(candidates)
         records = self._exact_existing_records(command, candidates, existing_by_id)
-        if len(records) != len(candidates):  # pragma: no cover - conflict writes are statement-visible
+        if len(records) != len(candidates):  # pragma: no cover - 冲突写入在当前语句中可见
             raise SegmentPersistenceError("A deterministic segment ID could not be staged safely.")
         return records
 
     async def activate_document_segments(
         self, *, dataset_id: str, dataset_index_id: str, document_id: str
     ) -> list[DocumentSegmentRecord]:
-        """Mark only currently staged records for one document/index version completed."""
+        """仅将指定文档及索引版本中处于暂存状态的记录标记为完成。"""
         records = await self._records_for_scope(
             dataset_id=dataset_id,
             dataset_index_id=dataset_index_id,
@@ -119,7 +118,7 @@ class SegmentRepository:
         document_id: str,
         keywords_by_segment_id: Mapping[str, Sequence[str]],
     ) -> None:
-        """Flush economy keywords for exactly the submitted staged records."""
+        """仅为本次提交的暂存记录写入经济模式关键词。"""
         if not keywords_by_segment_id:
             return
         records = await self._exact_mutation_records(
@@ -157,7 +156,7 @@ class SegmentRepository:
         document_id: str,
         segment_ids: Sequence[str],
     ) -> None:
-        """Flush successful embedding state for one exact vector-write batch."""
+        """为指定的一批向量写入记录保存嵌入成功状态。"""
         if not segment_ids:
             return
         records = await self._exact_mutation_records(
@@ -182,7 +181,7 @@ class SegmentRepository:
     async def soft_delete_previous_segments(
         self, *, dataset_id: str, document_id: str, previous_dataset_index_id: str
     ) -> list[DocumentSegmentRecord]:
-        """Soft-delete exactly one previous document/index version after activation."""
+        """激活后，仅软删除指定文档的一个旧索引版本。"""
         records = await self._records_for_scope(
             dataset_id=dataset_id,
             dataset_index_id=previous_dataset_index_id,
@@ -319,7 +318,7 @@ class SegmentRepository:
             insert_statement = postgresql_insert(DocumentSegmentRecord)
         elif dialect_name == "sqlite":
             insert_statement = sqlite_insert(DocumentSegmentRecord)
-        else:  # The configured production store is PostgreSQL; SQLite is the test dialect.
+        else:  # 生产环境配置使用 PostgreSQL；SQLite 方言仅用于测试。
             raise RuntimeError("Segment staging requires PostgreSQL or SQLite conflict handling.")
         return insert_statement.values(
             [self._candidate_values(command, candidate) for candidate in missing]

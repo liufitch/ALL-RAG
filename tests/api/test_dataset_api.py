@@ -20,6 +20,7 @@ class DatasetRepositoryStub:
     def __init__(self) -> None:
         self.records: dict[str, DatasetRecord] = {}
         self.counts: dict[str, tuple[int, int]] = {}
+        self.statuses: dict[str, str] = {}
         self.last_list_filters: dict[str, object] | None = None
 
     async def create(self, record: DatasetRecord) -> DatasetRecord:
@@ -38,12 +39,12 @@ class DatasetRepositoryStub:
     async def get_active_with_counts(
         self,
         dataset_id: str,
-    ) -> tuple[DatasetRecord, int, int] | None:
+    ) -> tuple[DatasetRecord, int, int, str] | None:
         record = await self.get_active(dataset_id)
         if record is None:
             return None
         document_count, chunk_count = self.counts.get(dataset_id, (0, 0))
-        return record, document_count, chunk_count
+        return record, document_count, chunk_count, self.statuses.get(dataset_id, "draft")
 
     async def list(
         self,
@@ -184,6 +185,7 @@ def test_get_non_empty_dataset_returns_active_counts_and_ready_status(
         created_at=datetime.now(timezone.utc),
     )
     repository.counts["dataset-1"] = (2, 7)
+    repository.statuses["dataset-1"] = "ready"
 
     response = dataset_client.get("/api/knowledge_base/dataset-1")
 

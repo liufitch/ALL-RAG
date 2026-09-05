@@ -141,7 +141,7 @@ def _xls_bytes(configure) -> bytes:
 def test_tabular_parsers_emit_self_describing_rows(
     fixture_name, parser_registry, fixture_bytes
 ):
-    """Dropping headers or source rows makes table facts ambiguous during indexing."""
+    """丢弃表头或源行信息，会使索引过程中的表格事实含义不清。"""
     parsed = parser_registry.parse(
         Path(fixture_name).suffix,
         io.BytesIO(fixture_bytes(fixture_name)),
@@ -160,7 +160,7 @@ def test_tabular_parsers_emit_self_describing_rows(
 def test_xlsx_uses_sheet_name_skips_hidden_sheets_and_ignores_empty_sheets(
     parser_registry, fixture_bytes
 ):
-    """Reading hidden or empty sheets would expose non-user table content as facts."""
+    """读取隐藏或空工作表，会把非面向用户的表格内容当作事实暴露。"""
     parsed = parser_registry.parse(
         ".xlsx",
         io.BytesIO(fixture_bytes("multi-sheet.xlsx")),
@@ -175,7 +175,7 @@ def test_xlsx_uses_sheet_name_skips_hidden_sheets_and_ignores_empty_sheets(
 def test_tabular_normalization_keeps_column_alignment_and_formula_text(
     parser_registry, fixture_bytes
 ):
-    """Coercing nulls or cached formula values would pair facts with the wrong headers."""
+    """强制转换空值或公式缓存值，会使事实与错误的表头配对。"""
     parsed = parser_registry.parse(
         ".xlsx",
         io.BytesIO(fixture_bytes("normalization.xlsx")),
@@ -197,7 +197,7 @@ def test_tabular_normalization_keeps_column_alignment_and_formula_text(
 def test_csv_uses_sniffed_semicolon_dialect_and_true_line_number_after_quoted_newline(
     parser_registry, fixture_bytes
 ):
-    """Using record indexes would mislocate CSV data following a quoted newline."""
+    """使用记录序号，会错误定位带引号字段内换行后的 CSV 数据。"""
     parsed = parser_registry.parse(
         ".csv",
         io.BytesIO(fixture_bytes("quoted-newline.csv")),
@@ -219,7 +219,7 @@ def test_csv_uses_sniffed_semicolon_dialect_and_true_line_number_after_quoted_ne
 def test_csv_falls_back_deterministically_for_a_short_single_column_file(
     parser_registry, fixture_bytes
 ):
-    """Letting Sniffer failure escape would reject valid one-column CSV uploads."""
+    """分隔格式探测器 Sniffer 失败时若直接抛出异常，会拒绝合法的单列 CSV 上传。"""
     parsed = parser_registry.parse(
         ".csv",
         io.BytesIO(fixture_bytes("short-single-column.csv")),
@@ -232,7 +232,7 @@ def test_csv_falls_back_deterministically_for_a_short_single_column_file(
 
 
 def test_empty_xlsx_has_no_extractable_table_rows(parser_registry, fixture_bytes):
-    """Treating an empty sheet as a data row would fabricate searchable table content."""
+    """将空工作表当作数据行，会虚构可检索的表格内容。"""
     with pytest.raises(DocumentParseError) as error:
         parser_registry.parse(
             ".xlsx",
@@ -246,7 +246,7 @@ def test_empty_xlsx_has_no_extractable_table_rows(parser_registry, fixture_bytes
 def test_xls_normalizes_blank_cells_and_booleans_without_emitting_empty_rows(
     parser_registry, fixture_bytes
 ):
-    """Passing xlrd blank/boolean primitives through creates false table facts."""
+    """直接传递 xlrd 的空白值或布尔值表示，会生成错误的表格事实。"""
     parsed = parser_registry.parse(
         ".xls",
         io.BytesIO(fixture_bytes("legacy-null-bool.xls")),
@@ -264,7 +264,7 @@ def test_xls_normalizes_blank_cells_and_booleans_without_emitting_empty_rows(
 def test_csv_normalizes_empty_fields_and_ignores_a_fully_empty_data_row(
     parser_registry, fixture_bytes
 ):
-    """Treating CSV empty fields as text emits empty pairs and a fake data record."""
+    """将 CSV 空字段视为文本，会输出空键值对和虚假的数据记录。"""
     parsed = parser_registry.parse(
         ".csv",
         io.BytesIO(fixture_bytes("null-rows.csv")),
@@ -282,7 +282,7 @@ def test_csv_normalizes_empty_fields_and_ignores_a_fully_empty_data_row(
 def test_ragged_csv_extends_and_deduplicates_headers_before_any_block_metadata(
     parser_registry, fixture_bytes
 ):
-    """Finalizing ragged rows early leaves metadata unable to describe emitted columns."""
+    """过早定稿列数不齐的行，会导致元数据无法描述最终输出的列。"""
     parsed = parser_registry.parse(
         ".csv",
         io.BytesIO(fixture_bytes("ragged.csv")),
@@ -300,7 +300,7 @@ def test_ragged_csv_extends_and_deduplicates_headers_before_any_block_metadata(
 def test_row_limit_is_a_document_budget_that_counts_visible_sheet_headers(
     monkeypatch, parser_registry, fixture_bytes
 ):
-    """Resetting the limit per sheet permits a workbook to exceed its document budget."""
+    """逐工作表重置限制，会允许整个工作簿超出文档总预算。"""
     monkeypatch.setattr(settings.parser, "max_rows", 3)
 
     with pytest.raises(DocumentParseError) as error:
@@ -316,7 +316,7 @@ def test_row_limit_is_a_document_budget_that_counts_visible_sheet_headers(
 def test_csv_row_budget_counts_non_empty_header_and_data_but_not_blank_records(
     monkeypatch, parser_registry, fixture_bytes
 ):
-    """A blank CSV record must not consume the same logical row budget as source data."""
+    """空白 CSV 记录不得与真实源数据一样消耗有效行数预算。"""
     monkeypatch.setattr(settings.parser, "max_rows", 2)
 
     parsed = parser_registry.parse(
@@ -331,7 +331,7 @@ def test_csv_row_budget_counts_non_empty_header_and_data_but_not_blank_records(
 def test_xlsx_ignores_style_only_declared_dimensions_for_row_and_column_limits(
     monkeypatch, parser_registry, fixture_bytes
 ):
-    """Trusting a worksheet's declared Z100 dimension rejects tiny real tables."""
+    """直接信任工作表声明的 Z100 尺寸，会错误拒绝实际很小的表格。"""
     monkeypatch.setattr(settings.parser, "max_rows", 2)
     monkeypatch.setattr(settings.parser, "max_columns", 2)
 
@@ -347,7 +347,7 @@ def test_xlsx_ignores_style_only_declared_dimensions_for_row_and_column_limits(
 def test_xlsx_remote_non_null_cell_uses_its_real_column_for_the_limit(
     monkeypatch, parser_registry, fixture_bytes
 ):
-    """Ignoring declared dimensions must not hide a real distant value beyond the column limit."""
+    """忽略声明尺寸时，不得漏掉真实存在且超出列数上限的远端单元格值。"""
     monkeypatch.setattr(settings.parser, "max_rows", 2)
     monkeypatch.setattr(settings.parser, "max_columns", 2)
 
@@ -364,7 +364,7 @@ def test_xlsx_remote_non_null_cell_uses_its_real_column_for_the_limit(
 def test_xlsx_forged_declared_dimension_never_expands_empty_coordinate_space(
     monkeypatch,
 ):
-    """A forged A1:XFD1048576 dimension must not drive dense row iteration."""
+    """伪造的 A1:XFD1048576 尺寸不得触发稠密行遍历。"""
     monkeypatch.setattr(settings.parser, "max_rows", 2)
     monkeypatch.setattr(settings.parser, "max_columns", 2)
 
@@ -384,7 +384,7 @@ def test_xlsx_forged_declared_dimension_never_expands_empty_coordinate_space(
 
 
 def test_xlsx_rejects_remote_nonempty_row_without_dense_iteration(monkeypatch):
-    """A real distant cell must fail stably without allocating all intervening rows."""
+    """真实的远端单元格必须触发稳定异常，且不得分配中间的所有行。"""
     monkeypatch.setattr(settings.parser, "max_row_coordinate", 100)
     payload = _xlsx_bytes(
         lambda workbook: (
@@ -400,7 +400,7 @@ def test_xlsx_rejects_remote_nonempty_row_without_dense_iteration(monkeypatch):
 
 
 def test_xlsx_enforces_independent_physical_cell_budget(monkeypatch):
-    """Physical OOXML cells are bounded independently from meaningful table rows."""
+    """实际 OOXML 单元格数量必须单独受限，不能只限制有效表格行数。"""
     monkeypatch.setattr(settings.parser, "max_physical_cells", 2)
     payload = _xlsx_bytes(
         lambda workbook: (
@@ -416,7 +416,7 @@ def test_xlsx_enforces_independent_physical_cell_budget(monkeypatch):
 
 
 def test_xlsx_case_varied_relationship_target_is_still_preflighted(monkeypatch):
-    """Discovering worksheets by a lowercase filename glob skips referenced parts."""
+    """使用小写文件名通配符寻找工作表，会漏掉被引用的部件。"""
     monkeypatch.setattr(settings.parser, "max_physical_cells", 2)
     payload = _xlsx_bytes(
         lambda workbook: (
@@ -527,7 +527,7 @@ def test_xlsx_case_varied_relationship_target_is_still_preflighted(monkeypatch):
 def test_xlsx_relationship_corruption_is_rejected_before_openpyxl(
     monkeypatch, workbook_rels_xml
 ):
-    """Untrusted workbook relationships must not reach OpenPyXL construction."""
+    """不可信的工作簿关系不得进入 OpenPyXL 构造阶段。"""
     payload = _xlsx_bytes(
         lambda workbook: workbook.active.append(["列"]),
         workbook_rels_xml=workbook_rels_xml,
@@ -548,7 +548,7 @@ def test_xlsx_relationship_corruption_is_rejected_before_openpyxl(
 
 
 def test_xlsx_accepts_one_leading_slash_as_a_package_root_target():
-    """Treating an OPC package-root target as a host path rejects normal XLSX files."""
+    """把 OPC 包根路径的目标误当作主机路径，会拒绝正常的 XLSX 文件。"""
     payload = _xlsx_bytes(
         lambda workbook: (
             workbook.active.append(["列"]),
@@ -567,7 +567,7 @@ def test_xlsx_accepts_one_leading_slash_as_a_package_root_target():
 
 
 def test_xlsx_duplicate_worksheet_target_is_rejected_before_openpyxl(monkeypatch):
-    """Two workbook sheets resolving to one part make sheet identity ambiguous."""
+    """两个工作表解析到同一个部件，会使工作表标识产生歧义。"""
     payload = _xlsx_bytes(
         lambda workbook: (
             workbook.active.append(["第一"]),
@@ -590,7 +590,7 @@ def test_xlsx_duplicate_worksheet_target_is_rejected_before_openpyxl(monkeypatch
 
 
 def test_xlsx_rejects_single_merged_range_area_before_openpyxl(monkeypatch):
-    """One sparse merge declaration must not expand into unbounded placeholders."""
+    """单个稀疏的合并声明，不得扩展为数量无上限的占位单元格。"""
     monkeypatch.setattr(settings.parser, "max_merged_cell_area", 100)
     payload = _xlsx_bytes(
         lambda workbook: (
@@ -618,7 +618,7 @@ def test_xlsx_rejects_single_merged_range_area_before_openpyxl(monkeypatch):
 
 
 def test_xlsx_rejects_total_merged_range_area_before_openpyxl(monkeypatch):
-    """Individually legal ranges must not bypass the document-wide merge bound."""
+    """单独合法的合并范围，不得绕过整份文档的合并总量上限。"""
     monkeypatch.setattr(settings.parser, "max_merged_cell_area", 4)
     monkeypatch.setattr(settings.parser, "max_total_merged_cell_area", 10)
 
@@ -660,7 +660,7 @@ def test_xlsx_rejects_total_merged_range_area_before_openpyxl(monkeypatch):
 def test_xlsx_rejects_malformed_merged_range_before_openpyxl(
     monkeypatch, reference
 ):
-    """Invalid merge coordinates must fail at the bounded XML boundary."""
+    """无效合并坐标必须在工作量受限的 XML 处理边界报错。"""
     payload = _xlsx_bytes(
         lambda workbook: (
             workbook.active.__setitem__("A1", "列"),
@@ -684,7 +684,7 @@ def test_xlsx_rejects_malformed_merged_range_before_openpyxl(
 
 
 def test_xlsx_physical_cell_adapter_skips_merged_placeholders_without_growth():
-    """Walking preflight coordinates must not emit or create merge placeholders."""
+    """预检时遍历坐标不得输出或创建合并占位单元格。"""
     from openpyxl import load_workbook as openpyxl_load_workbook
 
     from rag_modules.parsing.xlsx_parser import (
@@ -730,7 +730,7 @@ def test_xlsx_physical_cell_adapter_skips_merged_placeholders_without_growth():
 
 
 def test_xlsx_normal_merged_range_emits_only_physical_values():
-    """A legal merge remains parseable without placeholder rows or values."""
+    """合法的合并区域仍应可解析，且不生成占位行或占位值。"""
     def configure(workbook):
         worksheet = workbook.active
         worksheet["A1"] = "分组"
@@ -748,7 +748,7 @@ def test_xlsx_normal_merged_range_emits_only_physical_values():
 
 
 def test_xlsx_rejects_hyperlink_range_materialization_before_openpyxl(monkeypatch):
-    """A hyperlink range must share the physical-cell materialization budget."""
+    """超链接范围必须共用实际单元格的实体化预算。"""
     monkeypatch.setattr(settings.parser, "max_physical_cells", 4)
     payload = _xlsx_bytes(
         lambda workbook: workbook.active.__setitem__("A1", "列"),
@@ -784,7 +784,7 @@ def test_xlsx_rejects_hyperlink_range_materialization_before_openpyxl(monkeypatc
 def test_xlsx_rejects_malformed_hyperlink_before_openpyxl(
     monkeypatch, reference
 ):
-    """Invalid hyperlink ranges must fail at the bounded XML boundary."""
+    """无效超链接范围必须在工作量受限的 XML 处理边界报错。"""
     payload = _xlsx_bytes(
         lambda workbook: workbook.active.__setitem__("A1", "列"),
         sheet_xml=lambda xml: _append_hyperlink(xml, reference),
@@ -805,7 +805,7 @@ def test_xlsx_rejects_malformed_hyperlink_before_openpyxl(
 
 
 def test_xlsx_bounded_hyperlink_range_does_not_become_table_data(monkeypatch):
-    """Bounded hyperlink-created cells are valid but are not physical table values."""
+    """超链接在限制内创建的单元格是合法的，但不属于实际表格数据值。"""
     monkeypatch.setattr(settings.parser, "max_physical_cells", 6)
     payload = _xlsx_bytes(
         lambda workbook: (
@@ -823,7 +823,7 @@ def test_xlsx_bounded_hyperlink_range_does_not_become_table_data(monkeypatch):
 
 
 def test_xlsx_hidden_sheet_mapping_contract_is_validated(monkeypatch):
-    """Skipping hidden extraction must not skip private-mapping validation."""
+    """跳过隐藏内容提取时，不得跳过私有映射校验。"""
     from openpyxl import load_workbook as openpyxl_load_workbook
 
     def configure(workbook):
@@ -853,7 +853,7 @@ def test_xlsx_hidden_sheet_mapping_contract_is_validated(monkeypatch):
 
 
 def test_xls_and_xlsx_warn_for_hidden_very_hidden_and_nondata_sheets():
-    """Hidden sheets and visible sheets without data rows must be skipped with warnings."""
+    """隐藏工作表以及没有数据行的可见工作表，都必须跳过并给出警告。"""
     def xlsx_workbook(workbook):
         visible = workbook.active
         visible.title = "Data"
@@ -894,7 +894,7 @@ def test_xls_and_xlsx_warn_for_hidden_very_hidden_and_nondata_sheets():
 
 
 def test_xls_bounds_hidden_and_empty_sheet_warnings_while_preserving_data(monkeypatch):
-    """Legacy workbooks must not retain sheet-scale warnings beyond the document cap."""
+    """旧版工作簿保留的工作表级警告，不得超过文档警告总量上限。"""
     monkeypatch.setattr(settings.parser, "max_warnings_per_document", 3)
 
     def configure(workbook):
@@ -933,7 +933,7 @@ def test_xls_bounds_hidden_and_empty_sheet_warnings_while_preserving_data(monkey
 
 
 def test_xlsx_prefers_real_cached_formula_and_warns_when_cache_is_absent():
-    """Formula text is only a fallback; a genuine OOXML cached value wins."""
+    """公式文本仅用于回退；真实存在的 OOXML 缓存值优先。"""
     def workbook_with_formulas(workbook):
         workbook.active.append(["缓存", "无缓存"])
         workbook.active.append(["=1+2", "=2+3"])
@@ -958,7 +958,7 @@ def test_xlsx_prefers_real_cached_formula_and_warns_when_cache_is_absent():
 def test_xlsx_aggregates_formula_warnings_per_sheet_with_bounded_coordinate_samples(
     monkeypatch,
 ):
-    """One missing-cache warning per cell would retain formula-scale metadata."""
+    """若为每个缺少缓存的单元格保留一条警告，元数据规模会随公式数量增长。"""
     monkeypatch.setattr(settings.parser, "max_formula_warning_samples", 5)
 
     def workbook_with_many_formulas(workbook):
@@ -988,7 +988,7 @@ def test_xlsx_aggregates_formula_warnings_per_sheet_with_bounded_coordinate_samp
 def test_xlsx_formula_warnings_are_per_sheet_and_share_the_document_warning_cap(
     monkeypatch,
 ):
-    """Sheet aggregation must still leave one deterministic document-level bound."""
+    """汇总工作表警告后，仍必须遵守唯一且确定的文档级上限。"""
     monkeypatch.setattr(settings.parser, "max_warnings_per_document", 3)
 
     def workbook_with_two_formula_sheets(workbook):
@@ -1019,7 +1019,7 @@ def test_xlsx_formula_warnings_are_per_sheet_and_share_the_document_warning_cap(
 
 
 def test_xlsx_hidden_formula_sheet_has_only_the_hidden_sheet_warning():
-    """Hidden content is validated but not extracted or reported as visible formulas."""
+    """隐藏内容需要校验，但不得被提取或作为可见公式报告。"""
     def workbook_with_hidden_formula(workbook):
         visible = workbook.active
         visible.title = "Visible"
@@ -1048,7 +1048,7 @@ def test_xlsx_hidden_formula_sheet_has_only_the_hidden_sheet_warning():
 def test_tabular_parsers_reject_configured_limits_at_the_parser_boundary(
     monkeypatch, parser_registry, fixture_bytes, fixture_name, limit_name, limit, expected_code
 ):
-    """Silently truncating table bounds would let callers index incomplete source data."""
+    """在无提示的情况下截断表格，会让调用方为不完整的源数据建立索引。"""
     monkeypatch.setattr(settings.parser, limit_name, limit)
 
     with pytest.raises(DocumentParseError) as error:
@@ -1073,7 +1073,7 @@ def test_tabular_parsers_reject_configured_limits_at_the_parser_boundary(
 def test_tabular_parsers_normalize_unreadable_inputs_to_stable_errors(
     parser_registry, extension, payload, expected_code
 ):
-    """Leaking reader-library exceptions would make upload failures API-unstable."""
+    """直接暴露读取库的异常，会使上传失败的 API 契约不稳定。"""
     with pytest.raises(DocumentParseError) as error:
         parser_registry.parse(extension, io.BytesIO(payload), ParseContext("d", f"x{extension}"))
 

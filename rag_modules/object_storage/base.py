@@ -12,7 +12,7 @@ class StoredObject:
 
 
 class ObjectStorageUnavailable(RuntimeError):
-    """The object-storage service could not complete an operation."""
+    """对象存储服务无法完成操作。"""
 
 
 class ObjectStorage(Protocol):

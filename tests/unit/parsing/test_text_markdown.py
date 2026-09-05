@@ -12,7 +12,7 @@ from rag_modules.parsing.text_parser import TextParser
 
 
 def test_text_parser_rejects_short_gb18030_without_reliable_encoding_evidence():
-    """A reversible short legacy decode is ambiguous and must not silently win."""
+    """可往返还原的短旧编码文本仍可能存在歧义，不能无提示地选定它。"""
     with pytest.raises(DocumentParseError) as error:
         TextParser().parse(
             io.BytesIO("第一段\n\n第二段".encode("gb18030")),
@@ -23,7 +23,7 @@ def test_text_parser_rejects_short_gb18030_without_reliable_encoding_evidence():
 
 
 def test_text_parser_normalizes_bom_newlines_and_nuls_before_paragraph_split():
-    """Removing input normalization must break the emitted paragraphs and ranges."""
+    """移除输入规范化后，生成的段落和来源范围应不再符合预期。"""
     parsed = TextParser().parse(
         io.BytesIO(b"\xef\xbb\xbfFirst\x00 line\r\n\r\nSecond\rthird"),
         ParseContext("doc-1", "notes.txt"),
@@ -38,7 +38,7 @@ def test_text_parser_normalizes_bom_newlines_and_nuls_before_paragraph_split():
 
 
 def test_text_parser_rejects_chaotic_binary_with_stable_encoding_error():
-    """Accepting non-text bytes must break the parser boundary contract."""
+    """接受非文本字节会破坏解析器边界契约。"""
     with pytest.raises(DocumentParseError) as error:
         TextParser().parse(
             io.BytesIO(bytes(range(256)) * 4),
@@ -50,7 +50,7 @@ def test_text_parser_rejects_chaotic_binary_with_stable_encoding_error():
 
 
 def test_text_parser_rejects_control_heavy_valid_utf8_before_nul_normalization():
-    """Skipping quality checks after UTF-8 decoding must admit binary-like text."""
+    """UTF-8 解码后跳过质量检查，会放过类似二进制的文本。"""
     payload = (b"visible\x00 text\x01\x02\x03\x04" * 12)
 
     with pytest.raises(DocumentParseError) as error:
@@ -60,7 +60,7 @@ def test_text_parser_rejects_control_heavy_valid_utf8_before_nul_normalization()
 
 
 def test_text_parser_accepts_genuine_bomless_utf16_japanese_text():
-    """Rejecting BOM-less UTF-16 or selecting a corrupt legacy decode must fail."""
+    """拒绝无 BOM 的 UTF-16，或选中损坏的旧编码解码结果，都必须使测试失败。"""
     parsed = TextParser().parse(
         io.BytesIO("日本語のテキスト".encode("utf-16-le")),
         ParseContext("doc-1", "japanese.txt"),
@@ -72,7 +72,7 @@ def test_text_parser_accepts_genuine_bomless_utf16_japanese_text():
 
 @pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
 def test_text_parser_preserves_multiline_utf16_paragraphs_and_encoding(encoding):
-    """Reversing UTF-16 control-byte lanes must reject ordinary multiline text."""
+    """颠倒 UTF-16 控制字节的位置，会错误拒绝普通多行文本。"""
     parsed = TextParser().parse(
         io.BytesIO("first\n\nsecond".encode(encoding)),
         ParseContext("doc-1", "multiline.txt"),
@@ -88,7 +88,7 @@ def test_text_parser_preserves_multiline_utf16_paragraphs_and_encoding(encoding)
 
 @pytest.mark.parametrize("source", ["Plain Latin text", "Привет, мир"])
 def test_text_parser_accepts_bomless_utf16_text_that_is_valid_utf8_bytes(source):
-    """A low-quality UTF-8 decode must fall through to the UTF-16 evidence."""
+    """质量较差的 UTF-8 解码结果，必须继续进入 UTF-16 证据检查。"""
     parsed = TextParser().parse(
         io.BytesIO(source.encode("utf-16-le")),
         ParseContext("doc-1", "utf16.txt"),
@@ -99,7 +99,7 @@ def test_text_parser_accepts_bomless_utf16_text_that_is_valid_utf8_bytes(source)
 
 
 def test_text_parser_rejects_mixed_gb18030_without_reliable_encoding_evidence():
-    """ASCII structure plus a round trip is not proof of one legacy encoding."""
+    """ASCII 结构和编码往返成功，并不能证明某一种旧编码就是正确编码。"""
     source = "Release 2: 中文, café — ready"
     with pytest.raises(DocumentParseError) as error:
         TextParser().parse(
@@ -119,7 +119,7 @@ def test_text_parser_rejects_mixed_gb18030_without_reliable_encoding_evidence():
     ],
 )
 def test_text_parser_never_reports_other_legacy_encodings_as_gb18030(source, encoding):
-    """Selecting GB18030 for another reversible legacy stream corrupts source text."""
+    """对另一种同样可往返还原的旧编码流选择 GB18030，会损坏源文本。"""
     with pytest.raises(DocumentParseError) as error:
         TextParser().parse(
             io.BytesIO(source.encode(encoding)),
@@ -130,7 +130,7 @@ def test_text_parser_never_reports_other_legacy_encodings_as_gb18030(source, enc
 
 
 def test_text_parser_rejects_ambiguous_six_byte_non_utf8_payload():
-    """Choosing one equally valid legacy decoding must break this uncertainty boundary."""
+    """任意选中一种同样有效的旧编码解码结果，会破坏对编码不确定性的处理边界。"""
     with pytest.raises(DocumentParseError) as error:
         TextParser().parse(
             io.BytesIO(b"\xc0\xc1\xc2\xc3\xc4\xc5"),
@@ -141,7 +141,7 @@ def test_text_parser_rejects_ambiguous_six_byte_non_utf8_payload():
 
 
 def test_text_parser_never_silently_corrupts_accented_legacy_text():
-    """Weak legacy detector evidence may reject, but may not return corrupt text."""
+    """旧编码检测证据不足时可以拒绝输入，但不得返回损坏的文本。"""
     source = "“Café déjà vu”"
     try:
         parsed = TextParser().parse(
@@ -155,7 +155,7 @@ def test_text_parser_never_silently_corrupts_accented_legacy_text():
 
 
 def test_text_parser_rejects_blank_input_with_stable_error():
-    """Returning an empty ParsedDocument must break this source-level invariant."""
+    """返回空的 ParsedDocument 会破坏源文档级的不变量。"""
     with pytest.raises(DocumentParseError) as error:
         TextParser().parse(io.BytesIO(b" \r\n\t\n"), ParseContext("doc-1", "empty.txt"))
 
@@ -163,7 +163,7 @@ def test_text_parser_rejects_blank_input_with_stable_error():
 
 
 def test_markdown_parser_keeps_heading_path_and_code_block_atomic():
-    """Splitting fences or losing heading context must break code block output."""
+    """拆开围栏代码块或丢失标题上下文，会破坏代码块输出。"""
     source = b"# Install\n\nIntro\n\n```python\nprint('ok')\n```"
 
     parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "guide.md"))
@@ -175,7 +175,7 @@ def test_markdown_parser_keeps_heading_path_and_code_block_atomic():
 
 
 def test_markdown_parser_emits_structure_and_document_metadata_without_html_execution():
-    """Dropping Markdown structure or treating HTML as markup must break this output."""
+    """丢弃 Markdown 结构或将 HTML 当作标记解析，会破坏预期输出。"""
     source = b"""---
 title: Quick start
 audience: operators
@@ -221,7 +221,7 @@ Ready.
 
 
 def test_markdown_parser_rejects_document_without_extractable_blocks():
-    """Returning a document with no blocks must break the parser output contract."""
+    """返回没有任何内容块的文档，会破坏解析器输出契约。"""
     with pytest.raises(DocumentParseError) as error:
         MarkdownParser().parse(
             io.BytesIO(b"---\ntitle: Empty\n---\n"),
@@ -232,7 +232,7 @@ def test_markdown_parser_rejects_document_without_extractable_blocks():
 
 
 def test_markdown_parser_preserves_nested_list_and_scalar_front_matter():
-    """Flattening front matter must lose the source document's metadata shape."""
+    """将文首元数据扁平化，会丢失源文档的元数据结构。"""
     source = b"""---
 title: Quick start
 published: true
@@ -260,7 +260,7 @@ deployment:
 
 
 def test_markdown_parser_normalizes_yaml_dates_as_json_strings():
-    """Preflight must not reject SafeLoader dates that normalization can serialize."""
+    """预检不得拒绝可由规范化流程序列化的 SafeLoader 日期值。"""
     source = b"---\npublished: 2026-09-04\n---\n# Release\n"
 
     parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "release.md"))
@@ -270,7 +270,7 @@ def test_markdown_parser_normalizes_yaml_dates_as_json_strings():
 
 
 def test_markdown_parser_preserves_malformed_front_matter_as_raw_metadata():
-    """Discarding malformed YAML after removing it from the body must fail."""
+    """将格式错误的 YAML 从正文移除后再丢弃它，必须使测试失败。"""
     source = b"---\ntitle: [unterminated\n---\n\n# Install\n"
 
     parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "guide.md"))
@@ -281,7 +281,7 @@ def test_markdown_parser_preserves_malformed_front_matter_as_raw_metadata():
 
 
 def test_markdown_parser_preserves_duplicate_yaml_keys_as_raw_metadata():
-    """Preflight must not bypass duplicate-key rejection during construction."""
+    """预检不得绕过构造阶段的重复键检查。"""
     front_matter = "title: First\ntitle: Second"
     parsed = MarkdownParser().parse(
         io.BytesIO(f"---\n{front_matter}\n---\n# Release\n".encode()),
@@ -294,7 +294,7 @@ def test_markdown_parser_preserves_duplicate_yaml_keys_as_raw_metadata():
 
 
 def test_markdown_parser_keeps_ambiguous_unclosed_delimiter_in_body():
-    """Removing an unclosed front matter start must corrupt Markdown source content."""
+    """移除未闭合的文首元数据起始标记，会损坏 Markdown 源内容。"""
     source = b"---\ntitle: still markdown\n\n# Install\n"
 
     parsed = MarkdownParser().parse(io.BytesIO(source), ParseContext("doc-1", "guide.md"))
@@ -305,7 +305,7 @@ def test_markdown_parser_keeps_ambiguous_unclosed_delimiter_in_body():
 
 
 def test_markdown_parser_keeps_indented_delimiter_inside_yaml_block_scalar():
-    """An indented scalar line is YAML content, never a front-matter boundary."""
+    """缩进的标量行属于 YAML 内容，绝不能视为文首元数据的边界。"""
     source = b"""---
 summary: |
   first line
@@ -336,7 +336,7 @@ tags:
     ],
 )
 def test_markdown_parser_never_exposes_yaml_alias_graphs(front_matter):
-    """SafeLoader aliases can still create shared or recursive non-JSON metadata graphs."""
+    """SafeLoader 别名仍可能创建含共享引用或循环引用、不兼容 JSON 的元数据图。"""
     parsed = MarkdownParser().parse(
         io.BytesIO(f"---\n{front_matter}\n---\n# Safe\n".encode()),
         ParseContext("doc-1", "aliases.md"),
@@ -358,7 +358,7 @@ def test_markdown_parser_never_exposes_yaml_alias_graphs(front_matter):
     ],
 )
 def test_markdown_parser_bounds_front_matter_shape(front_matter):
-    """Unbounded YAML scalars, depth, or node counts can exhaust preview serialization."""
+    """不限制 YAML 标量大小、嵌套深度或节点数量，可能耗尽预览序列化资源。"""
     parsed = MarkdownParser().parse(
         io.BytesIO(f"---\n{front_matter}\n---\n# Safe\n".encode()),
         ParseContext("doc-1", "bounded.md"),
@@ -378,7 +378,7 @@ def test_markdown_parser_bounds_front_matter_shape(front_matter):
     ids=["deep-block-sequences", "deep-flow-sequences"],
 )
 def test_markdown_parser_falls_back_safely_for_deep_yaml(front_matter):
-    """Constructing deeply nested YAML must not leak a RecursionError."""
+    """构造深层嵌套 YAML 时，不得直接暴露 RecursionError。"""
     parsed = MarkdownParser().parse(
         io.BytesIO(f"---\n{front_matter}\n---\n# Body\n\nStill parsed.\n".encode()),
         ParseContext("doc-1", "deep.md"),
@@ -394,7 +394,7 @@ def test_markdown_parser_falls_back_safely_for_deep_yaml(front_matter):
 
 
 def test_markdown_parser_rejects_yaml_event_budget_before_loading(monkeypatch):
-    """A shallow event flood must stop before the value-constructing loader."""
+    """大量浅层事件必须在进入值构造加载器前被拦截。"""
     front_matter = "items:\n" + "  - x\n" * 9_999 + "  - x"
 
     def fail_if_loaded(*args, **kwargs):
@@ -414,7 +414,7 @@ def test_markdown_parser_rejects_yaml_event_budget_before_loading(monkeypatch):
 
 
 def test_markdown_parser_falls_back_on_yaml_parse_recursion(monkeypatch):
-    """A parser recursion failure must remain inside the metadata boundary."""
+    """解析器递归异常必须在元数据处理边界内处理。"""
     def recurse(*args, **kwargs):
         raise RecursionError("synthetic yaml.parse recursion")
 
@@ -430,7 +430,7 @@ def test_markdown_parser_falls_back_on_yaml_parse_recursion(monkeypatch):
 
 
 def test_markdown_parser_falls_back_on_yaml_load_recursion(monkeypatch):
-    """A loader recursion failure must remain inside the metadata boundary."""
+    """加载器递归异常必须在元数据处理边界内处理。"""
     def recurse(*args, **kwargs):
         raise RecursionError("synthetic yaml.load recursion")
 
@@ -446,7 +446,7 @@ def test_markdown_parser_falls_back_on_yaml_load_recursion(monkeypatch):
 
 
 def test_markdown_parser_falls_back_on_yaml_normalization_recursion(monkeypatch):
-    """A normalization recursion failure must remain inside the metadata boundary."""
+    """规范化递归异常必须在元数据处理边界内处理。"""
     def recurse(value):
         raise RecursionError("synthetic normalization recursion")
 
@@ -467,7 +467,7 @@ def test_markdown_parser_falls_back_on_yaml_normalization_recursion(monkeypatch)
     ids=["scalar-anchor", "alias"],
 )
 def test_yaml_event_preflight_rejects_anchors_and_aliases(front_matter):
-    """Removing all-event anchor checks must admit unsafe YAML graph syntax."""
+    """移除对所有事件的锚点检查，会放过不安全的 YAML 图语法。"""
     with pytest.raises(ValueError):
         markdown_parser._preflight_front_matter(front_matter)
 
@@ -481,7 +481,7 @@ def test_yaml_event_preflight_rejects_anchors_and_aliases(front_matter):
     ids=["negative-depth", "unbalanced-depth"],
 )
 def test_yaml_event_preflight_rejects_invalid_collection_depth(monkeypatch, events):
-    """Malformed event streams must not bypass the collection-depth invariant."""
+    """格式错误的事件流不得绕过集合嵌套深度的不变量。"""
     monkeypatch.setattr(
         markdown_parser.yaml, "parse", lambda *args, **kwargs: iter(events)
     )
@@ -491,7 +491,7 @@ def test_yaml_event_preflight_rejects_invalid_collection_depth(monkeypatch, even
 
 
 def test_markdown_parser_does_not_swallow_yaml_preflight_memory_error(monkeypatch):
-    """Memory exhaustion is not a recoverable malformed-metadata condition."""
+    """内存耗尽不属于可恢复的元数据格式错误。"""
     def exhaust_memory(*args, **kwargs):
         raise MemoryError("synthetic exhaustion")
 

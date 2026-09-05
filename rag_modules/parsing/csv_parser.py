@@ -13,7 +13,7 @@ from rag_modules.parsing.text_parser import decode_text
 
 
 class CsvParser:
-    """Read delimited text with conservative decoding and deterministic dialect fallback."""
+    """以保守的解码策略读取分隔文本，并使用确定性的分隔格式回退策略。"""
 
     source_type = "csv"
 

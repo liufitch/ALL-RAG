@@ -36,6 +36,18 @@ cd frontend
 npm install
 ```
 
+开发配置读取项目根目录 `.env`，兼容旧的 `rag_modules/config/.env`；系统环境变量优先于两者，根目录文件优先于旧文件。文件上传需要配置 `OBJECT_STORAGE__ACCESS_KEY` 和 `OBJECT_STORAGE__SECRET_KEY`，仅 MinIO 健康检查成功并不能确认上传权限。修改 `.env` 后需重启后端以重新加载配置。
+
+升级已有 PostgreSQL 业务库的索引表结构后再启动新版 API：
+
+```bash
+alembic upgrade head
+```
+
+该迁移要求已有 `datasets`、`documents`、`document_segments` 表及 `vector` 扩展，不是空数据库初始化脚本。知识库状态和统计查询依赖迁移新增的索引版本、任务表。
+
+本次控制台修复的原因、改动清单、状态规则及验证结果见 [2026-09-05 复盘记录](docs/superpowers/retrospectives/2026-09-05-console-review-fixes.md)。
+
 开发模式需要分别启动后端和前端：
 
 ```bash

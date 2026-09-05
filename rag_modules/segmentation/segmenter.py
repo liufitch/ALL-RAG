@@ -1,4 +1,4 @@
-"""Deterministic segmentation over parser output, shared by preview and indexing work."""
+"""对解析结果执行确定性分段，供预览和索引流程共用。"""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ class _DelimiterFidelity:
 
 
 class Segmenter:
-    """Create deterministic flat or parent-child segments from a ``ParsedDocument``."""
+    """根据 ``ParsedDocument`` 创建结果确定的普通分段或父子分段。"""
 
     max_segments = 10_000
     max_source_blocks = 100_000
@@ -203,7 +203,7 @@ class Segmenter:
         parent_serial = 1
         child_serial = 1
         for source in parent_sources:
-            # Paragraph and table parents may themselves exceed the hard parent maximum.
+            # 段落和表格形成的父分段自身也可能超过父分段长度上限。
             parent_parts = (
                 (source,)
                 if parent_sources_are_split
@@ -284,7 +284,7 @@ def _validate_limit(maximum: int, overlap: int, label: str) -> None:
 
 
 def _general_sources(blocks: tuple[ParsedBlock, ...]) -> tuple[_SourceText, ...]:
-    """Keep code/table records atomic while allowing prose source ranges to merge."""
+    """保持代码块和表格记录完整，同时允许合并普通文本的来源范围。"""
     sources: list[_SourceText] = []
     prose: list[ParsedBlock] = []
     for block in blocks:
@@ -307,7 +307,7 @@ def _fallback_parent_sources(
     budget: _WorkBudget,
     fidelity: _DelimiterFidelity,
 ) -> Iterator[_SourceText]:
-    """Stream bounded fallback parents while keeping fitting atomic blocks intact."""
+    """以流式方式生成长度受限的兜底父分段，同时保持长度合规的原子块完整。"""
     protected = tuple(_is_fitting_atomic(block, maximum) for block in blocks)
     prefixes, suffixes, omitted_count = _allocate_delimiters(
         blocks, protected, maximum
@@ -337,7 +337,7 @@ def _allocate_delimiters(
     protected: tuple[bool, ...],
     maximum: int,
 ) -> tuple[list[int], list[int], int]:
-    """Choose all boundary attachments with three bounded states per source block."""
+    """对每个源块使用三种有限状态，选择所有边界分隔符的附着方式。"""
     decisions: list[list[int | None]] = [[None, None, None] for _ in blocks]
     next_costs: list[tuple[int, int, int] | None] = [None, None, None]
 
@@ -415,7 +415,7 @@ def _allocate_delimiters(
             omitted_count += 1
             prefix_length = 0
             continue
-        if decision is None:  # pragma: no cover - the omit-all path is always feasible
+        if decision is None:  # pragma: no cover - 省略全部分隔符的路径始终可行
             raise RuntimeError("delimiter allocation did not find a bounded path")
         suffixes[index] = decision
         prefix_length = 2 - decision
@@ -508,7 +508,7 @@ def _split_fallback_block(
     separator: str | None,
     budget: _WorkBudget,
 ) -> Iterator[_SourceText]:
-    """Split only the text needed to keep attached delimiters on nonblank parents."""
+    """仅拆分必要的文本，使附着的分隔符保留在非空白父分段中。"""
     delimiter = "\n\n"
     prefix = delimiter[:prefix_length]
     suffix = delimiter[2 - suffix_length :] if suffix_length else ""
@@ -611,7 +611,7 @@ def _split_ranges(
     separator: str | None,
     budget: _WorkBudget,
 ) -> Iterator[tuple[int, int]]:
-    """Split by Unicode character count, retaining the selected boundary in the chunk."""
+    """按 Unicode 字符数拆分，并将选中的边界分隔符保留在分段内。"""
     if not text:
         return
     budget.ensure_projected_records(len(text), maximum, overlap)
@@ -648,7 +648,7 @@ def _child_ranges(
     *,
     atomic_rows: bool,
 ) -> Iterator[tuple[int, int]]:
-    """Keep every spreadsheet row self-describing unless it exceeds the hard max."""
+    """保持每行电子表格数据具有完整的字段说明，除非该行超过长度上限。"""
     if not atomic_rows:
         yield from _split_ranges(source.text, maximum, overlap, separator, budget)
         return

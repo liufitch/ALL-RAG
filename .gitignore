@@ -1,4 +1,4 @@
-# Local secrets
+# 本地敏感配置
 .env
 .env.*
 !.env.example
@@ -6,7 +6,7 @@
 **/.env.*
 !**/.env.example
 
-# Python
+# Python 缓存和构建产物
 .venv/
 __pycache__/
 *.py[cod]
@@ -17,19 +17,21 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Frontend
+# 前端依赖和构建产物
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
 
-# Runtime data
+# 运行时数据
 data/
 volumes/
 
-# IDE and OS
+# 编辑器和操作系统文件
 .idea/
 .DS_Store
 
-# Agent execution workspaces and worktrees
+# 智能体执行目录和 Git 工作树
 .superpowers/
 .worktrees/
 worktrees/

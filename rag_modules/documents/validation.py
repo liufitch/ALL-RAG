@@ -46,11 +46,12 @@ FIXED_CONTENT_TYPES: Final = {
     ),
 }
 
-
+#文件校验
 async def prepare_upload(file: UploadFile, limits: UploadSettings) -> PreparedUpload:
-    """Validate an upload while hashing it in bounded-size chunks."""
+    """校验上传文件，并按大小受限的数据块计算哈希。"""
     filename = file.filename or ""
     extension = Path(filename).suffix.lower()
+    # 校验文件后缀 校验 取交集 剔除用户配置里系统不支持的后缀
     allowed_extensions = {
         item.strip().lower() for item in limits.allowed_extensions
     }.intersection(SUPPORTED_UPLOAD_EXTENSIONS)
@@ -60,39 +61,44 @@ async def prepare_upload(file: UploadFile, limits: UploadSettings) -> PreparedUp
         )
 
     content_type = file.content_type or "application/octet-stream"
+    #辅助函数，做 ** 后缀与MIME类型一致性校验 **，防伪装（比如后缀`.png`但是MIME传`text / plain`）
     _validate_content_type(extension, content_type)
 
     digest = hashlib.sha256()
     size = 0
-    sample = bytearray()
+    sample = bytearray() #用来采集文件开头一小段样本字节。 用于魔数嗅探，防止恶意篡改文件后缀欺骗业务，不会加载整个文件
     maximum_size = limits.max_file_size_mb * 1024 * 1024
 
     try:
         while chunk := await file.read(CHUNK_SIZE):
+            #累计已经读取的字节总大小。
             size += len(chunk)
             if size > maximum_size:
                 raise UploadValidationError(
                     "FILE_SIZE_LIMIT_EXCEEDED",
                     "The file exceeds the configured upload size limit.",
                 )
+           #增量更新哈希；不用攒完整文件，分块计算文件摘要
             digest.update(chunk)
             if len(sample) < TEXT_SAMPLE_SIZE:
                 sample.extend(chunk[: TEXT_SAMPLE_SIZE - len(sample)])
-
+        #** 魔数校验 **，拿sample头部字节，校验真实文件格式；防止改后缀伪装（比如把`.exe`改名为`.png`上传）
         _validate_signature(extension, bytes(sample))
         if extension in TEXT_EXTENSIONS:
             _validate_text_sample(bytes(sample))
-        if extension in {".docx", ".xlsx"}:
+        if extension in {".docx", ".xlsx"}: #docx/xlsx 本质是 zip 包：调用`_validate_zip_container`校验 zip 容器，防护 zip 炸弹、恶意压缩包
             _validate_zip_container(file, limits)
     finally:
+        #把文件流指针拨回文件开头， 后续上传文件put_stream，如果不拨回文件开头，流从末尾读，读到 0 字节，上传空文件
         await file.seek(0)
 
+    # 返回文件信息-大小和hash值等
     return PreparedUpload(
         filename=filename,
         extension=extension,
         content_type=content_type,
         size=size,
-        sha256=digest.hexdigest(),
+        sha256=digest.hexdigest(),#拿到文件 hash
         stream=file.file,
     )
 

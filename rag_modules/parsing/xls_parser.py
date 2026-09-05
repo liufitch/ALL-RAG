@@ -16,7 +16,7 @@ from rag_modules.parsing.warnings import BoundedWarningCollector, parser_warning
 
 
 class XlsParser:
-    """Read legacy XLS workbook sheets while releasing xlrd resources promptly."""
+    """读取旧版 XLS 工作簿的工作表，并及时释放 xlrd 资源。"""
 
     source_type = "xls"
 

@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 @dataclass(frozen=True)
 class ParserWarning:
-    """A non-fatal issue encountered while converting a source document."""
+    """转换源文档时遇到的非致命问题。"""
 
     code: str
     message: str
@@ -15,7 +15,7 @@ class ParserWarning:
 
 @dataclass(frozen=True)
 class ParsedBlock:
-    """A source-level unit produced by a parser."""
+    """解析器生成的源文档级内容单元。"""
 
     block_type: Literal["paragraph", "heading", "list_item", "code", "table_row"]
     text: str
@@ -24,7 +24,7 @@ class ParsedBlock:
 
 @dataclass(frozen=True)
 class ParsedDocument:
-    """The format-independent parser output consumed by later indexing stages."""
+    """与文件格式无关的解析结果，供后续索引阶段使用。"""
 
     document_id: str
     filename: str
@@ -35,7 +35,7 @@ class ParsedDocument:
 
 
 class DocumentParseError(ValueError):
-    """A client-safe, stable error raised at the parser boundary."""
+    """在解析器边界抛出的稳定异常，可安全返回客户端。"""
 
     def __init__(self, code: str, message: str, retryable: bool = False):
         self.code = code

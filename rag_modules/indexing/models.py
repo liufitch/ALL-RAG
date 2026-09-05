@@ -1,4 +1,4 @@
-"""Immutable commands and narrow ports for single-document indexing."""
+"""单文档索引所用的不可变命令与职责受限的依赖接口。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ IndexingWarning: TypeAlias = tuple[Literal["parse", "split"], str]
 
 @dataclass(frozen=True, slots=True)
 class SegmentStagingCommand:
-    """The immutable identity/configuration snapshot for one document staging run."""
+    """单次文档暂存执行所用的不可变标识及配置快照。"""
 
     dataset_id: str
     dataset_index_id: str
@@ -38,7 +38,7 @@ class SegmentStagingCommand:
 
 @dataclass(frozen=True, slots=True)
 class VectorTarget:
-    """A validated vector collection and its immutable embedding dimension."""
+    """已校验的向量集合及其不可变的嵌入维度。"""
 
     collection_name: str
     dimension: int
@@ -46,7 +46,7 @@ class VectorTarget:
 
 @dataclass(frozen=True, slots=True)
 class IndexDocumentCommand:
-    """Complete immutable snapshot needed to index one source document."""
+    """索引单个源文档所需的完整不可变快照。"""
 
     staging: SegmentStagingCommand
     object_key: str
@@ -63,7 +63,7 @@ class IndexDocumentCommand:
 
 @dataclass(frozen=True, slots=True)
 class IndexDocumentResult:
-    """Content-free summary whose vector count is total ready indexable rows."""
+    """不包含文档内容的摘要，向量数量表示所有已就绪且可建立索引的记录数。"""
 
     total_segments: int
     total_indexable_segments: int

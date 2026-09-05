@@ -10,7 +10,7 @@ from rag_modules.parsing.models import DocumentParseError, ParsedBlock
 
 
 def normalize_table_headers(values: Sequence[Any]) -> list[str]:
-    """Return stable, self-describing names for a source header row."""
+    """为源表头行生成稳定且含义明确的列名。"""
     headers: list[str] = []
     used: set[str] = set()
     for index, value in enumerate(values, start=1):
@@ -27,7 +27,7 @@ def normalize_table_headers(values: Sequence[Any]) -> list[str]:
 
 
 def cell_to_text(value: Any) -> str:
-    """Normalize scalar spreadsheet cells without losing formula text."""
+    """规范化电子表格的标量单元格，同时保留公式文本。"""
     if isinstance(value, datetime):
         if value.time() == time.min:
             return value.date().isoformat()
@@ -42,7 +42,7 @@ def cell_to_text(value: Any) -> str:
 
 
 def row_has_values(values: Sequence[Any]) -> bool:
-    """Identify the first header row without treating whitespace as a header."""
+    """识别首个表头行，避免将纯空白内容视为表头。"""
     return any(value is not None and cell_to_text(value).strip() for value in values)
 
 
@@ -55,7 +55,7 @@ def enforce_column_limit(column_count: int) -> None:
 
 
 def validate_table_values(values: Sequence[Any]) -> None:
-    """Apply table limits while a reader still has only the current row in memory."""
+    """读取器内存中仅保留当前行时，立即应用表格限制。"""
     enforce_column_limit(len(values))
     for value in values:
         if value is not None and len(cell_to_text(value)) > settings.parser.max_cell_characters:
@@ -67,7 +67,7 @@ def validate_table_values(values: Sequence[Any]) -> None:
 
 @dataclass
 class TableRowBudget:
-    """Document-wide count of meaningful source rows consumed by tables."""
+    """统计整份文档中表格所消耗的有效源数据行数。"""
 
     rows_used: int = 0
 
@@ -80,11 +80,10 @@ class TableRowBudget:
 
 
 def format_table_row(headers: Sequence[str], values: Sequence[Any]) -> str:
-    """Render a table row as self-describing header/value pairs.
+    """将表格行渲染为带有字段说明的表头与值配对。
 
-    This deliberately small boundary is shared by document parsers that have
-    a first-row header. Missing or blank headers receive a stable positional
-    label so source values remain understandable after extraction.
+    这个职责单一的转换函数由首行为表头的文档解析器共用。
+    缺失或空白表头使用稳定的位置标签，使提取后的源数据仍然含义明确。
     """
     pairs: list[str] = []
     for index, value in enumerate(values, start=1):
@@ -99,7 +98,7 @@ def format_table_row(headers: Sequence[str], values: Sequence[Any]) -> str:
 def table_blocks(
     rows: Iterable[tuple[int, Sequence[Any]]], sheet: str, budget: TableRowBudget
 ) -> list[ParsedBlock]:
-    """Normalize one table after bounded collection under a document row budget."""
+    """在文档总行数预算内完成有限收集后，规范化单个表格。"""
     meaningful_rows: list[tuple[int, list[Any]]] = []
     for source_row, source_values in rows:
         values = _trim_trailing_nulls(source_values)
@@ -135,7 +134,7 @@ def table_blocks(
 
 
 def _trim_trailing_nulls(values: Sequence[Any]) -> list[Any]:
-    """Keep null gaps for alignment but discard unused trailing source columns."""
+    """保留用于对齐的空值间隔，去掉末尾未使用的源列。"""
     last_value = len(values)
     while last_value and values[last_value - 1] is None:
         last_value -= 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -9,6 +10,8 @@ import pytest
 from fastapi import HTTPException, UploadFile
 from httpx import ASGITransport, AsyncClient
 from minio.error import ServerError
+from minio.error import S3Error
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.datastructures import Headers
 
@@ -177,8 +180,8 @@ def document_service_stub() -> DocumentServiceStub:
 
 @pytest.fixture
 def document_client(client, document_service_stub):
-    # Keep the initial RED run independent of the not-yet-created dependency;
-    # once the route exists, inject a deterministic service for API tests.
+    # 首次验证测试失败时，不依赖尚未创建的依赖项；
+    # 路由存在后，为 API 测试注入结果确定的服务。
     from rag_modules.api import file_api
 
     dependency = getattr(file_api, "get_document_service", None)
@@ -264,6 +267,41 @@ def test_document_upload_maps_storage_unavailability_to_503(document_client):
     )
 
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize("path", ["/documents", "/documents/upload"])
+def test_upload_current_and_compatible_paths(document_client, path):
+    response = document_client.post(
+        f"/api/knowledge_base/dataset-1{path}",
+        files=[("files", ("guide.txt", b"hello", "text/plain"))],
+    )
+    assert response.status_code == 201
+    assert response.json()["documents"][0]["name"] == "guide.txt"
+
+
+@pytest.mark.parametrize("failure", ["storage", "database"])
+def test_upload_logs_safe_infrastructure_cause(document_client, caplog, failure):
+    class FailingService(DocumentServiceStub):
+        async def upload_one(self, dataset_id, file, actor_id):
+            if failure == "storage":
+                cause = S3Error(response=None, code="AccessDenied", message="sensitive-source-name", resource="/private/key", request_id="req", host_id="host")
+                raise ObjectStorageUnavailable("sensitive-config") from cause
+            raise OperationalError("private SQL", {"password": "sensitive-config"}, RuntimeError("private db details"))
+
+    app.dependency_overrides[get_document_service] = lambda: FailingService()
+    with caplog.at_level(logging.WARNING, logger="rag_modules.api.file_api"):
+        response = document_client.post(
+            "/api/knowledge_base/dataset-1/documents/upload",
+            files=[("files", ("private-filename.txt", b"private payload", "text/plain"))],
+        )
+    assert response.status_code == 503
+    assert "document_upload_failed" in caplog.text
+    assert f"component={failure}" in caplog.text
+    if failure == "storage":
+        assert "AccessDenied" in caplog.text
+    for private in ("sensitive-config", "sensitive-source-name", "private-filename", "private SQL", "private db details", "private payload"):
+        assert private not in caplog.text
+        assert private not in response.text
 
 
 @pytest.mark.asyncio

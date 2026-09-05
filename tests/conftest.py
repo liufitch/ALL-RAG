@@ -28,13 +28,13 @@ def client() -> Iterator[TestClient]:
 
 @pytest.fixture
 def minio_test_prefix() -> str:
-    """Return an object prefix owned solely by the current integration test."""
+    """返回仅属于当前集成测试的对象前缀。"""
     return f"integration/{uuid4().hex}"
 
 
 @pytest.fixture
 def minio_store(minio_test_prefix: str) -> Iterator[MinioObjectStorage]:
-    """Provide a real MinIO adapter when integration tests are explicitly enabled."""
+    """仅在显式启用集成测试时提供真实 MinIO 适配器。"""
     run_integration = os.getenv("RUN_INTEGRATION")
     if run_integration is None:
         pytest.skip("set RUN_INTEGRATION=1 to run MinIO integration tests")
@@ -68,14 +68,14 @@ def minio_store(minio_test_prefix: str) -> Iterator[MinioObjectStorage]:
             if exc.code != "NoSuchBucket":
                 raise
         except (InvalidResponseError, HTTPError, OSError, TimeoutError, ConnectionError):
-            # Do not obscure the test's primary, explicit storage failure when
-            # a failed connection prevents cleanup from even listing the prefix.
+            # 连接失败可能导致清理时连对象前缀都无法列出，
+            # 此时不要用清理异常掩盖测试中原本明确的存储异常。
             pass
 
 
 @pytest.fixture
 def real_milvus_store() -> MilvusVectorStore:
-    """Provide a localhost Milvus adapter only when integration is explicitly enabled."""
+    """仅在显式启用集成测试时提供本机 Milvus 适配器。"""
     run_integration = os.getenv("RUN_INTEGRATION")
     if run_integration is None:
         pytest.skip("set RUN_INTEGRATION=1 to run Milvus integration tests")

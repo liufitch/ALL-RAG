@@ -294,7 +294,7 @@ async def test_preview_enforces_unique_document_limit_before_query():
 
 @pytest.mark.asyncio
 async def test_preview_rejects_oversized_repeated_document_id_list_before_deduplication():
-    """Repeated IDs must not bypass request-work bounds or trigger quadratic deduplication."""
+    """重复标识不得绕过请求工作量限制，也不得触发平方级复杂度的去重。"""
     service = _service([], {})
 
     with pytest.raises(PreviewValidationError) as error:
@@ -418,7 +418,7 @@ async def test_preview_serializes_parser_and_segmentation_warnings_and_metadata(
 
 @pytest.mark.asyncio
 async def test_preview_caps_warnings_in_document_order_and_folds_parser_summaries():
-    """Chunk truncation must stay independent from bounded warning serialization."""
+    """分段截断必须与警告序列化的数量限制相互独立。"""
     class WarningRegistry:
         def parse(self, extension, stream, context):
             prefix = context.document_id.upper()

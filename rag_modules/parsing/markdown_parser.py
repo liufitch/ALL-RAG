@@ -15,7 +15,7 @@ from rag_modules.parsing.text_parser import decode_text, normalize_text
 
 
 class _BoundedSafeLoader(yaml.SafeLoader):
-    """Safe YAML loader that rejects duplicate keys instead of silently collapsing shape."""
+    """拒绝重复键的安全 YAML 加载器，避免在无提示的情况下合并并改变数据结构。"""
 
     def construct_mapping(self, node, deep=False):
         mapping: dict[Any, Any] = {}
@@ -76,7 +76,7 @@ _MAX_FRONT_MATTER_NODES = 10_000
 
 
 def _preflight_front_matter(raw: str) -> None:
-    """Reject unsafe YAML syntax and shape before constructing Python values."""
+    """在构造 Python 值之前，拒绝不安全的 YAML 语法和结构。"""
     depth = 0
     event_count = 0
     for event in yaml.parse(raw, Loader=yaml.SafeLoader):
@@ -135,7 +135,7 @@ def _extract_front_matter(text: str) -> tuple[str, dict[str, Any] | None, int]:
 
 
 def _normalize_front_matter(value: Any) -> Any:
-    """Return bounded, acyclic JSON-compatible metadata or reject the YAML value."""
+    """返回大小受限、无循环且兼容 JSON 的元数据，否则拒绝该 YAML 值。"""
     nodes = 0
     active_ids: set[int] = set()
 

@@ -1,8 +1,8 @@
-"""Add persistent dataset indexing schema.
+"""添加知识库索引的持久化数据结构。
 
-Revision ID: 20260831_01
-Revises:
-Create Date: 2026-08-31
+版本标识：20260831_01
+前置版本：无
+创建日期：2026-08-31
 """
 
 from collections.abc import Sequence
@@ -45,7 +45,7 @@ def _check_existing_schema() -> None:
 def upgrade() -> None:
     _check_existing_schema()
 
-    # The target index foreign key is added later to break the job/index cycle.
+    # 稍后再添加目标索引外键，以打破任务与索引之间的循环依赖。
     op.create_table(
         "indexing_jobs",
         sa.Column("id", sa.String(length=36), nullable=False),

@@ -19,7 +19,7 @@ from rag_modules.parsing.warnings import BoundedWarningCollector, parser_warning
 
 
 class PdfParser:
-    """Extract text-layer paragraphs from a PDF without OCR."""
+    """从 PDF 文本层提取段落，不执行 OCR。"""
 
     source_type = "pdf"
 

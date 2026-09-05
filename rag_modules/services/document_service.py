@@ -12,7 +12,7 @@ from rag_modules.object_storage.base import ObjectStorage
 
 
 class DatasetNotFoundError(LookupError):
-    """Raised when an upload targets a missing or soft-deleted dataset."""
+    """上传目标知识库不存在或已被软删除时抛出。"""
 
     code = "DATASET_NOT_FOUND"
 
@@ -43,10 +43,12 @@ class DocumentService:
         self, dataset_id: str, file: UploadFile, actor_id: str
     ) -> DocumentUploadItem:
         dataset = await self.dataset_repository.get_active(dataset_id)
+        # 知识库是否存在
         if dataset is None:
             raise DatasetNotFoundError(dataset_id)
-
+        #文件校验
         prepared = await prepare_upload(file, self.upload_settings)
+        #校验知识库是否存在该文件
         duplicate = await self.repository.find_duplicate(
             dataset_id, prepared.sha256, prepared.filename
         )
@@ -59,6 +61,7 @@ class DocumentService:
         ensure_bucket = getattr(self.storage, "ensure_bucket", None)
         if ensure_bucket is not None:
             await ensure_bucket()
+        #存储到minio
         stored = await self.storage.put_stream(
             object_key,
             prepared.stream,
@@ -91,13 +94,13 @@ class DocumentService:
         try:
             created = await self.repository.create(record)
         except BaseException:
-            # The object is already durable at this point.  Remove precisely
-            # that key before propagating any database/commit failure.
+            # 此时对象已持久化；在继续抛出数据库或提交异常前，
+            # 仅删除本次上传对应的对象键。
             try:
                 await self.storage.remove_object(object_key)
             except BaseException:
-                # Preserve the original database failure; cleanup can be
-                # retried by a maintenance process if storage is unavailable.
+                # 保留原始数据库异常；如果存储不可用，
+                # 可由维护任务重试清理。
                 pass
             raise
         return self._item(created)
@@ -111,7 +114,7 @@ class DocumentService:
         status: str | None = None,
         q: str | None = None,
     ) -> tuple[list[DocumentUploadItem], int]:
-        """Return active documents for an active dataset with pagination."""
+        """分页返回有效知识库中的有效文档。"""
         dataset = await self.dataset_repository.get_active(dataset_id)
         if dataset is None:
             raise DatasetNotFoundError(dataset_id)

@@ -30,7 +30,7 @@ def _get_vector_store(provider: str) -> VectorStoreProvider:
     raise VectorProviderNotImplemented()
 
 
-# Preserve the cache-reset hook exposed by the previously decorated facade.
+# 保留原先带缓存装饰器的入口所提供的缓存重置方法。
 get_vector_store.cache_clear = _get_vector_store.cache_clear  # type: ignore[attr-defined]
 
 

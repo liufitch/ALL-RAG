@@ -8,7 +8,7 @@ from rag_modules.upload_formats import SUPPORTED_UPLOAD_EXTENSIONS
 
 
 class ParserRegistry:
-    """Dispatch source streams to parsers using the approved extension ceiling."""
+    """根据允许的扩展名范围，将源数据流分派给对应解析器。"""
 
     def __init__(self, parsers: Mapping[str, Parser]):
         self._parsers = {
@@ -18,7 +18,7 @@ class ParserRegistry:
 
     @property
     def registered_extensions(self) -> set[str]:
-        """Return a copy of the configured dispatch surface for diagnostics."""
+        """返回已配置解析器分派表的副本，供诊断使用。"""
         return set(self._parsers)
 
     @staticmethod

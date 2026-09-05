@@ -7,7 +7,7 @@ from rag_modules.db.models import DocumentRecord
 
 
 class DocumentRepository:
-    """Persistence operations for dataset-scoped documents."""
+    """限定在单个知识库范围内的文档持久化操作。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -15,7 +15,7 @@ class DocumentRepository:
     async def get_active_by_ids(
         self, dataset_id: str, document_ids: list[str]
     ) -> list[DocumentRecord]:
-        """Load active requested documents belonging to exactly one dataset."""
+        """加载指定的有效文档，并确保它们全部属于同一个知识库。"""
         if not document_ids:
             return []
         stmt = select(DocumentRecord).where(
@@ -27,7 +27,7 @@ class DocumentRepository:
         return list(result.scalars())
 
     async def next_position(self, dataset_id: str) -> int:
-        """Return the next one-based position among active documents."""
+        """返回有效文档中的下一个位置编号，编号从 1 开始。"""
         stmt = select(func.max(DocumentRecord.position)).where(
             DocumentRecord.dataset_id == dataset_id,
             DocumentRecord.deleted_at.is_(None),
@@ -39,11 +39,10 @@ class DocumentRepository:
     async def find_duplicate(
         self, dataset_id: str, sha256: str, filename: str
     ) -> DocumentRecord | None:
-        """Find an active document with the exact filename and content hash.
+        """查找文件名和内容哈希均完全匹配的有效文档。
 
-        Hashes live in a JSON column whose operators differ between SQLite and
-        PostgreSQL.  Filtering by the indexed scalar fields first and checking
-        the small candidate set in Python keeps this method portable.
+        哈希保存在 JSON 列中，其查询运算符在 SQLite 和 PostgreSQL 中不同。
+        先按已建立索引的普通字段筛选，再用 Python 检查少量候选记录，以保持数据库兼容性。
         """
         stmt = (
             select(DocumentRecord)
@@ -79,11 +78,10 @@ class DocumentRepository:
         status: str | None = None,
         q: str | None = None,
     ) -> tuple[list[DocumentRecord], int]:
-        """List active documents belonging to one dataset.
+        """列出属于指定知识库的有效文档。
 
-        Dataset filtering is part of both the result and count queries so a
-        caller cannot accidentally expose another dataset's documents when a
-        name or status filter is applied.
+        结果查询和计数查询均包含知识库筛选，避免调用方在按名称或状态筛选时，
+        意外暴露其他知识库的文档。
         """
         filters = [
             DocumentRecord.dataset_id == dataset_id,

@@ -33,7 +33,7 @@ from rag_modules.upload_formats import SUPPORTED_UPLOAD_EXTENSIONS
 
 
 class PreviewValidationError(ValueError):
-    """Stable, client-safe preview failure exposed by the API boundary."""
+    """API 边界对外暴露的稳定预览异常，可安全返回客户端。"""
 
     def __init__(self, code: str, message: str):
         self.code = code
@@ -42,7 +42,7 @@ class PreviewValidationError(ValueError):
 
 
 class PreviewService:
-    """Read, parse and segment stored source documents without persistence."""
+    """读取、解析并分段已存储的源文档，不执行持久化。"""
 
     def __init__(
         self,

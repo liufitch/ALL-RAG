@@ -1,4 +1,4 @@
-"""Object storage abstractions and implementations."""
+"""对象存储的抽象接口与实现。"""
 
 from .base import ObjectStorage, ObjectStorageUnavailable, StoredObject
 from .factory import get_object_storage

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
 
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env" if APP_ENV == "dev" else None,
+        env_file=(BASE_DIR / ".env", PROJECT_DIR / ".env") if APP_ENV == "dev" else None,
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="ignore",

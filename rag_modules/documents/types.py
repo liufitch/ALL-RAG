@@ -15,7 +15,7 @@ class PreparedUpload:
 
 
 class UploadValidationError(ValueError):
-    """A rejected upload with a stable, client-safe reason code."""
+    """上传被拒绝时的异常，包含稳定且可安全返回客户端的原因码。"""
 
     def __init__(self, code: str, message: str):
         self.code = code

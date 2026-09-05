@@ -9,7 +9,7 @@ from rag_modules.parsing.models import DocumentParseError, ParsedBlock, ParsedDo
 
 
 def decode_text(data: bytes) -> tuple[str, str]:
-    """Decode only the documented, deterministic text encodings."""
+    """仅使用文档约定的确定性文本编码进行解码。"""
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -18,8 +18,8 @@ def decode_text(data: bytes) -> tuple[str, str]:
         try:
             _validate_text_quality(text)
         except DocumentParseError:
-            # Valid UTF-8 bytes can also be a UTF-16 byte stream. Quality
-            # failure is evidence against this decode, not a terminal result.
+            # 合法的 UTF-8 字节也可能是 UTF-16 字节流。解码质量不合格时，
+            # 只能说明当前解码结果不可信，仍需尝试后续编码。
             pass
         else:
             return text, "utf-8-sig"
@@ -32,13 +32,11 @@ def decode_text(data: bytes) -> tuple[str, str]:
 
 
 def _decode_structural_utf16(data: bytes) -> tuple[str, str] | None:
-    """Accept UTF-16 only with detector and byte-lane evidence.
+    """仅在编码检测结果和字节位置证据都支持时接受 UTF-16。
 
-    The detector must make UTF-16 its first candidate, preventing arbitrary
-    legacy byte streams from being reinterpreted as UTF-16. Raw TAB/LF/CR bytes
-    must occupy the proper UTF-16 byte lane; this keeps an unpaired GB18030
-    newline from masquerading as a Unicode code point. Exact round-trip and
-    general text-quality checks remain mandatory.
+    检测器必须将 UTF-16 列为首选，避免把任意旧编码字节流误解为 UTF-16。
+    原始 TAB/LF/CR 字节必须位于正确的 UTF-16 字节位置，防止未配对的 GB18030
+    换行字节被误当成 Unicode 码点。仍必须通过精确的编码往返校验和通用文本质量检查。
     """
     matches = list(from_bytes(data))
     if not matches:
@@ -108,7 +106,7 @@ def _raise_uncertain_encoding() -> None:
 
 
 def normalize_text(text: str) -> str:
-    """Make source line positions stable across operating systems."""
+    """使源文本的行号在不同操作系统上保持一致。"""
     return text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
 
 

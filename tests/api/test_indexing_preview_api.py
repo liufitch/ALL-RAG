@@ -57,7 +57,7 @@ def _general_payload(**segmentation):
     ],
 )
 def test_preview_request_dto_has_finite_string_list_and_numeric_bounds(change):
-    """The HTTP model must reject inputs whose validation work or values are unbounded."""
+    """HTTP 模型必须拒绝校验工作量或取值不受限制的输入。"""
     payload = _general_payload()
     payload.update(change)
 
@@ -393,7 +393,7 @@ def test_slow_storage_is_a_bounded_api_504(client):
 def test_production_preview_composition_is_read_only_and_never_constructs_vector_clients(
     client, monkeypatch
 ):
-    """The real route factory must stop at parse/segment and issue SELECT-only SQL."""
+    """真实路由工厂必须止于解析和分段，并且只执行 SELECT 查询。"""
     import rag_modules.vector_stores.factory as vector_factory
     import rag_modules.vector_stores.milvus as milvus_module
 

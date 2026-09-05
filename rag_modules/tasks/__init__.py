@@ -1,1 +1,1 @@
-"""Background task infrastructure."""
+"""后台任务基础设施。"""

@@ -90,8 +90,8 @@ class DocumentSegmentRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # PostgreSQL retains its GIN-indexable ARRAY; SQLite integration tests use
-    # JSON because its dialect cannot compile PostgreSQL ARRAY DDL.
+    # PostgreSQL 保留支持 GIN 索引的 ARRAY 类型；SQLite 集成测试使用 JSON，
+    # 因为 SQLite 方言无法编译 PostgreSQL ARRAY 类型的建表语句。
     keywords: Mapped[list[str] | None] = mapped_column(
         ARRAY(Text).with_variant(JSON, "sqlite"), nullable=True
     )

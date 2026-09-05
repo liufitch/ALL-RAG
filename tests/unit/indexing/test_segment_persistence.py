@@ -140,7 +140,7 @@ class _RecordedScalars:
 
 
 class _RecordingPostgresqlSession:
-    """Compile real PostgreSQL statements while keeping the scale test local."""
+    """编译真实的 PostgreSQL 语句，同时让规模测试保持本地运行。"""
 
     _INSERT_COLUMNS = (
         "id",
@@ -770,7 +770,7 @@ async def test_stage_sanitizes_sqlalchemy_failures_and_classifies_retryability(
         )
     except BaseException as error:
         caught = error
-    else:  # pragma: no cover - assertion branch
+    else:  # pragma: no cover - 断言分支
         pytest.fail("expected storage failure")
 
     _assert_safe_storage_failure(
@@ -831,7 +831,7 @@ async def test_every_repository_mutation_sanitizes_execute_failures(operation):
         await awaitable
     except BaseException as error:
         caught = error
-    else:  # pragma: no cover - assertion branch
+    else:  # pragma: no cover - 断言分支
         pytest.fail("expected storage failure")
 
     _assert_safe_storage_failure(
@@ -880,7 +880,7 @@ async def test_repository_sanitizes_flush_failures_after_in_memory_validation():
         )
     except BaseException as error:
         caught = error
-    else:  # pragma: no cover - assertion branch
+    else:  # pragma: no cover - 断言分支
         pytest.fail("expected storage failure")
 
     _assert_safe_storage_failure(

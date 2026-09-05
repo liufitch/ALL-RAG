@@ -264,7 +264,7 @@ def test_existing_collection_accepts_documented_pymilvus_shapes_and_revalidates(
 
 
 def test_existing_collection_accepts_server_metadata_omitting_non_nullable_defaults():
-    """PyMilvus 3.0.1 omits nullable=False returned by Milvus 2.5.14."""
+    """PyMilvus 3.0.1 会省略 Milvus 2.5.14 返回的 nullable=False。"""
     description = collection_description()
     for field in description["fields"]:
         if field["name"] != "parent_id":

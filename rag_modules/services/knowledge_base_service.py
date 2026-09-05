@@ -28,18 +28,10 @@ class KnowledgeBaseService:
             visibility=visibility,
             q=q.strip() if q and q.strip() else None,
         )
-        return [self._to_dto(record, document_count, chunk_count) for record, document_count, chunk_count in rows], total
+        return [self._to_dto(*row) for row in rows], total
 
     async def knowledge_base_stats(self) -> dict[str, int]:
-        items, total = await self.list_knowledge_bases(page=1, page_size=10_000)
-        return {
-            "total": total,
-            "ready": sum(1 for item in items if item.status == "ready"),
-            "indexing": sum(1 for item in items if item.status == "indexing"),
-            "draft": sum(1 for item in items if item.status == "draft"),
-            "documents": sum(item.document_count for item in items),
-            "chunks": sum(item.chunk_count for item in items),
-        }
+        return await self.repository.stats()
 
     async def create_knowledge_base(self, payload: KnowledgeBaseCreate) -> KnowledgeBase:
         knowledge_base_id = uuid4().hex
@@ -58,16 +50,17 @@ class KnowledgeBaseService:
             partial_user_config={"process_rule": None},
         )
         created = await self.repository.create(record)
-        return self._to_dto(created, 0, 0)
+        return self._to_dto(created, 0, 0, "draft")
 
     async def get_knowledge_base(self, dataset_id: str) -> KnowledgeBase | None:
         detail = await self.repository.get_active_with_counts(dataset_id)
         if detail is None:
             return None
-        record, document_count, chunk_count = detail
-        return self._to_dto(record, document_count, chunk_count)
+        return self._to_dto(*detail)
 
-    def _to_dto(self, record: DatasetRecord, document_count: int, chunk_count: int) -> KnowledgeBase:
+    def _to_dto(
+        self, record: DatasetRecord, document_count: int, chunk_count: int, status: str,
+    ) -> KnowledgeBase:
         visibility = {
             "private": "private",
             "only_me": "private",
@@ -84,19 +77,21 @@ class KnowledgeBaseService:
             "public": "all_members",
             "all_members": "all_members",
         }.get(record.permission, "only_me")
-        has_documents = document_count > 0
         return KnowledgeBase.model_validate(
             {
                 "id": record.id,
                 "name": record.name,
                 "description": record.description or "",
                 "permission": permission,
-                "indexing_status": "completed" if has_documents else "not_started",
+                "indexing_status": {
+                    "draft": "not_started", "indexing": "indexing",
+                    "ready": "completed", "failed": "failed",
+                }[status],
                 "category": record.dataset_type or "通用知识",
                 "owner": record.created_by,
                 "visibility": visibility,
                 "embedding_model": record.embedding_model,
-                "status": "ready" if has_documents else "draft",
+                "status": status,
                 "document_count": document_count,
                 "chunk_count": chunk_count,
                 "tags": [],

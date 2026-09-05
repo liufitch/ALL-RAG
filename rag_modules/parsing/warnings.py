@@ -1,4 +1,4 @@
-"""Bounded warning collection shared by parsers and response orchestration."""
+"""解析器与响应编排共用的有限警告收集机制。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from rag_modules.parsing.models import ParserWarning
 
 
 class WarningLike(Protocol):
-    """The warning fields needed to recognize and fold truncation summaries."""
+    """识别并合并截断摘要所需的警告字段。"""
 
     code: str
     metadata: dict[str, Any]
@@ -19,7 +19,7 @@ _WarningT = TypeVar("_WarningT", bound=WarningLike)
 
 
 class BoundedWarningCollector(Generic[_WarningT]):
-    """Retain a bounded prefix and summarize warnings that do not fit."""
+    """保留数量受限的前部警告，并汇总超出容量的警告。"""
 
     def __init__(
         self,
@@ -69,7 +69,7 @@ class BoundedWarningCollector(Generic[_WarningT]):
 
 
 def parser_warning_summary(omitted_count: int) -> ParserWarning:
-    """Build the safe document-level summary used by parser warning collectors."""
+    """构造可安全返回的文档级摘要，供解析器警告收集器使用。"""
     return ParserWarning(
         "WARNINGS_TRUNCATED",
         "Additional warnings were omitted.",

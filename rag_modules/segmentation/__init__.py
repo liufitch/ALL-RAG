@@ -1,4 +1,4 @@
-"""Parser-output segmentation contracts and implementation."""
+"""解析结果的分段数据契约与实现。"""
 
 from .models import (
     GeneralSegmentationConfig,

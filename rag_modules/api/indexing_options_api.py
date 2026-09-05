@@ -36,7 +36,7 @@ PUBLIC_SUPPORTED_FILES = (
     response_model=IndexingOptionsResponse,
 )
 def get_indexing_options() -> IndexingOptionsResponse:
-    """Return frontend-safe indexing choices from an explicit field whitelist."""
+    """通过显式字段白名单返回可安全提供给前端的索引选项。"""
     return IndexingOptionsResponse(
         indexing_techniques=[
             IndexingTechniqueOption(

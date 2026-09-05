@@ -1,3 +1,3 @@
-"""Dependency-free limits shared by indexing producers and persistence."""
+"""索引生产者与持久化层共用的限制常量，不引入外部依赖。"""
 
 MAX_KEYWORD_LENGTH = 255

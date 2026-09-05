@@ -1,4 +1,4 @@
-"""Contracts for parser-output segmentation; these tests exercise no external services."""
+"""验证解析结果的分段契约；这些测试不访问外部服务。"""
 
 import signal
 from contextlib import contextmanager
@@ -25,7 +25,7 @@ class _SegmentationDeadlineExpired(Exception):
 
 @contextmanager
 def segmentation_deadline(seconds: float = 0.1):
-    """Bound a known non-progress regression without leaving a process behind."""
+    """对已知无法推进的回归问题设置执行上限，且不遗留进程。"""
     previous_handler = signal.getsignal(signal.SIGALRM)
     previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
 
@@ -48,7 +48,7 @@ def rebuild_with_overlap(segments, overlap: int) -> str:
 
 
 def test_general_segmentation_honors_unicode_character_limit_and_overlap():
-    """Ignoring Unicode length or overlap would make preview chunks unsafe to index."""
+    """忽略 Unicode 长度或重叠量会使预览分段无法安全建立索引。"""
     parsed = parsed_document(ParsedBlock("paragraph", "第一句。第二句。第三句。", {"line_start": 1, "line_end": 1}))
 
     result = Segmenter().segment(parsed, GeneralSegmentationConfig(max_chunk_length=8, overlap=2))
@@ -60,7 +60,7 @@ def test_general_segmentation_honors_unicode_character_limit_and_overlap():
 
 
 def test_general_makes_progress_when_a_preferred_boundary_is_not_past_overlap():
-    """Reusing a boundary no farther than overlap must not loop on the same input range."""
+    """重复使用推进距离不超过重叠量的边界时，不得在同一输入范围内循环。"""
     source = "a。abcdefgh"
     with segmentation_deadline():
         result = Segmenter().segment(
@@ -77,7 +77,7 @@ def test_general_makes_progress_when_a_preferred_boundary_is_not_past_overlap():
 
 
 def test_general_rejects_projected_extreme_overlap_before_boundary_scanning(monkeypatch):
-    """Checking only emitted chunks would spend millions of iterations before rejection."""
+    """如果仅检查已生成的分段，拒绝输入前可能耗费数百万次迭代。"""
     boundary_calls = 0
 
     def fail_if_called(*_args, **_kwargs):
@@ -98,7 +98,7 @@ def test_general_rejects_projected_extreme_overlap_before_boundary_scanning(monk
 
 
 def test_parent_child_rejects_projected_extreme_overlap_before_boundary_scanning(monkeypatch):
-    """The child splitter must share the request budget and reject before its first scan."""
+    """子分段拆分器必须共用请求预算，并在首次扫描前拒绝超限输入。"""
     boundary_calls = 0
 
     def fail_if_called(*_args, **_kwargs):
@@ -125,7 +125,7 @@ def test_parent_child_rejects_projected_extreme_overlap_before_boundary_scanning
 
 
 def test_boundary_progress_falls_back_early_but_keeps_later_preferred_delimiter():
-    """A legal but tiny preferred advance must not defeat the proven progress floor."""
+    """合法但过小的首选推进量，不得突破已验证的最小推进量保障。"""
     source = "aaaaa|bbbbcccc|dddd"
 
     result = Segmenter().segment(
@@ -142,7 +142,7 @@ def test_boundary_progress_falls_back_early_but_keeps_later_preferred_delimiter(
 
 
 def test_parent_child_makes_progress_when_a_preferred_child_boundary_is_not_past_overlap():
-    """The parent-child child path shares the splitter and must make the same progress."""
+    """父子分段中的子级处理路径共用拆分器，必须具有相同的推进保障。"""
     source = "a。abcdefgh"
     with segmentation_deadline():
         result = Segmenter().segment(
@@ -159,7 +159,7 @@ def test_parent_child_makes_progress_when_a_preferred_child_boundary_is_not_past
 
 
 def test_general_prefers_configured_then_paragraph_newline_sentence_and_word_boundaries():
-    """Changing the priority must produce less useful boundaries for the same source."""
+    """修改边界优先级后，同一源文本的分段边界质量应下降。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "aa|bb\n\ncc\ndd。ee! ff gg", {"line_start": 1, "line_end": 4})
     )
@@ -174,7 +174,7 @@ def test_general_prefers_configured_then_paragraph_newline_sentence_and_word_bou
 
 @pytest.mark.parametrize("text", ["abcdefghijk", "中文甲乙丙丁戊己庚辛壬癸"])
 def test_general_hard_splits_content_without_any_boundary(text):
-    """Removing the final hard split would emit chunks beyond the configured limit."""
+    """移除最终的强制拆分步骤，会生成超出配置长度上限的分段。"""
     result = Segmenter().segment(
         parsed_document(ParsedBlock("paragraph", text, {"line_start": 1, "line_end": 1})),
         GeneralSegmentationConfig(max_chunk_length=4, overlap=0),
@@ -184,7 +184,7 @@ def test_general_hard_splits_content_without_any_boundary(text):
 
 
 def test_general_keeps_code_and_table_rows_atomic_until_the_hard_limit():
-    """Joining atomic parser blocks into prose would split short code and table facts."""
+    """将原子的解析块并入普通文本，会拆散较短的代码块和表格事实。"""
     parsed = parsed_document(
         ParsedBlock("code", "x = 1", {"heading_path": ["Install"], "line_start": 3, "line_end": 3}),
         ParsedBlock("table_row", "名称：甲；值：乙", {"sheet": "Data", "row": 2, "headers": ["名称", "值"]}),
@@ -200,7 +200,7 @@ def test_general_keeps_code_and_table_rows_atomic_until_the_hard_limit():
 
 
 def test_general_merges_source_ranges_without_losing_heading_metadata():
-    """Dropping a block's source range or heading makes a preview result untraceable."""
+    """丢弃块的来源范围或标题，会使预览结果无法追溯。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "Alpha", {"line_start": 3, "line_end": 3, "heading_path": ["A"]}),
         ParsedBlock("paragraph", "Beta", {"line_start": 5, "line_end": 5, "heading_path": ["B"]}),
@@ -227,7 +227,7 @@ def test_general_merges_source_ranges_without_losing_heading_metadata():
     ],
 )
 def test_segmenter_rejects_invalid_explicit_configurations(config):
-    """Permitting invalid limits could make the overlap loop never advance."""
+    """允许无效限制值，可能导致处理重叠区间的循环无法推进。"""
     with pytest.raises(SegmentationConfigError) as error:
         Segmenter().segment(parsed_document(ParsedBlock("paragraph", "text", {})), config)
 
@@ -235,7 +235,7 @@ def test_segmenter_rejects_invalid_explicit_configurations(config):
 
 
 def test_parent_child_emits_parent_before_children_and_links_them_deterministically():
-    """Changing output order or IDs would orphan children in the indexing worker."""
+    """改变输出顺序或标识，会使索引工作任务中的子分段失去父级关联。"""
     parsed = parsed_document(ParsedBlock("paragraph", "第一段很长。第二句继续。", {"line_start": 1, "line_end": 1}))
     config = ParentChildSegmentationConfig("paragraph", 20, 8, 1)
 
@@ -252,7 +252,7 @@ def test_parent_child_emits_parent_before_children_and_links_them_deterministica
 
 
 def test_parent_modes_never_emit_parent_above_limit_and_warn_on_full_document_fallback():
-    """A full-document parent larger than its limit must degrade predictably, not overflow."""
+    """全文父分段超出长度上限时，必须按确定的方式降级处理，不能溢出。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "one two", {"line_start": 1, "line_end": 1}),
         ParsedBlock("paragraph", "three four", {"line_start": 3, "line_end": 3}),
@@ -269,7 +269,7 @@ def test_parent_modes_never_emit_parent_above_limit_and_warn_on_full_document_fa
 
 
 def test_full_document_fallback_keeps_short_code_atomic():
-    """Splitting a short code block during fallback destroys a parser-level atomic unit."""
+    """在兜底处理时拆分较短的代码块，会破坏解析器级别的原子单元。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "intro", {"line_start": 1, "line_end": 1}),
         ParsedBlock("code", "x = 1", {"line_start": 3, "line_end": 3, "language": "python"}),
@@ -293,7 +293,7 @@ def test_full_document_fallback_keeps_short_code_atomic():
 def test_full_document_fallback_preserves_delimiters_around_short_atomic_blocks(
     atomic_type, atomic_text, atomic_metadata
 ):
-    """Fallback keeps exact source delimiters without changing a fitting atomic block."""
+    """兜底处理应准确保留原始分隔符，同时不修改长度合规的原子块。"""
     blocks = (
         ParsedBlock("paragraph", "aa", {"line_start": 1, "line_end": 1}),
         ParsedBlock(atomic_type, atomic_text, atomic_metadata),
@@ -328,7 +328,7 @@ def test_full_document_fallback_preserves_delimiters_around_short_atomic_blocks(
 
 @pytest.mark.parametrize("maximum", [1, 2])
 def test_full_document_fallback_delimiter_omission_is_bounded_and_aggregated(maximum):
-    """Impossible delimiters must be omitted once without blank records or looping."""
+    """无法保留的分隔符必须只省略一次，不得生成空白记录或陷入循环。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "A", {"line_start": 1}),
         ParsedBlock("code", "B", {"line_start": 3, "language": "text"}),
@@ -376,7 +376,7 @@ def test_full_document_fallback_delimiter_omission_is_bounded_and_aggregated(max
 
 
 def test_full_document_fallback_uses_following_prose_when_preceding_parent_is_full():
-    """Splitting a full preceding source is unnecessary when the following source fits."""
+    """后续源文本能够容纳分隔符时，无需拆分已占满的前一段源文本。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "ABCDEFGH", {"line_start": 1}),
         ParsedBlock("paragraph", "bb", {"line_start": 3}),
@@ -393,7 +393,7 @@ def test_full_document_fallback_uses_following_prose_when_preceding_parent_is_fu
 
 
 def test_full_document_fallback_splits_delimiter_across_non_atomic_sides_when_needed():
-    """A split delimiter is retainable at length two and must not be falsely omitted."""
+    """长度为 2 时可以保留拆开的分隔符，不得错误地将其省略。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "A", {"line_start": 1}),
         ParsedBlock("paragraph", "B", {"line_start": 3}),
@@ -411,7 +411,7 @@ def test_full_document_fallback_splits_delimiter_across_non_atomic_sides_when_ne
 
 
 def test_full_document_fallback_resolves_three_block_delimiter_contention():
-    """Independent greedy boundaries must not omit a jointly retainable delimiter."""
+    """独立的贪心边界选择，不得省略本可通过联合安排保留的分隔符。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "AA", {"line_start": 1}),
         ParsedBlock("paragraph", "B", {"line_start": 3}),
@@ -450,7 +450,7 @@ def test_full_document_fallback_resolves_three_block_delimiter_contention():
     ],
 )
 def test_full_document_fallback_contention_matrix_retains_all_delimiters(maximum, texts):
-    """Small consecutive prose runs must neither duplicate nor lose delimiters."""
+    """连续的短文本片段不得导致分隔符重复或丢失。"""
     parsed = parsed_document(
         *(
             ParsedBlock("paragraph", text, {"line_start": 2 * index + 1})
@@ -470,7 +470,7 @@ def test_full_document_fallback_contention_matrix_retains_all_delimiters(maximum
 
 
 def test_spreadsheet_groups_consecutive_rows_per_sheet_and_preserves_headers_in_children():
-    """Cross-sheet grouping or omitted headers makes spreadsheet children ambiguous."""
+    """跨工作表分组或省略表头，会使电子表格的子分段含义不清。"""
     parsed = parsed_document(
         ParsedBlock("table_row", "名称：甲", {"sheet": "One", "row": 2, "headers": ["名称"]}),
         ParsedBlock("table_row", "名称：乙", {"sheet": "One", "row": 3, "headers": ["名称"]}),
@@ -494,7 +494,7 @@ def test_spreadsheet_groups_consecutive_rows_per_sheet_and_preserves_headers_in_
 
 
 def test_spreadsheet_starts_a_new_parent_when_source_row_numbers_are_not_consecutive():
-    """Merging rows across a source-row gap makes parent provenance falsely contiguous."""
+    """跨源行间隔合并数据行，会让父分段的来源范围错误地显示为连续。"""
     parsed = parsed_document(
         ParsedBlock("table_row", "名称：甲", {"sheet": "One", "row": 2, "headers": ["名称"]}),
         ParsedBlock("table_row", "名称：乙", {"sheet": "One", "row": 4, "headers": ["名称"]}),
@@ -511,7 +511,7 @@ def test_spreadsheet_starts_a_new_parent_when_source_row_numbers_are_not_consecu
 
 
 def test_empty_parsed_document_returns_an_empty_stable_result():
-    """Fabricating a segment for empty parser output would create an unsearchable record."""
+    """为空解析结果虚构分段，会产生无法检索的记录。"""
     result = Segmenter().segment(parsed_document(), GeneralSegmentationConfig(max_chunk_length=8, overlap=0))
 
     assert result.segments == ()
@@ -527,7 +527,7 @@ def test_empty_parsed_document_returns_an_empty_stable_result():
     ],
 )
 def test_every_public_segment_has_nonblank_content(config):
-    """Whitespace blocks and synthetic delimiters must never become searchable records."""
+    """纯空白块和合成分隔符不得成为可检索记录。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "   \n\t", {"line_start": 1}),
         ParsedBlock("paragraph", "A", {"line_start": 2}),
@@ -543,7 +543,7 @@ def test_every_public_segment_has_nonblank_content(config):
 
 
 def test_segmenter_stops_before_materializing_unbounded_tiny_chunks():
-    """A one-character split must hit a stable segment budget in bounded work."""
+    """按单个字符拆分时，必须在有限工作量内触发稳定的分段数量上限。"""
     parsed = parsed_document(ParsedBlock("paragraph", "x" * 100, {}))
 
     with segmentation_deadline(), pytest.raises(SegmentationConfigError) as error:
@@ -563,7 +563,7 @@ def test_segmenter_stops_before_materializing_unbounded_tiny_chunks():
     ],
 )
 def test_segmenter_has_an_independent_source_work_budget(parsed):
-    """Bounded output alone must not allow unbounded source-block or character scanning."""
+    """不能只限制输出，还必须限制源块数量和字符扫描量。"""
     segmenter = Segmenter(max_source_blocks=8, max_source_characters=8)
 
     with pytest.raises(SegmentationConfigError) as error:
@@ -576,7 +576,7 @@ def test_segmenter_has_an_independent_source_work_budget(parsed):
 
 
 def test_boundary_scan_budget_is_cumulative_across_general_source_blocks():
-    """Resetting the scan budget per atomic source would permit unbounded total scans."""
+    """若对每个原子源块重置扫描预算，总扫描量就可能失去上限。"""
     parsed = parsed_document(
         ParsedBlock("code", "abc|def", {"line_start": 1}),
         ParsedBlock("code", "abc|def", {"line_start": 3}),
@@ -591,7 +591,7 @@ def test_boundary_scan_budget_is_cumulative_across_general_source_blocks():
 
 
 def test_boundary_scan_budget_is_cumulative_across_parent_child_children():
-    """Each parent's children must consume the same request-local boundary scan budget."""
+    """所有父分段的子级必须消耗同一请求内共用的边界扫描预算。"""
     parsed = parsed_document(
         ParsedBlock("paragraph", "abc|def", {"line_start": 1}),
         ParsedBlock("paragraph", "abc|def", {"line_start": 3}),

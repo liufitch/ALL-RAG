@@ -38,7 +38,7 @@ _REQUEST_ID_RESPONSE_HEADER = {
 
 
 class PreviewAPIRoute(APIRoute):
-    """Apply the preview error contract to validation that precedes its handler."""
+    """将预览接口的错误契约应用于处理函数执行前的参数校验。"""
 
     def get_route_handler(self):
         original = super().get_route_handler()

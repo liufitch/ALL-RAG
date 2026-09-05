@@ -12,11 +12,10 @@ from .minio_store import MinioObjectStorage
 
 @lru_cache(maxsize=1)
 def get_object_storage() -> ObjectStorage:
-    """Return one configured MinIO adapter for the application process.
+    """为应用进程返回一个已配置的 MinIO 适配器。
 
-    Constructing the synchronous MinIO client is local and does not contact
-    the service. Network failures are surfaced by the adapter's async methods
-    as ``ObjectStorageUnavailable`` when a request actually uses storage.
+    构造同步 MinIO 客户端仅执行本地操作，不连接服务。
+    请求实际使用存储时，网络故障由适配器的异步方法以 ``ObjectStorageUnavailable`` 抛出。
     """
     storage_settings = settings.object_storage
     client = Minio(

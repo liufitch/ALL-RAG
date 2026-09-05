@@ -58,7 +58,7 @@ class _FormulaWarningAggregate:
 
 
 class XlsxParser:
-    """Read visible XLSX sheets without evaluating formulas or expanding dimensions."""
+    """读取可见的 XLSX 工作表，不计算公式，也不按声明尺寸扩展单元格。"""
 
     source_type = "xlsx"
 
@@ -163,7 +163,7 @@ class XlsxParser:
 
 
 def _preflight_worksheet_xml(payload: bytes) -> tuple[_WorksheetPreflight, ...]:
-    """Bound physical OOXML work before openpyxl constructs any worksheet cells."""
+    """在 openpyxl 构造工作表单元格之前，限制实际 OOXML 数据的处理量。"""
     nodes = 0
     cells = 0
     total_merged_area = 0
@@ -243,7 +243,7 @@ def _preflight_worksheet_xml(payload: bytes) -> tuple[_WorksheetPreflight, ...]:
 
 
 def _worksheet_parts(archive: ZipFile) -> tuple[tuple[str, str], ...]:
-    """Resolve workbook sheets to exact case-sensitive package members."""
+    """将工作簿中的工作表解析为包内精确匹配且区分大小写的成员路径。"""
     member_names = archive.namelist()
     if len(member_names) != len(set(member_names)):
         raise _malformed_xlsx_error()
@@ -411,7 +411,7 @@ def _worksheet_rows(
     physical_cells: Iterator[tuple[int, int, Any, Any]],
     formula_warnings: _FormulaWarningAggregate,
 ) -> Iterator[tuple[int, tuple[Any, ...]]]:
-    """Yield sparse physical rows, never the rectangular declared dimension."""
+    """逐行生成实际存在的稀疏数据，不按声明的矩形尺寸遍历。"""
     rows: dict[int, dict[int, Any]] = {}
     for source_row, source_column, cell, cached_cell in physical_cells:
         value = cell.value
@@ -439,7 +439,7 @@ def _physical_cells(
     cached_worksheet: Any,
     physical_coordinates: frozenset[tuple[int, int]],
 ) -> Iterator[tuple[int, int, Any, Any]]:
-    """Adapt bounded OOXML coordinates to OpenPyXL's isolated private mappings."""
+    """将数量受限的 OOXML 坐标适配到 OpenPyXL 的独立私有映射中。"""
     formula_cells = getattr(worksheet, "_cells", None)
     cached_cells = getattr(cached_worksheet, "_cells", None)
     if not isinstance(formula_cells, Mapping) or not isinstance(cached_cells, Mapping):

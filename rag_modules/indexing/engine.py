@@ -1,4 +1,4 @@
-"""Single-document indexing pipeline with explicit persistence boundaries."""
+"""具有明确持久化边界的单文档索引流水线。"""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ _T = TypeVar("_T")
 
 
 class DocumentIndexingError(Exception):
-    """Stable, content-free failure created by the indexing engine."""
+    """索引引擎生成的稳定异常，不包含文档内容。"""
 
     def __init__(self, code: str, retryable: bool, safe_message: str) -> None:
         super().__init__(safe_message)
@@ -69,7 +69,7 @@ class DocumentIndexingError(Exception):
 
 
 class DocumentIndexingEngine:
-    """Index exactly one immutable document snapshot without activating it."""
+    """仅为一个不可变文档快照建立索引，不执行激活。"""
 
     def __init__(
         self,
@@ -550,7 +550,7 @@ class DocumentIndexingEngine:
 
     @staticmethod
     async def _run_sync(operation: Any, *args: Any) -> Any:
-        """Keep the worker's resource ownership alive until sync work exits."""
+        """保持工作线程对资源的所有权，直到同步任务退出。"""
         worker = asyncio.create_task(asyncio.to_thread(operation, *args))
         result, cancellation = await DocumentIndexingEngine._wait_task(
             worker, None
@@ -577,10 +577,10 @@ class DocumentIndexingEngine:
     async def _wait_task(
         task: asyncio.Future[_T], cancellation: asyncio.CancelledError | None
     ) -> tuple[_T, asyncio.CancelledError | None]:
-        """Join one concrete task despite repeated outer cancellation.
+        """即使外层反复取消，也等待指定任务结束。
 
-        The loop is bounded by dependency-task completion. Reading the result
-        before propagating cancellation deliberately preserves worker defects.
+        循环以依赖任务完成为结束条件。在继续传播取消信号前先读取任务结果，
+        以保留工作线程中发生的程序异常。
         """
         while not task.done():
             try:

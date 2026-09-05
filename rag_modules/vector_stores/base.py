@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class VectorStoreError(Exception):
-    """Stable sanitized failure raised by vector-store boundaries."""
+    """向量存储边界抛出的稳定、已脱敏异常。"""
 
     def __init__(self, code: str, retryable: bool, safe_message: str) -> None:
         super().__init__(safe_message)
@@ -62,7 +62,7 @@ class VectorConsistencyError(VectorStoreError):
 
 
 class VectorEntity(BaseModel):
-    """The exact vector payload shared by indexing and Milvus."""
+    """索引流程与 Milvus 共用的完整向量载荷。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
