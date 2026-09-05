@@ -1851,3 +1851,35 @@ After every task, append:
   separate sanitized operator-only signal. No live Docker run was warranted
   because production Milvus adapter behavior changed only by the direct integer
   bound.
+
+### 2026-09-05 — Phase 4 final scoped re-review and controller verification
+
+- **Review result:** The same independent final reviewer re-examined only the
+  permitted final-fix range `600db7e..8f0ec6f`. Findings A-E and F1-F6 were all
+  marked resolved. The reviewer confirmed that `8f0ec6f` is evidence-only and
+  accurately describes the 10,000-record test as twenty inserts, twenty initial
+  existence reads, and twenty post-insert reloads. No new Critical or Important
+  issue was found; the verdict was `Ready to merge: Yes`.
+- **Process symptom:** After completing technical inspection, the review turn
+  remained active through repeated 60- and 120-second waits and did not render
+  its verdict. A normal convergence reminder did not resolve the delay.
+- **Ruling and recovery:** The controller interrupted the hanging response and
+  resumed the same reviewer with a strict instruction to run no more commands,
+  read no new files, and only format the already-collected A-F evidence. This
+  remained the single allowed scoped re-review; no second reviewer, fix wave,
+  test mutation, or repository mutation was introduced. The recovery produced
+  the complete itemized verdict above.
+- **Independent final evidence:** The controller, rather than relying on the
+  implementer's report, reran the default suite (`561 passed, 3 skipped, 2
+  warnings`), Embedding/indexing/vector units (`217 passed, 2 warnings`), and
+  repository/config/database units (`34 passed, 1 warning`). The integration
+  module in default opt-out mode reported `1 passed, 2 skipped, 1 warning`.
+  With explicit approval to access the existing local service, the live Milvus
+  2.5.14 suite reported `3 passed, 1 warning`; its tests created and cleaned only
+  generated owned collections. `compileall` and `git diff --check
+  28b3cb0..8f0ec6f` exited zero, and tracked worktree status was clean.
+- **Known non-blockers:** The two warnings remain the existing Starlette/httpx
+  and jieba/pkg_resources deprecations. The default skips remain the explicit
+  opt-in Milvus and MinIO tests. This final run does not add live PostgreSQL load
+  evidence; PostgreSQL statement shape/bind bounds remain covered through the
+  real dialect compiler and retry races through the SQLite concurrency tests.
