@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, FileText, RefreshCw, Upload } from "lucide-react";
+import { ArrowLeft, Eye, FileText, RefreshCw, Settings2, Upload, X } from "lucide-react";
 import { request } from "../api";
 import Pagination from "./Pagination";
 import StateMessage from "./StateMessage";
+import IndexingPanel from "./IndexingPanel";
 
 const documentStatuses = {
   waiting: "待索引", downloading: "下载中", parsing: "解析中", splitting: "分段中",
@@ -27,6 +28,7 @@ export default function Documents({ dataset, onBack, onUploaded }) {
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [result, setResult] = useState(null);
+  const [indexingOpen, setIndexingOpen] = useState(false);
   const path = `/api/knowledge_base/${encodeURIComponent(dataset.id)}/documents`;
 
   useEffect(() => {
@@ -59,8 +61,7 @@ export default function Documents({ dataset, onBack, onUploaded }) {
     // 同一个 files 字段可重复出现；dataset ID 来自已创建的知识库，不能先传无归属文件。
     files.forEach(file => body.append("files", file));
     try {
-      // 规范路径本身接收 multipart；后端仍保留 /upload 兼容旧客户端。
-      setResult(await request(path, { method: "POST", body }));
+      setResult(await request(`${path}/upload`, { method: "POST", body }));
       setPage(1);
     } catch (err) {
       setError(`${err.message}。请核对文档列表后重试，部分文件可能已保存。`);
@@ -100,6 +101,8 @@ export default function Documents({ dataset, onBack, onUploaded }) {
           {item.filename}: {item.message}
         </p>)}
       </div>}
+      <div className="document-toolbar"><button className="ghost-button" disabled={!items.length || uploading} onClick={() => setIndexingOpen(true)}><Settings2 className="icon" />配置索引</button></div>
+      {indexingOpen && <IndexingPanel dataset={dataset} documents={items} onClose={() => setIndexingOpen(false)} />}
       <section className="table-wrap" aria-label="文档列表">
         <div className="table-header"><span>文档列表</span><span>共 {total} 条记录</span></div>
         {loading ? <StateMessage kind="loading" title="加载中..." />

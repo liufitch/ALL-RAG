@@ -18,6 +18,11 @@ celery_app.conf.update(
         Queue("indexing", durable=True),
         Queue("maintenance", durable=True),
     ),
+    # 任务超时保护，防止索引任务卡死永不释放worker
+    task_time_limit = 3600,
+    task_soft_time_limit = 3500,
+    # 任务名称不使用默认的主机名，方便日志追踪
+    worker_task_log_format = "[%(asctime)s][%(task_name)s][%(task_id)s] %(message)s",
 )
 
 # 任务名称稳定后，API/Beat 可以只投递业务 ID；Worker 再从 PostgreSQL
