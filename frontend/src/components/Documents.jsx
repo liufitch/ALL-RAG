@@ -59,7 +59,8 @@ export default function Documents({ dataset, onBack, onUploaded }) {
     // 同一个 files 字段可重复出现；dataset ID 来自已创建的知识库，不能先传无归属文件。
     files.forEach(file => body.append("files", file));
     try {
-      setResult(await request(`${path}/upload`, { method: "POST", body }));
+      // 规范路径本身接收 multipart；后端仍保留 /upload 兼容旧客户端。
+      setResult(await request(path, { method: "POST", body }));
       setPage(1);
     } catch (err) {
       setError(`${err.message}。请核对文档列表后重试，部分文件可能已保存。`);

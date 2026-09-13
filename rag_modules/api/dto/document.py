@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DocumentItem(BaseModel):
@@ -22,8 +22,12 @@ class DocumentRejection(BaseModel):
 
 
 class DocumentUploadResponse(BaseModel):
+    """批量上传结果；索引任务采用异步投递，不等待 Worker 完成。"""
+
     documents: list[DocumentItem]
     rejected: list[DocumentRejection]
+    indexing_task_ids: list[str] = Field(default_factory=list)
+    indexing_dispatch_pending: list[str] = Field(default_factory=list)
 
 
 class DocumentListResponse(BaseModel):

@@ -20,6 +20,7 @@ from rag_modules.object_storage.factory import get_object_storage
 from rag_modules.repositories.document_repository import DocumentRepository
 from rag_modules.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from rag_modules.services.document_service import DatasetNotFoundError, DocumentService
+from rag_modules.tasks.publisher import TaskPublisher, get_task_publisher
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +68,17 @@ def _infrastructure_failure(exc: BaseException) -> bool:
     )
 
 
-@router.post("/upload", response_model=DocumentUploadResponse, status_code=201)
-async def upload_documents(
+async def _upload_documents(
     dataset_id: str,
-    files: list[UploadFile] = File(...),
-    service: DocumentService = Depends(get_document_service),
+    files: list[UploadFile],
+    service: DocumentService,
+    publisher: TaskPublisher,
 ) -> DocumentUploadResponse:
-    """依次上传文件，后续文件被拒绝时保留此前已成功上传的文件。"""
+    """执行批量上传，并在每个文档提交后投递只含 ID 的索引消息。"""
     documents: list[DocumentItem] = []
     rejected: list[DocumentRejection] = []
+    indexing_task_ids: list[str] = []
+    indexing_dispatch_pending: list[str] = []
 
     for file in files:
         try:
@@ -93,33 +96,77 @@ async def upload_documents(
             raise HTTPException(status_code=404, detail="knowledge base not found") from exc
         except Exception as exc:
             if _infrastructure_failure(exc):
-                # 不记录异常全文/堆栈：SQL 参数、对象名或 SDK 消息可能含敏感内容。
-                # 仅输出可用于定位的组件、异常类型和受限格式的存储错误码。
-                if isinstance(exc, ObjectStorageUnavailable):
-                    component = "storage"
-                elif isinstance(exc, SQLAlchemyError):
-                    component = "database"
-                else:
-                    component = "infrastructure"
+                component = "storage" if isinstance(exc, ObjectStorageUnavailable) else "database" if isinstance(exc, SQLAlchemyError) else "infrastructure"
                 cause = exc.__cause__ or exc
                 code = getattr(cause, "code", None)
-                safe_code = (
-                    code
-                    if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,64}", code)
-                    else "unknown"
-                )
+                safe_code = code if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,64}", code) else "unknown"
                 logger.warning(
                     "document_upload_failed component=%s error_type=%s cause_type=%s code=%s",
                     component, type(exc).__name__, type(cause).__name__, safe_code,
                 )
-                raise HTTPException(
-                    status_code=503,
-                    detail="document storage is temporarily unavailable",
-                ) from exc
+                raise HTTPException(status_code=503, detail="document storage is temporarily unavailable") from exc
             raise
-        documents.append(_document_item(item))
 
-    return DocumentUploadResponse(documents=documents, rejected=rejected)
+        document = _document_item(item)
+        documents.append(document)
+        # 重复文件没有新对象和新业务记录，不能重复创建索引任务。
+        if document.duplicate:
+            continue
+        try:
+            task_id = publisher.dispatch_document(
+                dataset_id=dataset_id, document_id=document.id
+            )
+        except Exception:
+            # 数据库记录已经提交；RabbitMQ 短暂不可用时保留 waiting，
+            # 由后续补投机制再次发送，不能为了消息失败回滚文件上传。
+            indexing_dispatch_pending.append(document.id)
+            logger.warning("document_index_dispatch_pending document_id=%s", document.id)
+        else:
+            if task_id:
+                indexing_task_ids.append(task_id)
+
+    return DocumentUploadResponse(
+        documents=documents,
+        rejected=rejected,
+        indexing_task_ids=indexing_task_ids,
+        indexing_dispatch_pending=indexing_dispatch_pending,
+    )
+
+
+async def upload_documents(
+    dataset_id: str,
+    files: list[UploadFile] = File(...),
+    service: DocumentService = Depends(get_document_service),
+    publisher: TaskPublisher | None = None,
+) -> DocumentUploadResponse:
+    """上传业务函数；保留可直接调用形式，便于服务层/API 回归测试复用。"""
+    # 直接调用时没有 FastAPI 依赖注入，因此不主动连接 broker；HTTP 包装器
+    # 会显式传入发布器。这样测试上传补偿逻辑时不会依赖 RabbitMQ。
+    if publisher is None:
+        publisher = _NoopTaskPublisher()
+    return await _upload_documents(dataset_id, files, service, publisher)
+
+
+class _NoopTaskPublisher(TaskPublisher):
+    """仅用于直接调用业务函数时保持旧测试的本地、无 broker 语义。"""
+
+    def __init__(self) -> None:
+        pass
+
+    def dispatch_document(self, *, dataset_id: str, document_id: str) -> str | None:
+        return None
+
+
+@router.post("", response_model=DocumentUploadResponse, status_code=201)
+@router.post("/upload", response_model=DocumentUploadResponse, status_code=201)
+async def upload_documents_endpoint(
+    dataset_id: str,
+    files: list[UploadFile] = File(...),
+    service: DocumentService = Depends(get_document_service),
+    publisher: TaskPublisher = Depends(get_task_publisher),
+) -> DocumentUploadResponse:
+    """HTTP 入口：通过依赖注入获取发布器并触发异步索引投递。"""
+    return await upload_documents(dataset_id, files, service, publisher)
 
 
 @router.get("", response_model=DocumentListResponse)

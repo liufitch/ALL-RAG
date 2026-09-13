@@ -19,3 +19,9 @@ celery_app.conf.update(
         Queue("maintenance", durable=True),
     ),
 )
+
+# 任务名称稳定后，API/Beat 可以只投递业务 ID；Worker 再从 PostgreSQL
+# 加载不可变配置和 MinIO 对象引用，避免消息携带文件内容或敏感配置。
+celery_app.conf.task_routes = {
+    "rag_modules.tasks.indexing_tasks.index_document": {"queue": "indexing"},
+}
