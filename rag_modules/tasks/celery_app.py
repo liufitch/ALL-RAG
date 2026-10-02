@@ -29,4 +29,13 @@ celery_app.conf.update(
 # 加载不可变配置和 MinIO 对象引用，避免消息携带文件内容或敏感配置。
 celery_app.conf.task_routes = {
     "rag_modules.tasks.indexing_tasks.index_document": {"queue": "indexing"},
+    "rag_modules.tasks.maintenance_tasks.recover_stale_indexing": {"queue": "maintenance"},
+}
+
+celery_app.conf.beat_schedule = {
+    "recover-stale-indexing-leases": {
+        "task": "rag_modules.tasks.maintenance_tasks.recover_stale_indexing",
+        "schedule": 60.0,
+        "options": {"queue": "maintenance"},
+    },
 }
