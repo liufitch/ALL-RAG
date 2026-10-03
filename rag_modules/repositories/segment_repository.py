@@ -326,7 +326,7 @@ class SegmentRepository:
 
     @staticmethod
     def _candidate_values(command: SegmentStagingCommand, candidate: _Candidate) -> dict:
-        return {
+        values = {
             "id": candidate.id,
             "dataset_id": command.dataset_id,
             "dataset_index_id": command.dataset_index_id,
@@ -342,6 +342,13 @@ class SegmentRepository:
             "embedding_status": candidate.embedding_status,
             "created_at": utcnow(),
         }
+        if candidate.preview.question is not None:
+            values["question"] = candidate.preview.question
+        if candidate.preview.answer is not None:
+            values["answer"] = candidate.preview.answer
+        if candidate.preview.keywords:
+            values["keywords"] = list(candidate.preview.keywords)
+        return values
 
     @classmethod
     def _exact_existing_records(
@@ -486,6 +493,9 @@ class SegmentRepository:
             and existing.index_type == candidate.preview.index_type
             and existing.content_hash == candidate.content_hash
             and existing.content == candidate.content
+            and existing.question == candidate.preview.question
+            and existing.answer == candidate.preview.answer
+            and list(existing.keywords or []) == list(candidate.preview.keywords)
             and existing.source_metadata == candidate.source_metadata
             and existing.status == "indexing"
             and existing.deleted_at is None

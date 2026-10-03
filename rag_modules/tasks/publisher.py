@@ -38,6 +38,14 @@ class TaskPublisher:
         )
         return getattr(result, "id", None)
 
+    def dispatch_document_cleanup(self, *, dataset_id: str, document_id: str) -> str | None:
+        result = self._app.send_task(
+            "rag_modules.tasks.document_cleanup_tasks.cleanup_document",
+            kwargs={"dataset_id": dataset_id, "document_id": document_id},
+            queue="maintenance",
+        )
+        return getattr(result, "id", None)
+
 
 def get_task_publisher() -> TaskPublisher:
     """提供轻量发布器；不在导入阶段连接 RabbitMQ。"""

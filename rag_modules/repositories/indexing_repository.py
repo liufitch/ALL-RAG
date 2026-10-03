@@ -23,6 +23,7 @@ from rag_modules.db.models import (
     IndexingJobRecord,
     ProcessRuleRecord,
     DocumentSegmentRecord,
+    DocumentRevisionRecord,
 )
 
 
@@ -146,6 +147,12 @@ class IndexingRepository:
             document.indexing_status = "completed"
             document.error = None
             document.updated_at = now
+        revision = await self.session.scalar(
+            select(DocumentRevisionRecord).where(DocumentRevisionRecord.indexing_job_id == row.job_id)
+        )
+        if revision is not None:
+            revision.status = "indexing"
+            revision.error = None
         await self.session.commit()
 
     async def cancel_job_document(self, job_document_id: str, *, worker_id: str) -> None:
@@ -162,6 +169,12 @@ class IndexingRepository:
         if document is not None:
             document.indexing_status = "cancelled"
             document.updated_at = now
+        revision = await self.session.scalar(
+            select(DocumentRevisionRecord).where(DocumentRevisionRecord.indexing_job_id == row.job_id)
+        )
+        if revision is not None:
+            revision.status = "failed" if row.status == "failed" else "indexing"
+            revision.error = error[:2000]
         await self.session.commit()
 
     async def fail_job_document(
@@ -265,6 +278,12 @@ class IndexingRepository:
         if not full_build:
             failed = [row for row in job_documents if row.status in {"failed", "cancelled"}]
             if failed:
+                revision = await self.session.scalar(
+                    select(DocumentRevisionRecord).where(DocumentRevisionRecord.indexing_job_id == job.id)
+                )
+                if revision is not None:
+                    revision.status = "failed"
+                    revision.error = "Indexing did not complete."
                 job.status = self._terminal_job_status(job_documents)
                 job.completed_at = job.completed_at or utcnow()
                 job.updated_at = utcnow()
@@ -308,6 +327,12 @@ class IndexingRepository:
             job.progress = 100
             job.completed_at = job.completed_at or timestamp
             job.updated_at = timestamp
+            revision = await self.session.scalar(
+                select(DocumentRevisionRecord).where(DocumentRevisionRecord.indexing_job_id == job.id)
+            )
+            if revision is not None:
+                revision.status = "completed"
+                revision.error = None
             await self.session.commit()
             return True
 
@@ -503,8 +528,19 @@ class IndexingRepository:
         config_hash = hashlib.sha256(
             json.dumps({"technique": technique, "model": embedding_model, "process_rule": process_rule, "retrieval": retrieval_config}, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
+        active_result = await self.session.execute(
+            select(DatasetIndexRecord)
+            .where(
+                DatasetIndexRecord.dataset_id == dataset_id,
+                DatasetIndexRecord.status == "active",
+                DatasetIndexRecord.deleted_at.is_(None),
+            )
+            .order_by(DatasetIndexRecord.activated_at.desc(), DatasetIndexRecord.id.desc())
+            .limit(1)
+        )
+        active_index = active_result.scalars().first()
         job_id = uuid4().hex
-        target_id = uuid4().hex
+        target_id = active_index.id if active_index is not None else uuid4().hex
         rule_id = uuid4().hex
         rule = ProcessRuleRecord(
             id=rule_id,
@@ -521,7 +557,7 @@ class IndexingRepository:
             id=job_id,
             dataset_id=dataset_id,
             target_index_id=target_id,
-            job_type="initial_index",
+            job_type="document_reindex" if active_index is not None else "initial_index",
             scope="selected_documents",
             status="pending",
             indexing_technique=technique,
@@ -534,21 +570,22 @@ class IndexingRepository:
             created_by=document.created_by or "system",
         )
         self.session.add(job)
-        index = DatasetIndexRecord(
-            id=target_id,
-            dataset_id=dataset_id,
-            created_by_job_id=job_id,
-            index_type=technique,
-            status="building",
-            embedding_model_provider="openai_compatible" if embedding_model else None,
-            embedding_model=embedding_model,
-            vector_store_provider="milvus" if technique == "high_quality" else None,
-            collection_name=f"graph_rag_{dataset_id}_{target_id}" if technique == "high_quality" else None,
-            process_rule=process_rule,
-            retrieval_config=retrieval_config,
-            config_hash=config_hash,
-        )
-        self.session.add(index)
+        if active_index is None:
+            index = DatasetIndexRecord(
+                id=target_id,
+                dataset_id=dataset_id,
+                created_by_job_id=job_id,
+                index_type=technique,
+                status="building",
+                embedding_model_provider="openai_compatible" if embedding_model else None,
+                embedding_model=embedding_model,
+                vector_store_provider="milvus" if technique == "high_quality" else None,
+                collection_name=f"graph_rag_{dataset_id}_{target_id}" if technique == "high_quality" else None,
+                process_rule=process_rule,
+                retrieval_config=retrieval_config,
+                config_hash=config_hash,
+            )
+            self.session.add(index)
         job_document = IndexingJobDocumentRecord(
             id=uuid4().hex,
             job_id=job_id,

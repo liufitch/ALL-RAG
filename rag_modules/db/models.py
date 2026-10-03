@@ -199,6 +199,7 @@ class IndexingJobRecord(Base):
         ForeignKey("indexing_jobs.id", name="fk_indexing_jobs_retry_of"),
         nullable=True,
     )
+    revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     job_type: Mapped[str] = mapped_column(String(32), nullable=False)
     scope: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)

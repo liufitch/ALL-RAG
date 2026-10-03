@@ -59,6 +59,8 @@ class IndexDocumentCommand:
     collection_name: str | None
     expected_dimension: int | None
     keyword_limit: int = 15
+    revision_segments: tuple[PreviewSegment, ...] | None = None
+    segment_namespace: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

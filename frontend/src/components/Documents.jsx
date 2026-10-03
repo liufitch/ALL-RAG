@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Eye, FileText, RefreshCw, Settings2, Upload, X } from "lucide-react";
-import { request } from "../api";
+import { Archive, ArrowLeft, Download, Edit3, Eye, FileText, MoreHorizontal, RefreshCw, RotateCcw, Settings2, ToggleLeft, ToggleRight, Trash2, Upload, X } from "lucide-react";
+import { downloadDocument, request } from "../api";
 import Pagination from "./Pagination";
 import StateMessage from "./StateMessage";
 import IndexingPanel from "./IndexingPanel";
+import SegmentEditor from "./SegmentEditor";
 
 const documentStatuses = {
   waiting: "待索引", downloading: "下载中", parsing: "解析中", splitting: "分段中",
@@ -29,6 +30,9 @@ export default function Documents({ dataset, onBack, onUploaded }) {
   const [loadError, setLoadError] = useState("");
   const [result, setResult] = useState(null);
   const [indexingOpen, setIndexingOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [actionBusy, setActionBusy] = useState(null);
+  const [jobNotice, setJobNotice] = useState("");
   const path = `/api/knowledge_base/${encodeURIComponent(dataset.id)}/documents`;
 
   useEffect(() => {
@@ -73,6 +77,59 @@ export default function Documents({ dataset, onBack, onUploaded }) {
     }
   }
 
+  async function mutate(item, action, method = "POST") {
+    if (actionBusy) return;
+    setActionBusy(`${item.id}:${action}`);
+    setError("");
+    try {
+      await request(`${path}/${encodeURIComponent(item.id)}/${action}`, { method });
+      setRevision(value => value + 1);
+    } catch (err) { setError(err.message); }
+    finally { setActionBusy(null); }
+  }
+
+  async function rename(item) {
+    const name = window.prompt("新的文件名", item.name);
+    if (!name || name.trim() === item.name) return;
+    setActionBusy(`${item.id}:rename`);
+    try {
+      await request(`${path}/${encodeURIComponent(item.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
+      setRevision(value => value + 1);
+    } catch (err) { setError(err.message); }
+    finally { setActionBusy(null); }
+  }
+
+  async function remove(item) {
+    if (!window.confirm(`删除文档“${item.name}”？`)) return;
+    await mutate(item, "", "DELETE");
+  }
+
+  async function download(item) {
+    setActionBusy(`${item.id}:download`);
+    try {
+      const blob = await downloadDocument(`${path}/${encodeURIComponent(item.id)}/download`);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = item.name; anchor.click(); URL.revokeObjectURL(url);
+    } catch (err) { setError(err.message); }
+    finally { setActionBusy(null); }
+  }
+
+  async function pollJob(item, jobId) {
+    setJobNotice(`文档“${item.name}”正在重新索引`);
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      try {
+        const job = await request(`${path}/${encodeURIComponent(item.id)}/jobs/${encodeURIComponent(jobId)}`);
+        if (["completed", "partial_success", "failed", "cancelled"].includes(job.status)) {
+          setJobNotice(job.status === "completed" ? `文档“${item.name}”重新索引完成` : `文档“${item.name}”重新索引${job.status === "failed" ? "失败" : "已结束"}`);
+          setRevision(value => value + 1);
+          return;
+        }
+      } catch (err) { setError(err.message); return; }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    setJobNotice(`文档“${item.name}”重新索引仍在后台运行`);
+  }
+
   return (
     <>
       <header className="page-header">
@@ -93,6 +150,7 @@ export default function Documents({ dataset, onBack, onUploaded }) {
         </div>
       </header>
       {error && <div className="notice danger" role="alert">{error}</div>}
+      {jobNotice && <div className="notice" role="status">{jobNotice}</div>}
       {loadError && <div className="notice danger" role="alert">{loadError}</div>}
       {result && <div className="upload-results" aria-live="polite">
         <p>上传成功 {result.documents.length} 个文件</p>
@@ -109,14 +167,29 @@ export default function Documents({ dataset, onBack, onUploaded }) {
           : loadError ? <StateMessage kind="error" title="文档列表加载失败" />
           : items.length === 0 ? <StateMessage title="暂无文档" />
           : <div className="table-scroll"><table className="documents-table">
-            <thead><tr><th>文件名</th><th>索引状态</th></tr></thead>
+            <thead><tr><th>文件名</th><th>索引状态</th><th>启用/归档</th><th>操作</th></tr></thead>
             <tbody>{items.map(item => <tr key={item.id}>
               <td><div className="name-cell"><span className="file-symbol" aria-hidden="true"><FileText className="icon" /></span><span>{item.name}</span></div></td>
               <td><span className={`badge ${documentTones[item.status] || "neutral"}`}>{documentStatuses[item.status] || item.status}</span></td>
+              <td><span className={`badge ${item.archived ? "neutral" : item.enabled === false ? "warning" : "success"}`}>{item.archived ? "已归档" : item.enabled === false ? "已禁用" : "已启用"}</span></td>
+              <td><div className="document-actions">
+                <button className="ghost-button icon-button" title={`下载 ${item.name}`} aria-label={`下载 ${item.name}`} disabled={actionBusy !== null} onClick={() => download(item)}><Download className="icon" /></button>
+                <button className="ghost-button icon-button" title={`编辑 ${item.name}`} aria-label={`编辑 ${item.name}`} disabled={actionBusy !== null} onClick={() => setEditing(item)}><Edit3 className="icon" /></button>
+                <button className="ghost-button icon-button" title={`重命名 ${item.name}`} aria-label={`重命名 ${item.name}`} disabled={actionBusy !== null} onClick={() => rename(item)}><MoreHorizontal className="icon" /></button>
+                <button className="ghost-button icon-button" title={item.enabled === false ? `启用 ${item.name}` : `禁用 ${item.name}`} aria-label={item.enabled === false ? `启用 ${item.name}` : `禁用 ${item.name}`} disabled={actionBusy !== null} onClick={() => mutate(item, item.enabled === false ? "enable" : "disable")}>
+                  {item.enabled === false ? <ToggleRight className="icon" /> : <ToggleLeft className="icon" />}
+                </button>
+                <button className="ghost-button icon-button" title={item.archived ? `恢复 ${item.name}` : `归档 ${item.name}`} aria-label={item.archived ? `恢复 ${item.name}` : `归档 ${item.name}`} disabled={actionBusy !== null} onClick={() => mutate(item, item.archived ? "restore" : "archive")}>
+                  {item.archived ? <RotateCcw className="icon" /> : <Archive className="icon" />}
+                </button>
+                <button className="ghost-button icon-button" title={`重新索引 ${item.name}`} aria-label={`重新索引 ${item.name}`} disabled={actionBusy !== null} onClick={() => mutate(item, "reindex")}><RefreshCw className="icon" /></button>
+                <button className="ghost-button icon-button delete-button" title={`删除 ${item.name}`} aria-label={`删除 ${item.name}`} disabled={actionBusy !== null} onClick={() => remove(item)}><Trash2 className="icon" /></button>
+              </div></td>
             </tr>)}</tbody>
           </table></div>}
       </section>
       {!loadError && <Pagination page={page} pageSize={20} total={total} loading={loading || uploading} onChange={setPage} />}
+      {editing && <SegmentEditor datasetId={dataset.id} document={editing} onClose={() => setEditing(null)} onSaved={result => { setEditing(null); setRevision(value => value + 1); pollJob(editing, result.job_id); }} />}
     </>
   );
 }

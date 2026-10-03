@@ -13,3 +13,12 @@ export async function request(path, options = {}) {
   }
   return response.status === 204 ? null : response.json();
 }
+
+export async function downloadDocument(path) {
+  const response = await fetch(`${API_BASE}${path}`);
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({}));
+    throw new Error(problem.detail || `请求失败 (${response.status})`);
+  }
+  return response.blob();
+}

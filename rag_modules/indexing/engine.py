@@ -97,45 +97,66 @@ class DocumentIndexingEngine:
     ) -> IndexDocumentResult:
         self._validate_command(command)
         processed_segments = 0
+        if command.revision_segments is not None:
+            segments = command.revision_segments
+            warnings = ()
+        else:
+            await self._check_cancelled(progress)
+            async with self._object_storage.get_stream(command.object_key) as stream:
+                await self._update(progress, "download", 5, processed_segments)
 
-        await self._check_cancelled(progress)
-        async with self._object_storage.get_stream(command.object_key) as stream:
-            await self._update(progress, "download", 5, processed_segments)
+                await self._check_cancelled(progress)
+                parsed = await self._run_sync(
+                    self._parser_registry.parse,
+                    command.extension,
+                    stream,
+                    ParseContext(
+                        document_id=command.staging.document_id,
+                        filename=command.filename,
+                    ),
+                )
+            await self._update(progress, "parse", 15, processed_segments)
+            if not parsed.blocks:
+                raise DocumentIndexingError(
+                    "NO_EXTRACTABLE_TEXT",
+                    False,
+                    "The document contains no extractable text.",
+                )
 
             await self._check_cancelled(progress)
-            parsed = await self._run_sync(
-                self._parser_registry.parse,
-                command.extension,
-                stream,
-                ParseContext(
-                    document_id=command.staging.document_id,
-                    filename=command.filename,
-                ),
+            segmented = await self._run_sync(
+                self._segmenter.segment, parsed, command.segmentation_config
             )
-        await self._update(progress, "parse", 15, processed_segments)
-        if not parsed.blocks:
-            raise DocumentIndexingError(
-                "NO_EXTRACTABLE_TEXT",
-                False,
-                "The document contains no extractable text.",
+            await self._update(progress, "split", 30, processed_segments)
+            segments = segmented.segments
+            warnings = self._safe_warnings(parsed.warnings, "parse")
+            warnings += self._safe_warnings(segmented.warnings, "split")
+            warnings = warnings[:_MAX_WARNINGS]
+
+        if command.segment_namespace:
+            segments = tuple(
+                PreviewSegment(
+                    local_id=segment.local_id,
+                    parent_local_id=segment.parent_local_id,
+                    position=segment.position,
+                    content=segment.content,
+                    source_metadata={
+                        **segment.source_metadata,
+                        "indexing_namespace": command.segment_namespace,
+                    },
+                    index_type=segment.index_type,
+                    question=segment.question,
+                    answer=segment.answer,
+                    keywords=segment.keywords,
+                )
+                for segment in segments
             )
-
-        await self._check_cancelled(progress)
-        segmented = await self._run_sync(
-            self._segmenter.segment, parsed, command.segmentation_config
-        )
-        await self._update(progress, "split", 30, processed_segments)
-
         await self._check_cancelled(progress)
         records = await self._segment_repository.stage(
-            command.staging, segmented.segments
+            command.staging, segments
         )
         await self._update(progress, "stage", 45, processed_segments)
         indexable = self._validated_indexable_records(command.staging, records)
-
-        warnings = self._safe_warnings(parsed.warnings, "parse")
-        warnings += self._safe_warnings(segmented.warnings, "split")
-        warnings = warnings[:_MAX_WARNINGS]
 
         if command.staging.indexing_technique == "economy":
             processed_segments = await self._extract_and_persist_keywords(

@@ -43,6 +43,9 @@ class PreviewSegment:
     content: str
     source_metadata: dict[str, Any]
     index_type: Literal["general", "parent", "child"]
+    question: str | None = None
+    answer: str | None = None
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

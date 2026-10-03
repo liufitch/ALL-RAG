@@ -12,6 +12,7 @@ from .celery_app import celery_app
 from rag_modules.indexing.engine import DocumentIndexingError
 from rag_modules.indexing.progress import DatabaseProgressReporter, IndexingCancelled
 from rag_modules.indexing.models import IndexDocumentCommand, SegmentStagingCommand
+from rag_modules.segmentation.models import PreviewSegment
 from rag_modules.indexing.keywords import KeywordExtractor
 from rag_modules.indexing.target_coordinator import IndexTargetCoordinator
 from rag_modules.object_storage.factory import get_object_storage
@@ -139,6 +140,29 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
     job_document, job, document, index, _dataset = context
     if index is None:
         return None
+    revision_segments = None
+    if job.revision_id:
+        from rag_modules.db.models import DocumentRevisionRecord
+
+        revision = await session.get(DocumentRevisionRecord, job.revision_id)
+        snapshot = revision.segments.get("items", []) if revision and isinstance(revision.segments, dict) else []
+        revision_segments = tuple(
+            PreviewSegment(
+                local_id=item["id"],
+                parent_local_id=item.get("parent_id"),
+                position=int(item["position"]),
+                content=item["content"],
+                source_metadata={
+                    **dict(item.get("source_metadata") or {}),
+                    "revision_id": revision.id if revision else job.revision_id,
+                },
+                index_type=item.get("index_type") or "general",
+                question=item.get("question"),
+                answer=item.get("answer"),
+                keywords=tuple(item.get("keywords") or ()),
+            )
+            for item in snapshot
+        )
 
     process = (job.process_rule or {}).get("segmentation", job.process_rule or {})
     if job.segmentation_mode == "parent_child":
@@ -189,6 +213,8 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
             vector_batch_size=settings.vector_store.batch_size,
             collection_name=index.collection_name if job.indexing_technique == "high_quality" and index.embedding_dimension else None,
             expected_dimension=index.embedding_dimension,
+            revision_segments=revision_segments,
+            segment_namespace=job.id if job.job_type == "document_reindex" else None,
         )
 
     return IndexingTaskRunner(repository=repository, engine=engine, command_factory=command_factory)

@@ -4,11 +4,19 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from rag_modules.api.dto.document import (
     DocumentItem,
     DocumentListResponse,
+    DocumentActionResponse,
+    DocumentRenameRequest,
+    DocumentRevisionResponse,
+    DocumentJobResponse,
+    DocumentSegmentItem,
+    DocumentSegmentListResponse,
+    DocumentSegmentUpdate,
     DocumentRejection,
     DocumentUploadResponse,
 )
@@ -19,7 +27,19 @@ from rag_modules.object_storage import ObjectStorage, ObjectStorageUnavailable
 from rag_modules.object_storage.factory import get_object_storage
 from rag_modules.repositories.document_repository import DocumentRepository
 from rag_modules.repositories.knowledge_base_repository import KnowledgeBaseRepository
-from rag_modules.services.document_service import DatasetNotFoundError, DocumentService
+from rag_modules.services.document_service import (
+    DatasetNotFoundError,
+    DocumentNotFoundError,
+    DocumentService,
+    DocumentValidationError,
+)
+from rag_modules.services.document_revision_service import (
+    DocumentRevisionService,
+    RevisionConflictError,
+)
+from rag_modules.repositories.indexing_repository import IndexingRepository
+from rag_modules.db.models import IndexingJobDocumentRecord, IndexingJobRecord
+from sqlalchemy import select
 from rag_modules.tasks.publisher import TaskPublisher, get_task_publisher
 
 logger = logging.getLogger(__name__)
@@ -52,6 +72,13 @@ def _document_item(item) -> DocumentItem:
         name=item.name,
         status=getattr(item, "status", getattr(item, "indexing_status", "")),
         duplicate=getattr(item, "duplicate", False),
+        enabled=getattr(item, "enabled", True),
+        archived=getattr(item, "archived", False),
+        updated_at=getattr(item, "updated_at", None),
+        error=getattr(item, "error", None),
+        size=(getattr(item, "data_source_info", None) or {}).get("size"),
+        content_type=(getattr(item, "data_source_info", None) or {}).get("content_type"),
+        segment_count=getattr(item, "segment_count", None),
     )
 
 
@@ -190,4 +217,217 @@ async def list_documents(
     return DocumentListResponse(
         items=[_document_item(item) for item in items],
         total=total,
+    )
+
+
+def _document_segment_item(segment) -> DocumentSegmentItem:
+    return DocumentSegmentItem(
+        id=segment.id,
+        position=segment.position,
+        content=segment.content,
+        question=segment.question,
+        answer=segment.answer,
+        keywords=list(segment.keywords or []),
+        parent_id=segment.parent_id,
+        index_type=segment.index_type,
+        source_metadata=dict(segment.source_metadata or {}),
+    )
+
+
+async def _governance_document(dataset_id: str, document_id: str, service: DocumentService):
+    try:
+        return await service.get_document(dataset_id, document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    dataset_id: str,
+    document_id: str,
+    service: DocumentService = Depends(get_document_service),
+):
+    document = await _governance_document(dataset_id, document_id, service)
+    info = document.data_source_info or {}
+    object_key = info.get("object_key")
+    if not object_key:
+        raise HTTPException(status_code=404, detail="document source not found")
+
+    async def stream():
+        try:
+            async with service.storage.get_stream(object_key) as source:
+                while True:
+                    chunk = await __import__("anyio").to_thread.run_sync(source.read, 1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        except ObjectStorageUnavailable as exc:
+            logger.warning("document_download_failed document_id=%s", document_id)
+            raise HTTPException(status_code=503, detail="document storage is temporarily unavailable") from exc
+
+    filename = document.name.replace('"', "'").replace("\r", " ").replace("\n", " ")
+    media_type = info.get("content_type") or "application/octet-stream"
+    return StreamingResponse(
+        stream(),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.patch("/{document_id}", response_model=DocumentActionResponse)
+async def rename_document(
+    dataset_id: str,
+    document_id: str,
+    request: DocumentRenameRequest,
+    service: DocumentService = Depends(get_document_service),
+):
+    try:
+        document = await service.rename_document(dataset_id, document_id, request.name, "current-user")
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    except DocumentValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return DocumentActionResponse(document=_document_item(document))
+
+
+async def _set_document_enabled(dataset_id: str, document_id: str, enabled: bool, service: DocumentService):
+    try:
+        document = await service.set_enabled(dataset_id, document_id, enabled, "current-user")
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    return DocumentActionResponse(document=_document_item(document))
+
+
+@router.post("/{document_id}/enable", response_model=DocumentActionResponse)
+async def enable_document(dataset_id: str, document_id: str, service: DocumentService = Depends(get_document_service)):
+    return await _set_document_enabled(dataset_id, document_id, True, service)
+
+
+@router.post("/{document_id}/disable", response_model=DocumentActionResponse)
+async def disable_document(dataset_id: str, document_id: str, service: DocumentService = Depends(get_document_service)):
+    return await _set_document_enabled(dataset_id, document_id, False, service)
+
+
+async def _set_document_archived(dataset_id: str, document_id: str, archived: bool, service: DocumentService):
+    try:
+        document = await service.set_archived(dataset_id, document_id, archived, "current-user")
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    return DocumentActionResponse(document=_document_item(document))
+
+
+@router.post("/{document_id}/archive", response_model=DocumentActionResponse)
+async def archive_document(dataset_id: str, document_id: str, service: DocumentService = Depends(get_document_service)):
+    return await _set_document_archived(dataset_id, document_id, True, service)
+
+
+@router.post("/{document_id}/restore", response_model=DocumentActionResponse)
+async def restore_document(dataset_id: str, document_id: str, service: DocumentService = Depends(get_document_service)):
+    return await _set_document_archived(dataset_id, document_id, False, service)
+
+
+@router.delete("/{document_id}", response_model=DocumentActionResponse)
+async def delete_document(
+    dataset_id: str,
+    document_id: str,
+    service: DocumentService = Depends(get_document_service),
+    publisher: TaskPublisher = Depends(get_task_publisher),
+):
+    try:
+        document = await service.delete_document(dataset_id, document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    try:
+        publisher.dispatch_document_cleanup(dataset_id=dataset_id, document_id=document_id)
+    except Exception:
+        logger.warning("document_cleanup_dispatch_pending document_id=%s", document_id)
+    return DocumentActionResponse(document=_document_item(document))
+
+
+@router.get("/{document_id}/segments", response_model=DocumentSegmentListResponse)
+async def list_document_segments(dataset_id: str, document_id: str, service: DocumentService = Depends(get_document_service)):
+    try:
+        segments = await service.list_segments(dataset_id, document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    return DocumentSegmentListResponse(
+        document_id=document_id,
+        items=[_document_segment_item(segment) for segment in segments],
+    )
+
+
+@router.post("/{document_id}/reindex", response_model=DocumentActionResponse, status_code=202)
+async def reindex_document(
+    dataset_id: str,
+    document_id: str,
+    service: DocumentService = Depends(get_document_service),
+    db=Depends(get_db_session),
+    publisher: TaskPublisher = Depends(get_task_publisher),
+):
+    document = await _governance_document(dataset_id, document_id, service)
+    job_document_id = await IndexingRepository(db).ensure_compatibility_job_document(dataset_id, document_id)
+    job_id = None
+    if job_document_id:
+        job_document = await db.get(IndexingJobDocumentRecord, job_document_id)
+        job_id = job_document.job_id if job_document else None
+        try:
+            publisher.dispatch_job_document(job_document_id=job_document_id)
+        except Exception:
+            logger.warning("document_reindex_dispatch_pending document_id=%s", document_id)
+    return DocumentActionResponse(document=_document_item(document), job_id=job_id)
+
+
+@router.patch("/{document_id}/segments", response_model=DocumentRevisionResponse, status_code=202)
+async def update_document_segments(
+    dataset_id: str,
+    document_id: str,
+    request: DocumentSegmentUpdate,
+    db=Depends(get_db_session),
+    publisher: TaskPublisher = Depends(get_task_publisher),
+):
+    try:
+        result = await DocumentRevisionService(db).create_revision_and_job(
+            dataset_id, document_id, request, "current-user"
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DocumentValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        publisher.dispatch_job_document(job_document_id=result.job_document_id)
+    except Exception:
+        logger.warning("document_revision_dispatch_pending document_id=%s", document_id)
+    return DocumentRevisionResponse(
+        revision_id=result.revision.id,
+        version=result.revision.version,
+        job_id=result.job.id,
+    )
+
+
+@router.get("/{document_id}/jobs/{job_id}", response_model=DocumentJobResponse)
+async def get_document_job(
+    dataset_id: str,
+    document_id: str,
+    job_id: str,
+    db=Depends(get_db_session),
+    service: DocumentService = Depends(get_document_service),
+):
+    await _governance_document(dataset_id, document_id, service)
+    job = await db.scalar(
+        select(IndexingJobRecord).where(
+            IndexingJobRecord.id == job_id,
+            IndexingJobRecord.dataset_id == dataset_id,
+            IndexingJobRecord.revision_id.is_not(None),
+        )
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="indexing job not found")
+    return DocumentJobResponse(
+        id=job.id,
+        status=job.status,
+        progress=int(job.progress or 0),
+        current_stage=job.current_stage,
+        error=job.error,
     )

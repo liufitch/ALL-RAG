@@ -21,7 +21,7 @@
 
 ---
 
-### Task 1: Revision schema and migration
+### Task 1: Revision schema and migration — complete
 
 **Files:**
 - Create: `migrations/versions/20261003_01_document_governance.py`
@@ -52,7 +52,7 @@
 
   `git add rag_modules/db/models.py migrations/versions/20261003_01_document_governance.py tests/unit/db/test_document_revision_model.py && git commit -m "feat: add document revision persistence"`
 
-### Task 2: Document repository and service governance operations
+### Task 2: Document repository and service governance operations — complete
 
 **Files:**
 - Modify: `rag_modules/repositories/document_repository.py`
@@ -87,7 +87,7 @@
 
   `git add rag_modules/repositories/document_repository.py rag_modules/services/document_service.py rag_modules/services/document_revision_service.py tests/unit/repositories/test_document_governance.py tests/unit/services/test_document_governance_service.py && git commit -m "feat: add document governance service operations"`
 
-### Task 3: DTOs and document governance API
+### Task 3: DTOs and document governance API — complete
 
 **Files:**
 - Modify: `rag_modules/api/dto/document.py`
@@ -119,7 +119,7 @@
 
   `git add rag_modules/api/dto/document.py rag_modules/api/file_api.py main.py tests/api/test_document_governance_api.py && git commit -m "feat: expose document governance APIs"`
 
-### Task 4: Revision-aware indexing worker
+### Task 4: Revision-aware indexing worker — complete
 
 **Files:**
 - Modify: `rag_modules/tasks/indexing_tasks.py`
@@ -154,7 +154,7 @@
 
   `git add rag_modules/tasks/indexing_tasks.py rag_modules/indexing/engine.py rag_modules/indexing/models.py rag_modules/repositories/indexing_repository.py rag_modules/repositories/segment_repository.py tests/unit/indexing/test_revision_indexing.py && git commit -m "feat: index edited document revisions"`
 
-### Task 5: Visibility predicates and cleanup dispatch
+### Task 5: Visibility predicates and cleanup dispatch — complete
 
 **Files:**
 - Modify: `rag_modules/repositories/knowledge_base_repository.py`
@@ -189,7 +189,7 @@
 
   `git add rag_modules/repositories/knowledge_base_repository.py rag_modules/api/retrieval_api.py rag_modules/repositories/indexing_repository.py rag_modules/tasks/publisher.py rag_modules/tasks/document_cleanup_tasks.py tests/unit/repositories/test_document_visibility.py tests/unit/tasks/test_document_cleanup.py && git commit -m "feat: enforce document visibility and cleanup"`
 
-### Task 6: Frontend API module and document operations UI
+### Task 6: Frontend API module and document operations UI — complete
 
 **Files:**
 - Modify: `frontend/src/api.js`
@@ -221,7 +221,7 @@
 
   `git add frontend/src/api.js frontend/src/components/Documents.jsx frontend/src/styles.css frontend/tests/document-governance.spec.js && git commit -m "feat: add document governance controls"`
 
-### Task 7: Segment editor and indexing progress UI
+### Task 7: Segment editor and indexing progress UI — complete
 
 **Files:**
 - Modify: `frontend/src/api.js`
@@ -253,7 +253,7 @@
 
   `git add frontend/src/api.js frontend/src/components/Documents.jsx frontend/src/components/SegmentEditor.jsx frontend/tests/segment-editor.spec.js && git commit -m "feat: edit document segments with automatic reindexing"`
 
-### Task 8: Full verification and documentation handoff
+### Task 8: Full verification and documentation handoff — complete
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-10-03-document-governance-design.md` only for verified limitations or final API details.
@@ -278,4 +278,3 @@
 - [ ] **Step 5: Commit documentation and final implementation state**
 
   `git add docs/superpowers/specs/2026-10-03-document-governance-design.md docs/superpowers/plans/2026-10-03-document-governance.md && git commit -m "docs: record document governance design and plan"`
-

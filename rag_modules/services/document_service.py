@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import UploadFile
@@ -17,6 +18,14 @@ class DatasetNotFoundError(LookupError):
     code = "DATASET_NOT_FOUND"
 
 
+class DocumentNotFoundError(LookupError):
+    code = "DOCUMENT_NOT_FOUND"
+
+
+class DocumentValidationError(ValueError):
+    code = "INVALID_DOCUMENT"
+
+
 @dataclass(frozen=True)
 class DocumentUploadItem:
     id: str
@@ -24,6 +33,28 @@ class DocumentUploadItem:
     name: str
     status: str
     duplicate: bool = False
+    enabled: bool = True
+    archived: bool = False
+    updated_at: datetime | None = None
+    error: str | None = None
+    size: int | None = None
+    content_type: str | None = None
+    segment_count: int | None = None
+
+
+@dataclass(frozen=True)
+class DocumentGovernanceItem:
+    id: str
+    dataset_id: str
+    name: str
+    status: str
+    enabled: bool
+    archived: bool
+    updated_at: datetime | None
+    error: str | None
+    size: int | None
+    content_type: str | None
+    segment_count: int | None = None
 
 
 class DocumentService:
@@ -128,6 +159,43 @@ class DocumentService:
         )
         return [self._item(record) for record in records], total
 
+    async def get_document(self, dataset_id: str, document_id: str):
+        record = await self.repository.get_active_document(dataset_id, document_id)
+        if record is None:
+            raise DocumentNotFoundError(document_id)
+        return record
+
+    async def rename_document(self, dataset_id: str, document_id: str, name: str, actor_id: str):
+        normalized = name.strip()
+        if not normalized or len(normalized) > 255:
+            raise DocumentValidationError("Document name must be between 1 and 255 characters.")
+        record = await self.repository.update_name(dataset_id, document_id, normalized, actor_id)
+        if record is None:
+            raise DocumentNotFoundError(document_id)
+        return record
+
+    async def set_enabled(self, dataset_id: str, document_id: str, enabled: bool, actor_id: str):
+        record = await self.repository.set_enabled(dataset_id, document_id, enabled, actor_id)
+        if record is None:
+            raise DocumentNotFoundError(document_id)
+        return record
+
+    async def set_archived(self, dataset_id: str, document_id: str, archived: bool, actor_id: str):
+        record = await self.repository.set_archived(dataset_id, document_id, archived, actor_id)
+        if record is None:
+            raise DocumentNotFoundError(document_id)
+        return record
+
+    async def delete_document(self, dataset_id: str, document_id: str):
+        record = await self.repository.soft_delete(dataset_id, document_id)
+        if record is None:
+            raise DocumentNotFoundError(document_id)
+        return record
+
+    async def list_segments(self, dataset_id: str, document_id: str):
+        await self.get_document(dataset_id, document_id)
+        return await self.repository.list_segments(dataset_id, document_id)
+
     @staticmethod
     def _item(record: DocumentRecord, *, duplicate: bool = False) -> DocumentUploadItem:
         return DocumentUploadItem(
@@ -136,4 +204,10 @@ class DocumentService:
             name=record.name,
             status=record.indexing_status,
             duplicate=duplicate,
+            enabled=getattr(record, "enabled", True),
+            archived=getattr(record, "archived", False),
+            updated_at=getattr(record, "updated_at", None),
+            error=getattr(record, "error", None),
+            size=(getattr(record, "data_source_info", None) or {}).get("size"),
+            content_type=(getattr(record, "data_source_info", None) or {}).get("content_type"),
         )

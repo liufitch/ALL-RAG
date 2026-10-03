@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag_modules.db.models import DocumentRecord
+from rag_modules.db.models import DocumentRecord, DocumentSegmentRecord
 
 
 class DocumentRepository:
@@ -11,6 +13,87 @@ class DocumentRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def get_active_document(
+        self, dataset_id: str, document_id: str
+    ) -> DocumentRecord | None:
+        result = await self.session.execute(
+            select(DocumentRecord).where(
+                DocumentRecord.dataset_id == dataset_id,
+                DocumentRecord.id == document_id,
+                DocumentRecord.deleted_at.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def update_name(
+        self, dataset_id: str, document_id: str, name: str, actor_id: str
+    ) -> DocumentRecord | None:
+        record = await self.get_active_document(dataset_id, document_id)
+        if record is None:
+            return None
+        info = dict(record.data_source_info or {})
+        info["original_filename"] = name
+        record.name = name
+        record.data_source_info = info
+        record.updated_at = datetime.now(timezone.utc)
+        record.updated_by = actor_id
+        await self.session.commit()
+        return record
+
+    async def set_enabled(
+        self, dataset_id: str, document_id: str, enabled: bool, actor_id: str
+    ) -> DocumentRecord | None:
+        record = await self.get_active_document(dataset_id, document_id)
+        if record is None:
+            return None
+        now = datetime.now(timezone.utc)
+        record.enabled = enabled
+        record.disabled_at = None if enabled else (record.disabled_at or now)
+        record.disabled_by = None if enabled else actor_id
+        record.updated_at = now
+        record.updated_by = actor_id
+        await self.session.commit()
+        return record
+
+    async def set_archived(
+        self, dataset_id: str, document_id: str, archived: bool, actor_id: str
+    ) -> DocumentRecord | None:
+        record = await self.get_active_document(dataset_id, document_id)
+        if record is None:
+            return None
+        now = datetime.now(timezone.utc)
+        record.archived = archived
+        record.archived_at = None if not archived else (record.archived_at or now)
+        record.archived_by = None if not archived else actor_id
+        record.updated_at = now
+        record.updated_by = actor_id
+        await self.session.commit()
+        return record
+
+    async def soft_delete(self, dataset_id: str, document_id: str) -> DocumentRecord | None:
+        record = await self.get_active_document(dataset_id, document_id)
+        if record is None:
+            return None
+        record.deleted_at = datetime.now(timezone.utc)
+        record.updated_at = record.deleted_at
+        await self.session.commit()
+        return record
+
+    async def list_segments(
+        self, dataset_id: str, document_id: str
+    ) -> list[DocumentSegmentRecord]:
+        result = await self.session.execute(
+            select(DocumentSegmentRecord)
+            .where(
+                DocumentSegmentRecord.dataset_id == dataset_id,
+                DocumentSegmentRecord.document_id == document_id,
+                DocumentSegmentRecord.deleted_at.is_(None),
+                DocumentSegmentRecord.status == "completed",
+            )
+            .order_by(DocumentSegmentRecord.position.asc(), DocumentSegmentRecord.id.asc())
+        )
+        return list(result.scalars())
 
     async def get_active_by_ids(
         self, dataset_id: str, document_ids: list[str]

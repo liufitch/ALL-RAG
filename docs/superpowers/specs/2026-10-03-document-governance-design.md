@@ -1,7 +1,7 @@
 # 文档治理与分段编辑设计
 
 **日期：** 2026-10-03  
-**状态：** 已确认，进入实现
+**状态：** 已实现并完成后端验证；前端构建通过，Playwright 受当前环境端口权限限制需在可绑定本地端口的环境复跑
 
 ## 目标
 
@@ -113,3 +113,10 @@ MinIO 对象不能直接暴露给浏览器。API 需要把 `get_stream` 包装�
 
 遵循 TDD：每个服务/API/Worker 行为先写失败测试，再实现最小代码。覆盖服务层状态转换与 revision 校验、API 隔离和响应头、Worker revision 输入和索引切换、前端操作和轮询。完成前运行后端全量 pytest、前端测试和迁移检查。
 
+## 实现状态与验证记录
+
+- 已实现 revision 表、索引任务关联、文档治理 API、软删除清理任务、revision-aware 索引和前端操作/分段编辑。
+- 后端验证：`PYTHONPATH=. UV_CACHE_DIR=/tmp/graph-rag-uv-cache uv run --extra test pytest -q`，结果为 **599 passed, 3 skipped**。
+- 前端构建：`npm run build`，结果为成功。
+- 前端 Playwright：现有 `tests/console.spec.js` 在可启动开发服务器时 **11 passed**；当前受限环境后续启动尝试被 `127.0.0.1:5175` 的 `EPERM` 阻止。
+- `git diff --check` 无空白错误。
