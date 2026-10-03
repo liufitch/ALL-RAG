@@ -78,6 +78,42 @@ class DocumentRecord(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DocumentRevisionRecord(Base):
+    """Immutable user-authored segment snapshot used as an indexing input."""
+
+    __tablename__ = "document_revisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("datasets.id", name="fk_document_revisions_dataset"),
+        nullable=False,
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("documents.id", name="fk_document_revisions_document"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    segments: Mapped[dict] = mapped_column(_json_type(), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    indexing_job_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("indexing_jobs.id", name="fk_document_revisions_indexing_job"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id", "version", name="uq_document_revisions_document_version"
+        ),
+        Index("ix_document_revisions_indexing_job", "indexing_job_id"),
+    )
+
+
 class ProcessRuleRecord(Base):
     __tablename__ = "dataset_process_rules"
 
