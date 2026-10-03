@@ -15,6 +15,10 @@ def run_indexing_task(job_document_id: str, *, dataset_id: str | None = None, do
     asyncio.run(_run_indexing_task(job_document_id, dataset_id=dataset_id, document_id=document_id))
 
 
+def run_finalize_indexing_job(job_id: str) -> None:
+    asyncio.run(_run_finalize_indexing_job(job_id))
+
+
 async def _run_indexing_task(job_document_id: str, *, dataset_id: str | None = None, document_id: str | None = None) -> None:
     engine = create_async_engine(
         settings.sqlalchemy_database_uri,
@@ -38,5 +42,20 @@ async def _run_indexing_task(job_document_id: str, *, dataset_id: str | None = N
                     resolved = await IndexingRepository(session).ensure_compatibility_job_document(dataset_id, document_id)
                     context_id = resolved or job_document_id
                 await runner.run(context_id)
+    finally:
+        await engine.dispose()
+
+
+async def _run_finalize_indexing_job(job_id: str) -> None:
+    engine = create_async_engine(
+        settings.sqlalchemy_database_uri,
+        **{**settings.sqlalchemy_engine_options, "poolclass": NullPool},
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        async with session_factory() as session:
+            from rag_modules.repositories.indexing_repository import IndexingRepository
+
+            await IndexingRepository(session).finalize_indexing_job(job_id)
     finally:
         await engine.dispose()

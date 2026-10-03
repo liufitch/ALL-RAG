@@ -93,6 +93,9 @@ class IndexingTaskRunner:
             )
         finally:
             await self.repository.refresh_job_summary(row.job_id)
+            finalize = getattr(self.repository, "finalize_indexing_job", None)
+            if finalize is not None:
+                await finalize(row.job_id)
 
 
 @celery_app.task(name="rag_modules.tasks.indexing_tasks.index_document")
@@ -110,6 +113,16 @@ def index_document(*, job_document_id: str | None = None, dataset_id: str | None
     from .runtime import run_indexing_task
 
     run_indexing_task(identifier, dataset_id=dataset_id, document_id=document_id)
+
+
+@celery_app.task(name="rag_modules.tasks.indexing_tasks.finalize_indexing_job")
+def finalize_indexing_job(*, job_id: str | None = None) -> None:
+    """Retry the database-only finalization step for a durable indexing job."""
+    if not job_id:
+        return
+    from .runtime import run_finalize_indexing_job
+
+    run_finalize_indexing_job(job_id)
 
 
 async def build_task_runner(session, *, job_document_id: str, dataset_id: str | None = None, document_id: str | None = None):
@@ -189,4 +202,3 @@ class _NoEmbedding:
 class _NoVectorStore:
     def ensure_collection(self, *args, **kwargs):
         raise DocumentIndexingError("VECTOR_STORE_NOT_CONFIGURED", False, "Vector store is not configured for this index.")
-

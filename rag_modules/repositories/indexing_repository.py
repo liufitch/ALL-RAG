@@ -22,6 +22,7 @@ from rag_modules.db.models import (
     IndexingJobDocumentRecord,
     IndexingJobRecord,
     ProcessRuleRecord,
+    DocumentSegmentRecord,
 )
 
 
@@ -222,6 +223,196 @@ class IndexingRepository:
         job.current_stage = next((row.current_stage for row in rows if row.status == "running"), job.current_stage)
         job.updated_at = utcnow()
         await self.session.commit()
+
+    async def finalize_indexing_job(self, job_id: str) -> bool:
+        """Finalize a terminal job and atomically publish a full-build index.
+
+        The job row is the serialization point.  A build is never made visible
+        until every document is terminal and every staged segment passes the
+        final consistency checks.  Repeated calls are intentionally idempotent.
+        """
+        result = await self.session.execute(
+            select(IndexingJobRecord)
+            .where(IndexingJobRecord.id == job_id)
+            .with_for_update()
+        )
+        job = result.scalar_one_or_none()
+        if job is None:
+            return False
+
+        documents_result = await self.session.execute(
+            select(IndexingJobDocumentRecord)
+            .where(IndexingJobDocumentRecord.job_id == job_id)
+            .with_for_update()
+        )
+        job_documents = list(documents_result.scalars())
+        terminal_statuses = {"completed", "failed", "cancelled"}
+        if not job_documents or any(row.status not in terminal_statuses for row in job_documents):
+            return False
+
+        target = None
+        if job.target_index_id:
+            target = await self.session.get(DatasetIndexRecord, job.target_index_id, with_for_update=True)
+
+        full_build = job.job_type in {"initial_index", "reindex_dataset"}
+        if target is None:
+            job.status = self._terminal_job_status(job_documents)
+            job.completed_at = job.completed_at or utcnow()
+            job.updated_at = utcnow()
+            await self.session.commit()
+            return True
+
+        if not full_build:
+            failed = [row for row in job_documents if row.status in {"failed", "cancelled"}]
+            if failed:
+                job.status = self._terminal_job_status(job_documents)
+                job.completed_at = job.completed_at or utcnow()
+                job.updated_at = utcnow()
+                await self.session.commit()
+                return True
+
+            document_ids = [row.document_id for row in job_documents]
+            segments_result = await self.session.execute(
+                select(DocumentSegmentRecord)
+                .where(
+                    DocumentSegmentRecord.dataset_id == job.dataset_id,
+                    DocumentSegmentRecord.dataset_index_id == target.id,
+                    DocumentSegmentRecord.document_id.in_(document_ids),
+                    DocumentSegmentRecord.deleted_at.is_(None),
+                )
+                .with_for_update()
+            )
+            segments = list(segments_result.scalars())
+            staged = [segment for segment in segments if segment.status == "indexing"]
+            if not staged or any(
+                not self._segment_ready_for_activation(job, segment) for segment in staged
+            ):
+                job.status = "failed"
+                job.error_code = "INDEX_VALIDATION_FAILED"
+                job.error = "Built index validation failed."
+                job.completed_at = job.completed_at or utcnow()
+                job.updated_at = utcnow()
+                await self.session.commit()
+                return True
+
+            timestamp = utcnow()
+            staged_ids = {segment.id for segment in staged}
+            for segment in segments:
+                if segment.id not in staged_ids and segment.status == "completed":
+                    segment.deleted_at = timestamp
+                    segment.updated_at = timestamp
+            for segment in staged:
+                segment.status = "completed"
+                segment.updated_at = timestamp
+            job.status = "completed"
+            job.progress = 100
+            job.completed_at = job.completed_at or timestamp
+            job.updated_at = timestamp
+            await self.session.commit()
+            return True
+
+        if target.status == "active" and job.status == "completed":
+            return True
+        if target.status in {"failed", "retired"} and job.status in terminal_statuses:
+            return True
+
+        failed = [row for row in job_documents if row.status in {"failed", "cancelled"}]
+        if failed:
+            target.status = "failed"
+            target.updated_at = utcnow()
+            job.status = "cancelled" if all(row.status == "cancelled" for row in job_documents) else "failed"
+            job.completed_at = job.completed_at or utcnow()
+            job.updated_at = utcnow()
+            await self.session.commit()
+            return True
+
+        document_ids = [row.document_id for row in job_documents]
+        segments_result = await self.session.execute(
+            select(DocumentSegmentRecord)
+            .where(
+                DocumentSegmentRecord.dataset_id == job.dataset_id,
+                DocumentSegmentRecord.dataset_index_id == target.id,
+                DocumentSegmentRecord.document_id.in_(document_ids),
+                DocumentSegmentRecord.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        segments = list(segments_result.scalars())
+        by_document: dict[str, list[DocumentSegmentRecord]] = {}
+        for segment in segments:
+            by_document.setdefault(segment.document_id, []).append(segment)
+        if any(not by_document.get(document_id) for document_id in document_ids) or any(
+            not self._segment_ready_for_activation(job, segment) for segment in segments
+        ):
+            target.status = "failed"
+            target.updated_at = utcnow()
+            job.status = "failed"
+            job.error_code = "INDEX_VALIDATION_FAILED"
+            job.error = "Built index validation failed."
+            job.completed_at = job.completed_at or utcnow()
+            job.updated_at = utcnow()
+            await self.session.commit()
+            return True
+
+        timestamp = utcnow()
+        active_result = await self.session.execute(
+            select(DatasetIndexRecord)
+            .where(
+                DatasetIndexRecord.dataset_id == job.dataset_id,
+                DatasetIndexRecord.status == "active",
+                DatasetIndexRecord.deleted_at.is_(None),
+                DatasetIndexRecord.id != target.id,
+            )
+            .with_for_update()
+        )
+        previous_indexes = list(active_result.scalars())
+        previous_ids = [index.id for index in previous_indexes]
+        if previous_ids:
+            previous_segments_result = await self.session.execute(
+                select(DocumentSegmentRecord).where(
+                    DocumentSegmentRecord.dataset_id == job.dataset_id,
+                    DocumentSegmentRecord.dataset_index_id.in_(previous_ids),
+                    DocumentSegmentRecord.deleted_at.is_(None),
+                ).with_for_update()
+            )
+            for segment in previous_segments_result.scalars():
+                segment.deleted_at = timestamp
+                segment.updated_at = timestamp
+            for previous in previous_indexes:
+                previous.status = "retired"
+                previous.retired_at = previous.retired_at or timestamp
+                previous.updated_at = timestamp
+
+        for segment in segments:
+            segment.status = "completed"
+            segment.updated_at = timestamp
+        target.status = "active"
+        target.activated_at = target.activated_at or timestamp
+        target.updated_at = timestamp
+        job.status = "completed"
+        job.progress = 100
+        job.completed_at = job.completed_at or timestamp
+        job.updated_at = timestamp
+        await self.session.commit()
+        return True
+
+    @staticmethod
+    def _terminal_job_status(rows: list[IndexingJobDocumentRecord]) -> str:
+        if all(row.status == "completed" for row in rows):
+            return "completed"
+        if all(row.status == "cancelled" for row in rows):
+            return "cancelled"
+        return "partial_success" if any(row.status == "completed" for row in rows) else "failed"
+
+    @staticmethod
+    def _segment_ready_for_activation(job: IndexingJobRecord, segment: DocumentSegmentRecord) -> bool:
+        if segment.status != "indexing":
+            return False
+        if job.indexing_technique == "economy":
+            return segment.embedding_status == "not_required"
+        if segment.index_type == "parent":
+            return segment.embedding_status == "not_required"
+        return segment.embedding_status == "completed"
 
     async def recover_expired_documents(
         self, *, worker_id: str = "recovery", lease_seconds: int = 300, limit: int = 100

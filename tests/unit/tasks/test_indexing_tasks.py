@@ -60,6 +60,10 @@ class FakeRepository:
     async def refresh_job_summary(self, *args, **kwargs):
         self.calls.append(("refresh", kwargs))
 
+    async def finalize_indexing_job(self, *args, **kwargs):
+        self.calls.append(("finalize", kwargs))
+        return True
+
     async def cancellation_requested(self, *args, **kwargs):
         return self.row.cancel_requested
 
@@ -81,7 +85,7 @@ async def test_index_document_claims_runs_engine_and_persists_completion():
     await runner.run("jd-1")
 
     assert repo.row.status == "completed"
-    assert [name for name, _ in repo.calls] == ["claim", "heartbeat", "complete", "refresh"]
+    assert [name for name, _ in repo.calls] == ["claim", "heartbeat", "complete", "refresh", "finalize"]
 
 
 @pytest.mark.asyncio
