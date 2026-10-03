@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -96,8 +97,20 @@ class VectorStoreProvisionResult(BaseModel):
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class VectorSearchHit:
+    id: str
+    score: float
+
+
 class VectorStoreProvider(Protocol):
     provider_name: str
+
+    def search(
+        self, collection_name: str, embedding: Sequence[float],
+        dataset_id: str, dataset_index_id: str, limit: int,
+    ) -> list[VectorSearchHit]:
+        ...
 
     def provision_collection(self, collection_name: str, dimension: int, metric_type: str) -> VectorStoreProvisionResult:
         ...

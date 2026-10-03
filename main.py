@@ -6,6 +6,7 @@ from rag_modules.api.indexing_options_api import router as indexing_options_rout
 from rag_modules.api.indexing_preview_api import router as indexing_preview_router
 from rag_modules.api.indexing_configuration_api import router as indexing_configuration_router
 from rag_modules.api.knowledge_base_api import router as knowledge_base_router
+from rag_modules.api.retrieval_api import router as retrieval_router
 
 
 app = FastAPI(title="知识库管理")
@@ -15,6 +16,7 @@ app.include_router(file_router, tags=["文件管理"])
 app.include_router(indexing_options_router)
 app.include_router(indexing_preview_router)
 app.include_router(indexing_configuration_router)
+app.include_router(retrieval_router)
 
 # app.add_middleware(
 #     CORSMiddleware,

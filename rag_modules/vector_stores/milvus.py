@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -17,6 +18,7 @@ from rag_modules.vector_stores.base import (
     VectorStoreDisabled,
     VectorStoreError,
     VectorStoreProvisionResult,
+    VectorSearchHit,
     VectorValidationError,
 )
 
@@ -140,6 +142,52 @@ class MilvusVectorStore:
             return written
         except MilvusException:
             raise _operation_failed() from None
+
+    def search(
+        self, collection_name: str, embedding: Sequence[float],
+        dataset_id: str, dataset_index_id: str, limit: int,
+    ) -> list[VectorSearchHit]:
+        self._require_enabled()
+        _validate_collection_name(collection_name)
+        if (
+            isinstance(embedding, (str, bytes)) or not isinstance(embedding, Sequence)
+            or not embedding or any(
+                type(value) not in (int, float) or not math.isfinite(float(value))
+                for value in embedding
+            ) or len(embedding) > 32_768
+            or not isinstance(dataset_id, str) or not 1 <= len(dataset_id) <= 36
+            or not re.fullmatch(r"[A-Za-z0-9._:-]+", dataset_id)
+            or not isinstance(dataset_index_id, str) or not 1 <= len(dataset_index_id) <= 36
+            or not re.fullmatch(r"[A-Za-z0-9._:-]+", dataset_index_id)
+            or type(limit) is not int or not 1 <= limit <= 1000
+        ):
+            raise VectorValidationError()
+        try:
+            rows = self._client().search(
+                collection_name=collection_name,
+                data=[list(embedding)],
+                filter=f'dataset_id == "{dataset_id}" and dataset_index_id == "{dataset_index_id}"',
+                limit=limit,
+                output_fields=["dataset_id", "dataset_index_id"],
+                search_params={"metric_type": "COSINE", "params": {"ef": max(64, limit)}},
+                timeout=self._config.connect_timeout,
+            )
+        except MilvusException:
+            raise _operation_failed() from None
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], list):
+            raise VectorStoreError("VECTOR_STORE_RESPONSE_INVALID", True, "Vector store response is invalid.")
+        hits: list[VectorSearchHit] = []
+        for row in rows[0]:
+            if not isinstance(row, Mapping):
+                raise VectorStoreError("VECTOR_STORE_RESPONSE_INVALID", True, "Vector store response is invalid.")
+            identifier, score = row.get("id"), row.get("distance", row.get("score"))
+            if not isinstance(identifier, str) or type(score) not in (int, float) or not math.isfinite(float(score)):
+                raise VectorStoreError("VECTOR_STORE_RESPONSE_INVALID", True, "Vector store response is invalid.")
+            entity = row.get("entity")
+            if isinstance(entity, Mapping) and (entity.get("dataset_id") != dataset_id or entity.get("dataset_index_id") != dataset_index_id):
+                continue
+            hits.append(VectorSearchHit(identifier, max(0.0, min(1.0, float(score)))))
+        return hits
 
     def count(self, collection_name: str) -> int:
         self._require_enabled()
