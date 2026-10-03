@@ -74,7 +74,7 @@ async def _upload_documents(
     service: DocumentService,
     publisher: TaskPublisher,
 ) -> DocumentUploadResponse:
-    """执行批量上传，并在每个文档提交后投递只含 ID 的索引消息。"""
+    """执行批量上传；索引必须在用户确认处理规则后投递。"""
     documents: list[DocumentItem] = []
     rejected: list[DocumentRejection] = []
     indexing_task_ids: list[str] = []
@@ -112,18 +112,9 @@ async def _upload_documents(
         # 重复文件没有新对象和新业务记录，不能重复创建索引任务。
         if document.duplicate:
             continue
-        try:
-            task_id = publisher.dispatch_document(
-                dataset_id=dataset_id, document_id=document.id
-            )
-        except Exception:
-            # 数据库记录已经提交；RabbitMQ 短暂不可用时保留 waiting，
-            # 由后续补投机制再次发送，不能为了消息失败回滚文件上传。
-            indexing_dispatch_pending.append(document.id)
-            logger.warning("document_index_dispatch_pending document_id=%s", document.id)
-        else:
-            if task_id:
-                indexing_task_ids.append(task_id)
+        # 上传只保存原始文件和 waiting 文档。处理规则尚未确认前，
+        # 不创建兼容索引任务，也不向 RabbitMQ 投递消息；确认接口
+        # 会在规则和任务事务提交后再投递 job-document 消息。
 
     return DocumentUploadResponse(
         documents=documents,

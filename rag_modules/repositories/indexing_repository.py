@@ -21,6 +21,7 @@ from rag_modules.db.models import (
     DocumentRecord,
     IndexingJobDocumentRecord,
     IndexingJobRecord,
+    ProcessRuleRecord,
 )
 
 
@@ -313,6 +314,18 @@ class IndexingRepository:
         ).hexdigest()
         job_id = uuid4().hex
         target_id = uuid4().hex
+        rule_id = uuid4().hex
+        rule = ProcessRuleRecord(
+            id=rule_id,
+            dataset_id=dataset_id,
+            version=1,
+            mode="general",
+            rules=process_rule["segmentation"],
+            config_hash=config_hash,
+            created_by=document.created_by or "system",
+        )
+        self.session.add(rule)
+        document.dataset_process_rule_id = rule_id
         job = IndexingJobRecord(
             id=job_id,
             dataset_id=dataset_id,

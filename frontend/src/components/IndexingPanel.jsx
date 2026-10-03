@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, X } from "lucide-react";
+import { Check, Eye, X } from "lucide-react";
 import { request } from "../api";
 import StateMessage from "./StateMessage";
 
@@ -37,6 +37,8 @@ export default function IndexingPanel({ dataset, documents, onClose }) {
   const [preview, setPreview] = useState(null);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [confirmed, setConfirmed] = useState(null);
 
   useEffect(() => {
     let current = true;
@@ -87,6 +89,24 @@ export default function IndexingPanel({ dataset, documents, onClose }) {
     }
   }
 
+  async function confirmIndexing() {
+    if (!preview || stale || confirming || !documents.length) return;
+    setConfirming(true);
+    setError("");
+    try {
+      const response = await request(`/api/knowledge_base/${encodeURIComponent(dataset.id)}/indexing/configure`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_ids: documents.map(item => item.id), ...config }),
+      });
+      setConfirmed(response);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setConfirming(false);
+    }
+  }
+
   const parentChild = config.segmentation.mode === "parent_child";
   return <section className="indexing-panel" aria-label="索引配置">
     <div className="indexing-panel-head">
@@ -102,7 +122,8 @@ export default function IndexingPanel({ dataset, documents, onClose }) {
         {config.indexing_technique === "high_quality" && <label>Embedding 模型<select value={config.embedding_model} onChange={event => update({ ...config, embedding_model: event.target.value })}>{options.embedding_models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>}
         <fieldset><legend>分段方式</legend><select value={config.segmentation.mode} onChange={event => selectSegmentation(event.target.value)}>{options.segmentation_modes.map(mode => <option key={mode.id} value={mode.id} disabled={!mode.supported_indexing_techniques.includes(config.indexing_technique)}>{mode.id === "general" ? "普通分段" : "父子分段"}</option>)}</select></fieldset>
         {!parentChild ? <><label>最大块长度（字符）<input type="number" min="1" value={config.segmentation.max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, max_chunk_length: Number(event.target.value) } })} /></label><label>重叠长度（字符）<input type="number" min="0" value={config.segmentation.overlap} onChange={event => update({ ...config, segmentation: { ...config.segmentation, overlap: Number(event.target.value) } })} /></label></> : <><label>父块长度（字符）<input type="number" min="1" value={config.segmentation.parent_max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, parent_max_chunk_length: Number(event.target.value) } })} /></label><label>子块长度（字符）<input type="number" min="1" value={config.segmentation.child_max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, child_max_chunk_length: Number(event.target.value) } })} /></label><label>子块重叠（字符）<input type="number" min="0" value={config.segmentation.child_overlap} onChange={event => update({ ...config, segmentation: { ...config.segmentation, child_overlap: Number(event.target.value) } })} /></label></>}
-        <div className="indexing-actions"><button className="primary-button" disabled={previewing || !documents.length} onClick={previewChunks}><Eye className="icon" />{previewing ? "预览中..." : "预览块"}</button><button className="ghost-button" onClick={onClose}>返回文档</button></div>
+        <div className="indexing-actions"><button className="primary-button" disabled={previewing || !documents.length} onClick={previewChunks}><Eye className="icon" />{previewing ? "预览中..." : "预览块"}</button><button className="primary-button" disabled={!preview || stale || confirming || !!confirmed} onClick={confirmIndexing}><Check className="icon" />{confirming ? "提交中..." : confirmed ? "已开始索引" : "确认并开始索引"}</button><button className="ghost-button" onClick={onClose}>返回文档</button></div>
+        {confirmed && <div className="notice success" role="status">处理规则已保存，索引任务已进入{confirmed.status === "queued" ? "队列" : "待投递"}。</div>}
       </div>
       <div className="preview-pane"><div className="preview-pane-head"><strong>分段预览</strong><span>{preview ? `${preview.total_chunks} 个块` : `${documents.length} 个文档`}</span></div>{stale && preview && <div className="notice warning">配置已变化，请重新预览</div>}{!preview ? <StateMessage title="点击“预览块”查看真实分段结果" /> : <><div className="preview-chunks">{preview.chunks.map(chunk => <article className="preview-chunk" key={chunk.id}><div><span className="muted">#{chunk.position + 1}</span><strong>{chunk.index_type === "parent" ? "父块" : chunk.index_type === "child" ? "子块" : "普通块"}</strong></div><p>{chunk.content}</p><small>{sourceLabel(chunk.source_metadata)}</small></article>)}</div>{preview.warnings?.map((warning, index) => <div className="notice warning" key={`${warning.code}-${index}`}>{warning.filename}: {warning.message}</div>)}</>}</div>
     </div>}

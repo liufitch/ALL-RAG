@@ -54,7 +54,11 @@ class DocumentRecord(Base):
     position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     data_source_type: Mapped[str] = mapped_column(String(255), nullable=False)
     data_source_info: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    dataset_process_rule_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    dataset_process_rule_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("dataset_process_rules.id", name="fk_documents_process_rule"),
+        nullable=True,
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_from: Mapped[str] = mapped_column(String(255), nullable=False)
     created_by: Mapped[str] = mapped_column(String(36), nullable=False)
@@ -72,6 +76,26 @@ class DocumentRecord(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProcessRuleRecord(Base):
+    __tablename__ = "dataset_process_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(String(36), ForeignKey("datasets.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    rules: Mapped[dict] = mapped_column(_json_type(), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_dataset_process_rules_dataset_hash", "dataset_id", "config_hash"),
+    )
 
 
 class DocumentSegmentRecord(Base):
