@@ -278,3 +278,10 @@
 - [ ] **Step 5: Commit documentation and final implementation state**
 
   `git add docs/superpowers/specs/2026-10-03-document-governance-design.md docs/superpowers/plans/2026-10-03-document-governance.md && git commit -m "docs: record document governance design and plan"`
+
+## 本地合并记录
+
+- 当前工作目录已经位于 `main` 分支，功能提交 `e2818b2` 已是 `main` 的 HEAD，因此没有可执行的 feature → main 合并差异。
+- 本地 `main` 相对 `origin/main` ahead 3，分别包含设计/计划、revision 持久化和文档治理实现。
+- 保留未跟踪的 `uv.lock`，它不是本次功能生成的文件，没有纳入合并提交。
+- 收尾验证使用：`PYTHONPATH=. UV_CACHE_DIR=/tmp/graph-rag-uv-cache uv run --extra test pytest -q`（599 passed, 3 skipped）、`npm run build`（成功）和 `git diff --check`（无输出）。

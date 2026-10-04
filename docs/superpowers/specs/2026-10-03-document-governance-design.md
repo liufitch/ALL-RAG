@@ -120,3 +120,17 @@ MinIO 对象不能直接暴露给浏览器。API 需要把 `get_stream` 包装�
 - 前端构建：`npm run build`，结果为成功。
 - 前端 Playwright：现有 `tests/console.spec.js` 在可启动开发服务器时 **11 passed**；当前受限环境后续启动尝试被 `127.0.0.1:5175` 的 `EPERM` 阻止。
 - `git diff --check` 无空白错误。
+
+## 本地合并与实施问题记录
+
+本次实现提交已经直接位于本地 `main` 分支（`e2818b2` 及其前置的 revision 和设计提交），因此无需创建额外 feature 分支或执行跨分支合并；执行 `git merge --ff-only e2818b2` 时应保持 `main` 不变。当前本地 `main` 相对 `origin/main` 多出本功能的 3 个提交。
+
+实施过程中遇到并解决了以下问题：
+
+1. **测试入口和 Python 导入路径**：系统没有全局 `pytest`，直接运行会失败；`uv` 默认缓存目录又没有权限。最终使用 `UV_CACHE_DIR=/tmp/graph-rag-uv-cache PYTHONPATH=. uv run --extra test pytest -q`，同时保证从 `Graph-RAG/` 仓库根目录运行。
+2. **普通重新索引与全量索引的边界**：复用旧的 `initial_index` 会在 finalize 阶段切换整个知识库索引。单文档重索引现在使用 `document_reindex`，并在有 active index 时只替换目标文档的分段。
+3. **分段确定性 ID 冲突**：revision 或单文档重索引若沿用旧索引命名空间，未修改的分段也会和旧完成分段发生主键冲突。任务 ID/ revision ID 被加入源元数据作为索引命名空间，确保新任务生成独立分段 ID。
+4. **分段快照字段丢失**：初版 revision 快照只传递内容和父子关系，问题、答案和关键词不会进入数据库。现已扩展 `PreviewSegment`、staging 值和一致性校验，保留这些人工编辑字段；对默认空字段采用条件写入，避免增加现有大批量插入测试的 bind 数量。
+5. **内部任务 ID 与公开任务 ID 混淆**：索引发布使用 `job_document_id`，前端轮询需要 `IndexingJobRecord.id`。API 现在创建/投递仍使用 job-document ID，但返回和轮询使用 job ID。
+6. **异步清理的幂等性**：删除先提交软删除，再投递维护任务；对象不存在或消息重复投递都视为安全结果，清理失败不回滚用户已确认的删除。
+7. **前端验证环境限制**：前端构建成功，已有 Playwright 测试曾完整通过 11 项；后续重复启动开发服务器时，受限环境拒绝绑定 `127.0.0.1:5175` 并返回 `EPERM`。这属于运行环境端口权限问题，不是页面断言失败。
