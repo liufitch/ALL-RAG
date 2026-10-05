@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag_modules.db.models import (
     DatasetIndexRecord, DatasetRecord, DocumentRecord, DocumentSegmentRecord,
-    IndexingJobRecord,
+    IndexingJobDocumentRecord, IndexingJobRecord,
 )
 
 
@@ -174,6 +174,103 @@ class KnowledgeBaseRepository:
         await self.session.commit()
         await self.session.refresh(record)
         return record
+
+    async def update_settings(self, record: DatasetRecord, **values) -> DatasetRecord:
+        for key, value in values.items():
+            setattr(record, key, value)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
+
+    async def list_all_documents(self, dataset_id: str) -> list[DocumentRecord]:
+        result = await self.session.execute(select(DocumentRecord).where(
+            DocumentRecord.dataset_id == dataset_id,
+            DocumentRecord.deleted_at.is_(None),
+        ).order_by(DocumentRecord.position.asc(), DocumentRecord.id.asc()))
+        return list(result.scalars())
+
+    async def create_import_records(self, *, dataset_id: str, dataset: dict, retrieval: dict, documents: list[dict], actor_id: str) -> str:
+        from uuid import uuid4
+        now = datetime.now(timezone.utc)
+        record = DatasetRecord(
+            id=dataset_id, name=str(dataset.get("name") or "导入知识库")[:255],
+            description=str(dataset.get("description") or "")[:2000] or None,
+            provider="vendor", permission=dataset.get("permission", "only_me"),
+            dataset_type=str(dataset.get("category") or "通用知识")[:255],
+            indexing_technique=dataset.get("indexing_technique", "high_quality"),
+            created_by=actor_id, created_at=now,
+            embedding_model=dataset.get("embedding_model"),
+            embedding_model_provider=dataset.get("embedding_model_provider"),
+            retrieval_model_config=retrieval,
+            partial_user_config=dataset.get("partial_user_config") or {},
+        )
+        self.session.add(record)
+        for item in documents:
+            self.session.add(DocumentRecord(
+                id=item["id"], dataset_id=dataset_id, position=int(item.get("position") or 0),
+                data_source_type=item["data_source_type"], data_source_info=item["data_source_info"],
+                name=item["name"][:255], created_from="import", created_by=actor_id,
+                created_at=now, indexing_status="waiting", enabled=item["enabled"], archived=item["archived"],
+            ))
+        await self.session.commit()
+        return dataset_id
+
+    async def create_rebuild_job(self, dataset_id: str, actor_id: str) -> tuple[IndexingJobRecord, list[IndexingJobDocumentRecord]] | None:
+        dataset = await self.get_active(dataset_id)
+        if dataset is None:
+            return None
+        documents = list((await self.session.execute(select(DocumentRecord).where(
+            DocumentRecord.dataset_id == dataset_id,
+            DocumentRecord.deleted_at.is_(None),
+            DocumentRecord.enabled.is_(True),
+            DocumentRecord.archived.is_(False),
+        ).order_by(DocumentRecord.position.asc(), DocumentRecord.id.asc()))).scalars())
+        if not documents:
+            return None
+        active_job = await self.session.scalar(select(IndexingJobRecord).where(
+            IndexingJobRecord.dataset_id == dataset_id,
+            IndexingJobRecord.job_type == "reindex_dataset",
+            IndexingJobRecord.status.in_(("pending", "queued", "running", "retry_wait")),
+        ).order_by(IndexingJobRecord.created_at.desc()))
+        if active_job is not None:
+            rows = list((await self.session.execute(select(IndexingJobDocumentRecord).where(
+                IndexingJobDocumentRecord.job_id == active_job.id
+            ))).scalars())
+            return active_job, rows
+        from uuid import uuid4
+        process_rule = ((dataset.partial_user_config or {}).get("process_rule") or {
+            "mode": "general", "max_chunk_length": 500, "overlap": 50, "separator": "\n"
+        })
+        snapshot = {
+            "indexing_technique": dataset.indexing_technique,
+            "embedding_model": dataset.embedding_model,
+            "segmentation": process_rule,
+        }
+        retrieval = dict(dataset.retrieval_model_config or {})
+        job_id, index_id = uuid4().hex, uuid4().hex
+        job = IndexingJobRecord(
+            id=job_id, dataset_id=dataset_id, target_index_id=index_id,
+            job_type="reindex_dataset", scope="all_documents", status="pending",
+            indexing_technique=dataset.indexing_technique,
+            segmentation_mode=process_rule.get("mode", "general"),
+            embedding_model_provider=dataset.embedding_model_provider,
+            embedding_model=dataset.embedding_model,
+            process_rule=snapshot, retrieval_config=retrieval,
+            total_documents=len(documents), created_by=actor_id,
+        )
+        index = DatasetIndexRecord(
+            id=index_id, dataset_id=dataset_id, created_by_job_id=job_id,
+            index_type=dataset.indexing_technique, status="building",
+            embedding_model_provider=dataset.embedding_model_provider,
+            embedding_model=dataset.embedding_model,
+            vector_store_provider="milvus" if dataset.indexing_technique == "high_quality" else None,
+            process_rule=snapshot, retrieval_config=retrieval,
+            config_hash=uuid4().hex,
+        )
+        rows = [IndexingJobDocumentRecord(id=uuid4().hex, job_id=job_id, document_id=item.id, status="pending") for item in documents]
+        self.session.add_all([job, index, *rows])
+        await self.session.commit()
+        return job, rows
 
     async def soft_delete(self, dataset_id: str) -> bool:
         record = await self.session.get(DatasetRecord, dataset_id)

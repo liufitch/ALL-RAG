@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Archive, ArrowLeft, Download, Edit3, Eye, FileText, MoreHorizontal, RefreshCw, RotateCcw, Settings2, ToggleLeft, ToggleRight, Trash2, Upload, X } from "lucide-react";
+import { Archive, ArrowLeft, Download, Edit3, Eye, FileText, MoreHorizontal, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, ToggleLeft, ToggleRight, Trash2, Upload, X } from "lucide-react";
 import { downloadDocument, request } from "../api";
 import Pagination from "./Pagination";
 import StateMessage from "./StateMessage";
 import IndexingPanel from "./IndexingPanel";
 import SegmentEditor from "./SegmentEditor";
+import KnowledgeBaseSettings from "./KnowledgeBaseSettings";
 
 const documentStatuses = {
   waiting: "待索引", downloading: "下载中", parsing: "解析中", splitting: "分段中",
@@ -30,6 +31,7 @@ export default function Documents({ dataset, onBack, onUploaded }) {
   const [loadError, setLoadError] = useState("");
   const [result, setResult] = useState(null);
   const [indexingOpen, setIndexingOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [actionBusy, setActionBusy] = useState(null);
   const [jobNotice, setJobNotice] = useState("");
@@ -159,7 +161,8 @@ export default function Documents({ dataset, onBack, onUploaded }) {
           {item.filename}: {item.message}
         </p>)}
       </div>}
-      <div className="document-toolbar"><button className="ghost-button" disabled={!items.length || uploading} onClick={() => setIndexingOpen(true)}><Settings2 className="icon" />配置索引</button></div>
+      <div className="document-toolbar"><button className="ghost-button" disabled={uploading} onClick={() => setSettingsOpen(true)}><SlidersHorizontal className="icon" />知识库设置</button><button className="ghost-button" disabled={!items.length || uploading} onClick={() => setIndexingOpen(true)}><Settings2 className="icon" />配置索引</button></div>
+      {settingsOpen && <KnowledgeBaseSettings dataset={dataset} onClose={() => setSettingsOpen(false)} onSaved={onUploaded} />}
       {indexingOpen && <IndexingPanel dataset={dataset} documents={items} onClose={() => setIndexingOpen(false)} />}
       <section className="table-wrap" aria-label="文档列表">
         <div className="table-header"><span>文档列表</span><span>共 {total} 条记录</span></div>

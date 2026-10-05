@@ -6,12 +6,14 @@ from rag_modules.api.indexing_options_api import router as indexing_options_rout
 from rag_modules.api.indexing_preview_api import router as indexing_preview_router
 from rag_modules.api.indexing_configuration_api import router as indexing_configuration_router
 from rag_modules.api.knowledge_base_api import router as knowledge_base_router
+from rag_modules.api.knowledge_base_settings_api import router as knowledge_base_settings_router
 from rag_modules.api.retrieval_api import router as retrieval_router
 
 
 app = FastAPI(title="知识库管理")
 # 注册子路由
 app.include_router(knowledge_base_router, tags=["知识库"])
+app.include_router(knowledge_base_settings_router)
 app.include_router(file_router, tags=["文件管理"])
 app.include_router(indexing_options_router)
 app.include_router(indexing_preview_router)

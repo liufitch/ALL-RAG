@@ -4,6 +4,12 @@ from uuid import uuid4
 
 from rag_modules.api.dto.knowledge_base.knowledgeBase import KnowledgeBase
 from rag_modules.api.dto.knowledge_base.knowledgeBaseCreate import KnowledgeBaseCreate
+from rag_modules.api.dto.knowledge_base.settings import (
+    KnowledgeBaseSettingsResponse,
+    KnowledgeBaseSettingsUpdate,
+    RetrievalConfig,
+)
+from rag_modules.common import utcnow
 from rag_modules.db.models import DatasetRecord
 from rag_modules.repositories.knowledge_base_repository import KnowledgeBaseRepository
 
@@ -57,6 +63,60 @@ class KnowledgeBaseService:
         if detail is None:
             return None
         return self._to_dto(*detail)
+
+    async def get_settings(self, dataset_id: str) -> KnowledgeBaseSettingsResponse | None:
+        record = await self.repository.get_active(dataset_id)
+        if record is None:
+            return None
+        return self._settings_dto(record, needs_rebuild=False)
+
+    async def update_settings(
+        self, dataset_id: str, payload: KnowledgeBaseSettingsUpdate, actor_id: str,
+    ) -> KnowledgeBaseSettingsResponse | None:
+        record = await self.repository.get_active(dataset_id)
+        if record is None:
+            return None
+        changes = payload.model_dump(exclude_unset=True)
+        retrieval = changes.pop("retrieval", None)
+        if "category" in changes:
+            changes["dataset_type"] = changes.pop("category")
+        if retrieval is not None:
+            changes["retrieval_model_config"] = retrieval
+        indexing_keys = {"indexing_technique", "embedding_model", "dataset_type"}
+        needs_rebuild = any(getattr(record, key) != value for key, value in changes.items() if key in indexing_keys)
+        if changes:
+            changes["updated_by"] = actor_id
+            changes["updated_at"] = utcnow()
+            await self.repository.update_settings(record, **changes)
+        return self._settings_dto(record, needs_rebuild=needs_rebuild)
+
+    async def rebuild(self, dataset_id: str, actor_id: str) -> dict | None:
+        result = await self.repository.create_rebuild_job(dataset_id, actor_id)
+        if result is None:
+            return None
+        job, rows = result
+        return {"job_id": job.id, "status": "queued", "job_document_ids": [row.id for row in rows]}
+
+    @staticmethod
+    def _settings_dto(record: DatasetRecord, *, needs_rebuild: bool) -> KnowledgeBaseSettingsResponse:
+        retrieval = RetrievalConfig.model_validate(record.retrieval_model_config or {})
+        return KnowledgeBaseSettingsResponse(
+            dataset={
+                "id": record.id,
+                "name": record.name,
+                "description": record.description or "",
+                "permission": record.permission,
+                "category": record.dataset_type or "通用知识",
+            },
+            indexing={
+                "technique": record.indexing_technique,
+                "embedding_model": record.embedding_model,
+                "embedding_model_provider": record.embedding_model_provider,
+                "process_rule": (record.partial_user_config or {}).get("process_rule"),
+            },
+            retrieval=retrieval,
+            needs_rebuild=needs_rebuild,
+        )
 
     def _to_dto(
         self, record: DatasetRecord, document_count: int, chunk_count: int, status: str,
