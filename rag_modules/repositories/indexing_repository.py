@@ -173,8 +173,8 @@ class IndexingRepository:
             select(DocumentRevisionRecord).where(DocumentRevisionRecord.indexing_job_id == row.job_id)
         )
         if revision is not None:
-            revision.status = "failed" if row.status == "failed" else "indexing"
-            revision.error = error[:2000]
+            revision.status = "cancelled"
+            revision.error = None
         await self.session.commit()
 
     async def fail_job_document(
@@ -236,6 +236,78 @@ class IndexingRepository:
         job.current_stage = next((row.current_stage for row in rows if row.status == "running"), job.current_stage)
         job.updated_at = utcnow()
         await self.session.commit()
+
+    async def list_jobs(self, dataset_id: str, *, offset: int = 0, limit: int = 50):
+        from sqlalchemy import func
+        total = await self.session.scalar(
+            select(func.count(IndexingJobRecord.id)).where(IndexingJobRecord.dataset_id == dataset_id)
+        )
+        result = await self.session.execute(
+            select(IndexingJobRecord).where(IndexingJobRecord.dataset_id == dataset_id)
+            .order_by(IndexingJobRecord.created_at.desc()).offset(offset).limit(limit)
+        )
+        return list(result.scalars()), int(total or 0)
+
+    async def get_job(self, dataset_id: str, job_id: str):
+        job = await self.session.scalar(select(IndexingJobRecord).where(
+            IndexingJobRecord.id == job_id, IndexingJobRecord.dataset_id == dataset_id,
+        ))
+        if job is None:
+            return None, []
+        result = await self.session.execute(select(IndexingJobDocumentRecord).where(
+            IndexingJobDocumentRecord.job_id == job_id
+        ).order_by(IndexingJobDocumentRecord.created_at.asc()))
+        return job, list(result.scalars())
+
+    async def request_job_cancel(self, dataset_id: str, job_id: str) -> tuple[bool, str | None]:
+        job = await self.session.scalar(select(IndexingJobRecord).where(
+            IndexingJobRecord.id == job_id, IndexingJobRecord.dataset_id == dataset_id
+        ).with_for_update())
+        if job is None:
+            return False, "not_found"
+        if job.status in {"completed", "failed", "partial_success", "cancelled"}:
+            return False, "terminal"
+        job.cancel_requested_at = utcnow()
+        job.updated_at = utcnow()
+        await self.session.commit()
+        return True, None
+
+    async def retry_job(self, dataset_id: str, job_id: str) -> tuple[bool, str | None, list[str]]:
+        job = await self.session.scalar(select(IndexingJobRecord).where(
+            IndexingJobRecord.id == job_id, IndexingJobRecord.dataset_id == dataset_id
+        ).with_for_update())
+        if job is None:
+            return False, "not_found", []
+        if job.status in {"running", "queued"}:
+            return False, "active", []
+        rows_result = await self.session.execute(select(IndexingJobDocumentRecord).where(
+            IndexingJobDocumentRecord.job_id == job_id,
+            IndexingJobDocumentRecord.status.in_(("failed", "retry_wait")),
+        ).with_for_update())
+        rows = list(rows_result.scalars())
+        if not rows:
+            return False, "nothing_to_retry", []
+        now = utcnow()
+        job.status = "pending"
+        job.cancel_requested_at = None
+        job.error = None
+        job.error_code = None
+        job.completed_at = None
+        job.updated_at = now
+        identifiers = []
+        for row in rows:
+            row.status = "pending"
+            row.available_at = now
+            row.error = None
+            row.error_code = None
+            row.worker_id = None
+            row.lease_expires_at = None
+            row.cancelled_at = None
+            row.completed_at = None
+            row.updated_at = now
+            identifiers.append(row.id)
+        await self.session.commit()
+        return True, None, identifiers
 
     async def finalize_indexing_job(self, job_id: str) -> bool:
         """Finalize a terminal job and atomically publish a full-build index.

@@ -26,7 +26,7 @@ async def _cleanup_document(dataset_id: str, document_id: str) -> None:
 
     engine = create_async_engine(
         settings.sqlalchemy_database_uri,
-        **{**settings.sqlalchemy_engine_options, "poolclass": NullPool},
+        poolclass=NullPool, hide_parameters=True,
     )
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     try:

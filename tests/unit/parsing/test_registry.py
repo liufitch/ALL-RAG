@@ -52,6 +52,24 @@ def test_registry_accepts_extension_without_dot():
     assert parsed.source_type == "markdown"
 
 
+def test_registry_buffers_non_seekable_stream():
+    class NonSeekable:
+        def __init__(self, payload):
+            self._stream = io.BytesIO(payload)
+
+        def seek(self, *_args):
+            raise io.UnsupportedOperation("seek")
+
+        def read(self, *args):
+            return self._stream.read(*args)
+
+    parser = RecordingParser()
+    parsed = ParserRegistry({".md": parser}).parse(
+        ".md", NonSeekable(b"body"), ParseContext("d", "x.md")
+    )
+    assert parsed.source_type == "markdown"
+
+
 def test_registry_rejects_unknown_extension_with_stable_code():
     with pytest.raises(DocumentParseError) as error:
         ParserRegistry({}).parse(".doc", io.BytesIO(b"x"), ParseContext("d", "x.doc"))

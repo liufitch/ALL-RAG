@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import os
 from typing import Any, Callable
 from uuid import uuid4
@@ -26,6 +27,7 @@ from rag_modules.common import utcnow
 
 
 _RETRY_DELAYS = (30, 120, 600)
+logger = logging.getLogger(__name__)
 
 
 class IndexingTaskRunner:
@@ -84,6 +86,7 @@ class IndexingTaskRunner:
             # text is never persisted because it may contain credentials or
             # source content from a third-party library.
             delay = _RETRY_DELAYS[min(max(int(row.attempt or 1) - 1, 0), len(_RETRY_DELAYS) - 1)]
+            logger.exception("indexing_worker_unexpected_error job_document_id=%s", job_document_id)
             await self.repository.fail_job_document(
                 job_document_id,
                 worker_id=self.worker_id,

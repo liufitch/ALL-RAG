@@ -5,6 +5,11 @@ from rag_modules.config.settings import settings
 
 
 celery_app = Celery("graph_rag", broker=settings.broker.url)
+celery_app.conf.include = (
+    "rag_modules.tasks.indexing_tasks",
+    "rag_modules.tasks.maintenance_tasks",
+    "rag_modules.tasks.document_cleanup_tasks",
+)
 celery_app.conf.update(
     result_backend=None,
     task_ignore_result=True,
@@ -21,6 +26,8 @@ celery_app.conf.update(
     # 任务超时保护，防止索引任务卡死永不释放worker
     task_time_limit = 3600,
     task_soft_time_limit = 3500,
+    # RabbitMQ 4 disables transient pidbox queues; task execution does not require remote control.
+    worker_enable_remote_control=False,
     # 任务名称不使用默认的主机名，方便日志追踪
     worker_task_log_format = "[%(asctime)s][%(task_name)s][%(task_id)s] %(message)s",
 )
@@ -31,9 +38,11 @@ celery_app.conf.task_routes = {
     "rag_modules.tasks.indexing_tasks.index_document": {"queue": "indexing"},
     "rag_modules.tasks.indexing_tasks.finalize_indexing_job": {"queue": "indexing"},
     "rag_modules.tasks.maintenance_tasks.recover_stale_indexing": {"queue": "maintenance"},
+    "rag_modules.tasks.maintenance_tasks.dispatch_pending_indexing": {"queue": "maintenance"},
 }
 
 celery_app.conf.beat_schedule = {
+    "dispatch-pending-indexing": {"task": "rag_modules.tasks.maintenance_tasks.dispatch_pending_indexing", "schedule": 30.0, "options": {"queue": "maintenance"}},
     "recover-stale-indexing-leases": {
         "task": "rag_modules.tasks.maintenance_tasks.recover_stale_indexing",
         "schedule": 60.0,

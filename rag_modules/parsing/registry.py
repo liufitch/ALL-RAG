@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import BinaryIO, Mapping
+import io
 
 from rag_modules.parsing.base import ParseContext, Parser
 from rag_modules.parsing.models import DocumentParseError, ParsedDocument
@@ -45,7 +46,14 @@ class ParserRegistry:
                 f"No parser is registered for {normalized_extension!r}.",
             )
 
-        stream.seek(0)
+        # MinIO's get_object returns a urllib3 HTTPResponse whose stream is
+        # readable but not seekable. Parsers expect a rewound file-like object,
+        # so materialize non-seekable sources before dispatching.
+        try:
+            stream.seek(0)
+        except (AttributeError, io.UnsupportedOperation):
+            stream = io.BytesIO(stream.read())
+            stream.seek(0)
         parsed = parser.parse(stream, context)
         if not parsed.blocks:
             raise DocumentParseError(

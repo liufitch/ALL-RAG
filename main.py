@@ -8,6 +8,8 @@ from rag_modules.api.indexing_configuration_api import router as indexing_config
 from rag_modules.api.knowledge_base_api import router as knowledge_base_router
 from rag_modules.api.knowledge_base_settings_api import router as knowledge_base_settings_router
 from rag_modules.api.retrieval_api import router as retrieval_router
+from rag_modules.api.indexing_jobs_api import router as indexing_jobs_router
+from rag_modules.api.ingest_api import router as ingest_router
 
 
 app = FastAPI(title="知识库管理")
@@ -19,6 +21,8 @@ app.include_router(indexing_options_router)
 app.include_router(indexing_preview_router)
 app.include_router(indexing_configuration_router)
 app.include_router(retrieval_router)
+app.include_router(indexing_jobs_router)
+app.include_router(ingest_router)
 
 # app.add_middleware(
 #     CORSMiddleware,
