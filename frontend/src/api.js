@@ -22,3 +22,43 @@ export async function downloadDocument(path) {
   }
   return response.blob();
 }
+
+export async function streamEvidence(path, payload, onEvent, signal) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(payload), signal,
+  });
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({}));
+    throw new Error(typeof problem.detail === "string" ? problem.detail : `请求失败 (${response.status})`);
+  }
+  if (!response.body) throw new Error("浏览器无法读取流式检索结果");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let match;
+      while ((match = /\r?\n\r?\n/.exec(buffer))) {
+        const frame = buffer.slice(0, match.index);
+        buffer = buffer.slice(match.index + match[0].length);
+        const event = frame.split(/\r?\n/).find(line => line.startsWith("event:"))?.slice(6).trim();
+        const data = frame.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+        if (!event || !data) continue;
+        let parsed;
+        try { parsed = JSON.parse(data); } catch { throw new Error("检索结果流格式无效"); }
+        if (event === "error") throw new Error(parsed.message || "检索失败");
+        onEvent(event, parsed);
+        if (event === "done") { finished = true; return; }
+      }
+      if (done) break;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!finished) throw new Error("检索连接提前结束，请重试");
+}

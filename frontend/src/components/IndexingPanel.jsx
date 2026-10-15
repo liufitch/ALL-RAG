@@ -29,7 +29,25 @@ function SegmentedButton({ active, disabled, onClick, children }) {
   return <button type="button" aria-pressed={active} disabled={disabled} onClick={onClick}>{children}</button>;
 }
 
-export default function IndexingPanel({ dataset, documents, onClose }) {
+function groupPreviewChunks(chunks) {
+  const parents = new Map(chunks.filter(chunk => chunk.index_type === "parent").map(chunk => [chunk.id, { chunk, children: [] }]));
+  const groups = [];
+  for (const chunk of chunks) {
+    if (chunk.index_type === "parent") groups.push(parents.get(chunk.id));
+    else if (chunk.index_type === "child" && parents.has(chunk.parent_id)) parents.get(chunk.parent_id).children.push(chunk);
+    else groups.push({ chunk, children: [] });
+  }
+  return groups;
+}
+
+function PreviewChunkCard({ chunk }) {
+  return <article className={`preview-chunk preview-${chunk.index_type}`}>
+    <div><span className="muted">#{chunk.position + 1}</span><strong>{chunk.index_type === "parent" ? "父块" : chunk.index_type === "child" ? "子块" : "普通块"}</strong></div>
+    <p>{chunk.content}</p><small>{sourceLabel(chunk.source_metadata)}</small>
+  </article>;
+}
+
+export default function IndexingPanel({ dataset, documents, onClose, onStarted }) {
   const [options, setOptions] = useState(fallbackOptions);
   const [config, setConfig] = useState(makeConfig(fallbackOptions));
   const [loading, setLoading] = useState(true);
@@ -67,7 +85,7 @@ export default function IndexingPanel({ dataset, documents, onClose }) {
     const segmentation = mode === "parent_child"
       ? { mode, parent_mode: defaults.parent_mode, parent_max_chunk_length: defaults.parent_max_chunk_length, child_max_chunk_length: defaults.child_max_chunk_length, child_overlap: defaults.child_overlap, separator: "\n" }
       : { mode, max_chunk_length: defaults.max_chunk_length, overlap: defaults.overlap, separator: "\n" };
-    update({ ...config, segmentation });
+    update({ ...config, indexing_technique: mode === "parent_child" ? "high_quality" : config.indexing_technique, segmentation });
   }
 
   async function previewChunks() {
@@ -100,6 +118,7 @@ export default function IndexingPanel({ dataset, documents, onClose }) {
         body: JSON.stringify({ document_ids: documents.map(item => item.id), ...config }),
       });
       setConfirmed(response);
+      onStarted?.(response.job_id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -117,15 +136,17 @@ export default function IndexingPanel({ dataset, documents, onClose }) {
     {loading ? <StateMessage kind="loading" title="加载索引选项..." /> : <div className="indexing-layout">
       <div className="indexing-form">
         <fieldset><legend>索引方式</legend><div className="segmented-control">
-          {options.indexing_techniques.map(item => <SegmentedButton key={item.id} active={config.indexing_technique === item.id} disabled={item.id === "economy" && parentChild} onClick={() => selectTechnique(item.id)}>{item.id === "high_quality" ? "高质量" : "经济"}</SegmentedButton>)}
+          {options.indexing_techniques.map(item => <SegmentedButton key={item.id} active={config.indexing_technique === item.id} onClick={() => selectTechnique(item.id)}>{item.id === "high_quality" ? "高质量" : "经济"}</SegmentedButton>)}
         </div></fieldset>
         {config.indexing_technique === "high_quality" && <label>Embedding 模型<select value={config.embedding_model} onChange={event => update({ ...config, embedding_model: event.target.value })}>{options.embedding_models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>}
-        <fieldset><legend>分段方式</legend><select value={config.segmentation.mode} onChange={event => selectSegmentation(event.target.value)}>{options.segmentation_modes.map(mode => <option key={mode.id} value={mode.id} disabled={!mode.supported_indexing_techniques.includes(config.indexing_technique)}>{mode.id === "general" ? "普通分段" : "父子分段"}</option>)}</select></fieldset>
-        {!parentChild ? <><label>最大块长度（字符）<input type="number" min="1" value={config.segmentation.max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, max_chunk_length: Number(event.target.value) } })} /></label><label>重叠长度（字符）<input type="number" min="0" value={config.segmentation.overlap} onChange={event => update({ ...config, segmentation: { ...config.segmentation, overlap: Number(event.target.value) } })} /></label></> : <><label>父块长度（字符）<input type="number" min="1" value={config.segmentation.parent_max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, parent_max_chunk_length: Number(event.target.value) } })} /></label><label>子块长度（字符）<input type="number" min="1" value={config.segmentation.child_max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, child_max_chunk_length: Number(event.target.value) } })} /></label><label>子块重叠（字符）<input type="number" min="0" value={config.segmentation.child_overlap} onChange={event => update({ ...config, segmentation: { ...config.segmentation, child_overlap: Number(event.target.value) } })} /></label></>}
+        <fieldset><legend>分段方式</legend><select value={config.segmentation.mode} onChange={event => selectSegmentation(event.target.value)}>{options.segmentation_modes.map(mode => <option key={mode.id} value={mode.id} disabled={mode.id === "parent_child" && !mode.supported_indexing_techniques.includes("high_quality")}>{mode.id === "general" ? "普通分段" : "父子分段"}</option>)}</select></fieldset>
+        {!parentChild ? <><label>最大块长度（字符）<input type="number" min="1" value={config.segmentation.max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, max_chunk_length: Number(event.target.value) } })} /></label><label>重叠长度（字符）<input type="number" min="0" value={config.segmentation.overlap} onChange={event => update({ ...config, segmentation: { ...config.segmentation, overlap: Number(event.target.value) } })} /></label></> : <><label>父块模式<select value={config.segmentation.parent_mode} onChange={event => update({ ...config, segmentation: { ...config.segmentation, parent_mode: event.target.value } })}><option value="paragraph">按段落</option><option value="full_document">全文</option></select></label><label>父块长度（字符）<input type="number" min="1" value={config.segmentation.parent_max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, parent_max_chunk_length: Number(event.target.value) } })} /></label><label>子块长度（字符）<input type="number" min="1" value={config.segmentation.child_max_chunk_length} onChange={event => update({ ...config, segmentation: { ...config.segmentation, child_max_chunk_length: Number(event.target.value) } })} /></label><label>子块重叠（字符）<input type="number" min="0" value={config.segmentation.child_overlap} onChange={event => update({ ...config, segmentation: { ...config.segmentation, child_overlap: Number(event.target.value) } })} /></label></>}
         <div className="indexing-actions"><button className="primary-button" disabled={previewing || !documents.length} onClick={previewChunks}><Eye className="icon" />{previewing ? "预览中..." : "预览块"}</button><button className="primary-button" disabled={!preview || stale || confirming || !!confirmed} onClick={confirmIndexing}><Check className="icon" />{confirming ? "提交中..." : confirmed ? "已开始索引" : "确认并开始索引"}</button><button className="ghost-button" onClick={onClose}>返回文档</button></div>
         {confirmed && <div className="notice success" role="status">处理规则已保存，索引任务已进入{confirmed.status === "queued" ? "队列" : "待投递"}。</div>}
       </div>
-      <div className="preview-pane"><div className="preview-pane-head"><strong>分段预览</strong><span>{preview ? `${preview.total_chunks} 个块` : `${documents.length} 个文档`}</span></div>{stale && preview && <div className="notice warning">配置已变化，请重新预览</div>}{!preview ? <StateMessage title="点击“预览块”查看真实分段结果" /> : <><div className="preview-chunks">{preview.chunks.map(chunk => <article className="preview-chunk" key={chunk.id}><div><span className="muted">#{chunk.position + 1}</span><strong>{chunk.index_type === "parent" ? "父块" : chunk.index_type === "child" ? "子块" : "普通块"}</strong></div><p>{chunk.content}</p><small>{sourceLabel(chunk.source_metadata)}</small></article>)}</div>{preview.warnings?.map((warning, index) => <div className="notice warning" key={`${warning.code}-${index}`}>{warning.filename}: {warning.message}</div>)}</>}</div>
+      <div className="preview-pane"><div className="preview-pane-head"><strong>分段预览</strong><span>{preview ? `${preview.total_chunks} 个块` : `${documents.length} 个文档`}</span></div>{stale && preview && <div className="notice warning">配置已变化，请重新预览</div>}{!preview ? <StateMessage title="点击“预览块”查看真实分段结果" /> : <><div className="preview-chunks">{groupPreviewChunks(preview.chunks).map(({ chunk, children }) => chunk.index_type === "parent"
+        ? <section className="preview-parent-group" role="group" aria-label={`父块 ${chunk.position + 1}`} key={chunk.id}><PreviewChunkCard chunk={chunk} /><div className="preview-children">{children.map(child => <PreviewChunkCard chunk={child} key={child.id} />)}</div></section>
+        : <PreviewChunkCard chunk={chunk} key={chunk.id} />)}</div>{preview.warnings?.map((warning, index) => <div className="notice warning" key={`${warning.code}-${index}`}>{warning.filename}: {warning.message}</div>)}</>}</div>
     </div>}
   </section>;
 }

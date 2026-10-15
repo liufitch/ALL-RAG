@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 class RetrievalRequest(BaseModel):
     query: str = Field(min_length=1, max_length=8000)
-    mode: Literal["vector", "full_text", "hybrid"] | None = None
+    mode: Literal["vector", "full_text", "hybrid", "graph"] | None = None
     top_k: int | None = Field(default=None, ge=1, le=100)
     score_threshold: float | None = Field(default=None, ge=0, le=1)
     semantic_weight: float | None = Field(default=None, ge=0, le=1)

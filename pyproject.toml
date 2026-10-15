@@ -25,6 +25,7 @@ dependencies = [
     "markdown-it-py>=4,<5",
     "PyYAML>=6,<7",
     "jieba>=0.42,<1",
+    "neo4j>=5.18,<7",
 ]
 
 [project.optional-dependencies]

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Archive, ArrowLeft, Download, Edit3, Eye, FileText, MoreHorizontal, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, ToggleLeft, ToggleRight, Trash2, Upload, X } from "lucide-react";
 import { downloadDocument, request } from "../api";
 import Pagination from "./Pagination";
@@ -6,6 +6,8 @@ import StateMessage from "./StateMessage";
 import IndexingPanel from "./IndexingPanel";
 import SegmentEditor from "./SegmentEditor";
 import KnowledgeBaseSettings from "./KnowledgeBaseSettings";
+import IndexingJobProgress from "./IndexingJobProgress";
+import EvidencePanel from "./EvidencePanel";
 
 const documentStatuses = {
   waiting: "待索引", downloading: "下载中", parsing: "解析中", splitting: "分段中",
@@ -35,7 +37,25 @@ export default function Documents({ dataset, onBack, onUploaded }) {
   const [editing, setEditing] = useState(null);
   const [actionBusy, setActionBusy] = useState(null);
   const [jobNotice, setJobNotice] = useState("");
+  const [workflowDocuments, setWorkflowDocuments] = useState([]);
+  const [jobId, setJobId] = useState(null);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const path = `/api/knowledge_base/${encodeURIComponent(dataset.id)}/documents`;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    request(`/api/knowledge_base/${encodeURIComponent(dataset.id)}/indexing/jobs?page=1&page_size=1`, { signal: controller.signal })
+      .then(payload => {
+        if (payload.items?.[0]) setJobId(current => current || payload.items[0].id);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [dataset.id]);
+
+  const refreshAfterJob = useCallback(() => {
+    setRevision(value => value + 1);
+    onUploaded?.();
+  }, [onUploaded]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -67,8 +87,14 @@ export default function Documents({ dataset, onBack, onUploaded }) {
     // 同一个 files 字段可重复出现；dataset ID 来自已创建的知识库，不能先传无归属文件。
     files.forEach(file => body.append("files", file));
     try {
-      setResult(await request(`${path}/upload`, { method: "POST", body }));
+      const response = await request(`${path}/upload`, { method: "POST", body });
+      setResult(response);
       setPage(1);
+      const accepted = response.documents.filter(item => !item.duplicate);
+      if (accepted.length) {
+        setWorkflowDocuments(accepted);
+        setIndexingOpen(true);
+      }
     } catch (err) {
       setError(`${err.message}。请核对文档列表后重试，部分文件可能已保存。`);
     } finally {
@@ -78,6 +104,8 @@ export default function Documents({ dataset, onBack, onUploaded }) {
       onUploaded();
     }
   }
+
+  const workflowStep = jobId ? 4 : indexingOpen ? 2 : items.length || workflowDocuments.length ? 2 : 1;
 
   async function mutate(item, action, method = "POST") {
     if (actionBusy) return;
@@ -151,6 +179,16 @@ export default function Documents({ dataset, onBack, onUploaded }) {
           </label>
         </div>
       </header>
+      <section className="workflow-panel" aria-label="知识库建立流程">
+        <ol className="workflow-steps">{["创建知识库", "上传文件", "配置与预览", "启动索引", "查看进度"].map((label, index) =>
+          <li key={label} className={index < workflowStep ? "done" : index === workflowStep ? "active" : ""}>
+            <span>{index + 1}</span>{label}
+          </li>)}</ol>
+        {!jobId && !indexingOpen && !items.length && !workflowDocuments.length &&
+          <p>上传文件以继续建立索引</p>}
+        {!jobId && !indexingOpen && (items.length > 0 || workflowDocuments.length > 0) &&
+          <p>文件已上传，打开“配置索引”预览分段并启动任务。</p>}
+      </section>
       {error && <div className="notice danger" role="alert">{error}</div>}
       {jobNotice && <div className="notice" role="status">{jobNotice}</div>}
       {loadError && <div className="notice danger" role="alert">{loadError}</div>}
@@ -161,9 +199,12 @@ export default function Documents({ dataset, onBack, onUploaded }) {
           {item.filename}: {item.message}
         </p>)}
       </div>}
-      <div className="document-toolbar"><button className="ghost-button" disabled={uploading} onClick={() => setSettingsOpen(true)}><SlidersHorizontal className="icon" />知识库设置</button><button className="ghost-button" disabled={!items.length || uploading} onClick={() => setIndexingOpen(true)}><Settings2 className="icon" />配置索引</button></div>
+      <div className="document-toolbar"><button className="ghost-button" onClick={() => setEvidenceOpen(value => !value)}>检索证据</button><button className="ghost-button" disabled={uploading} onClick={() => setSettingsOpen(true)}><SlidersHorizontal className="icon" />知识库设置</button><button className="ghost-button" disabled={!items.length || uploading} onClick={() => setIndexingOpen(true)}><Settings2 className="icon" />配置索引</button></div>
+      {evidenceOpen && <EvidencePanel dataset={dataset} />}
       {settingsOpen && <KnowledgeBaseSettings dataset={dataset} onClose={() => setSettingsOpen(false)} onSaved={onUploaded} />}
-      {indexingOpen && <IndexingPanel dataset={dataset} documents={items} onClose={() => setIndexingOpen(false)} />}
+      {indexingOpen && <IndexingPanel dataset={dataset} documents={workflowDocuments.length ? workflowDocuments : items}
+        onClose={() => setIndexingOpen(false)} onStarted={id => { setJobId(id); setIndexingOpen(false); setRevision(value => value + 1); }} />}
+      {jobId && <IndexingJobProgress datasetId={dataset.id} jobId={jobId} documents={workflowDocuments.length ? workflowDocuments : items} onFinished={refreshAfterJob} />}
       <section className="table-wrap" aria-label="文档列表">
         <div className="table-header"><span>文档列表</span><span>共 {total} 条记录</span></div>
         {loading ? <StateMessage kind="loading" title="加载中..." />

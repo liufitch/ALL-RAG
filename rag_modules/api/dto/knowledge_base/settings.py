@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class RetrievalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["vector", "full_text", "hybrid"] = "hybrid"
+    mode: Literal["vector", "full_text", "hybrid", "graph"] = "hybrid"
     top_k: int = Field(default=5, ge=1, le=100)
     score_threshold: float = Field(default=0.3, ge=0, le=1)
     semantic_weight: float = Field(default=0.7, ge=0, le=1)

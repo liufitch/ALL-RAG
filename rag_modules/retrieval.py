@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import inspect
 from collections.abc import Sequence
 from typing import Any
@@ -34,12 +35,14 @@ class RetrievalResult:
 class RetrievalService:
     def __init__(self, session: AsyncSession, *, vector_store: Any = None,
                  embedder: Any = None, reranker: Any = None,
-                 keyword_extractor: KeywordExtractor | None = None) -> None:
+                 keyword_extractor: KeywordExtractor | None = None,
+                 graph_store: Any = None) -> None:
         self.session = session
         self.vector_store = vector_store
         self.embedder = embedder
         self.reranker = reranker
         self.keyword_extractor = keyword_extractor or KeywordExtractor()
+        self.graph_store = graph_store
 
     async def retrieve(self, dataset_id: str, query: str, *, mode: str = "vector",
                        top_k: int = 5, score_threshold: float = 0.3,
@@ -47,7 +50,7 @@ class RetrievalService:
                        rerank_enabled: bool = False) -> RetrievalResult:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must not be empty")
-        if mode not in {"vector", "full_text", "hybrid"}:
+        if mode not in {"vector", "full_text", "hybrid", "graph"}:
             raise ValueError("unsupported retrieval mode")
         index_result = await self.session.execute(select(DatasetIndexRecord).where(
             DatasetIndexRecord.dataset_id == dataset_id,
@@ -58,6 +61,12 @@ class RetrievalService:
         if index is None:
             return RetrievalResult([], [])
         tokens = self.keyword_extractor.extract(query, limit=100)
+        graph_scores: dict[str, float] = {}
+        if mode == "graph":
+            if self.graph_store is None:
+                raise RuntimeError("graph retrieval is not configured")
+            graph_hits = await asyncio.to_thread(self.graph_store.search, index.id, query, max(top_k * 4, top_k))
+            graph_scores = {hit.id: hit.score for hit in graph_hits}
         vector_hits: list[VectorSearchHit] = []
         if mode in {"vector", "hybrid"} and self.vector_store is not None and index.collection_name:
             vector = await self._embed(query, index.embedding_model)
@@ -71,7 +80,7 @@ class RetrievalService:
                 terms = set(row.keywords or [])
                 keyword_scores[row.id] = len(terms.intersection(tokens)) / max(1, len(tokens))
         semantic_scores = {hit.id: hit.score for hit in vector_hits}
-        ids = set(semantic_scores) | set(keyword_scores)
+        ids = set(semantic_scores) | set(keyword_scores) | set(graph_scores)
         if not ids:
             return RetrievalResult([], [])
         rows_result = await self.session.execute(select(DocumentSegmentRecord, DocumentRecord).join(
@@ -92,13 +101,13 @@ class RetrievalService:
         if parent_ids:
             parent_result = await self.session.execute(select(DocumentSegmentRecord).where(
                 DocumentSegmentRecord.id.in_(parent_ids),
+                DocumentSegmentRecord.dataset_id == dataset_id,
+                DocumentSegmentRecord.dataset_index_id == index.id,
+                DocumentSegmentRecord.status == "completed",
+                DocumentSegmentRecord.index_type == "parent",
                 DocumentSegmentRecord.deleted_at.is_(None),
             ))
             parents = {parent.id: parent for parent in parent_result.scalars()}
-            for identifier, (segment, document) in list(rows.items()):
-                if segment.parent_id in parents:
-                    parent = parents[segment.parent_id]
-                    rows[identifier] = (segment, document)
         max_semantic = max(semantic_scores.values(), default=1.0) or 1.0
         max_keyword = max(keyword_scores.values(), default=1.0) or 1.0
         candidates: list[tuple[float, str, str]] = []
@@ -109,7 +118,9 @@ class RetrievalService:
             if mode == "hybrid":
                 semantic /= max_semantic
             keyword = keyword_scores.get(identifier, 0.0) / max_keyword
-            if mode == "vector":
+            if mode == "graph":
+                score, match = graph_scores.get(identifier, 0.0), "graph"
+            elif mode == "vector":
                 score, match = semantic, "vector"
             elif mode == "full_text":
                 score, match = keyword, "keyword"
@@ -133,8 +144,17 @@ class RetrievalService:
             except (RuntimeError, TypeError, ValueError, OSError):
                 # Reranking is an optimization; a provider outage must not hide base recall.
                 pass
-        items = [self._item(rows[identifier], score, match, parents.get(rows[identifier][0].parent_id))
-                 for score, identifier, match in candidates[:top_k]]
+        items = []
+        seen_contexts: set[str] = set()
+        for score, identifier, match in candidates:
+            segment = rows[identifier][0]
+            context_id = segment.parent_id if segment.parent_id in parents else identifier
+            if context_id in seen_contexts:
+                continue
+            seen_contexts.add(context_id)
+            items.append(self._item(rows[identifier], score, match, parents.get(segment.parent_id)))
+            if len(items) >= top_k:
+                break
         return RetrievalResult(items, trace)
 
     async def _keyword_rows(self, dataset_id: str, index_id: str, tokens: list[str]) -> list[DocumentSegmentRecord]:
@@ -169,4 +189,6 @@ class RetrievalService:
               parent: DocumentSegmentRecord | None = None) -> RetrievalItem:
         segment, document = row
         return RetrievalItem(segment.id, parent.content if parent is not None else segment.content, round(float(score), 6), match,
-                             segment.document_id, document.name, segment.source_metadata, segment.parent_id)
+                             segment.document_id, document.name,
+                             parent.source_metadata if parent is not None else segment.source_metadata,
+                             segment.parent_id)

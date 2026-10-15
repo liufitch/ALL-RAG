@@ -23,6 +23,7 @@ from rag_modules.segmentation import GeneralSegmentationConfig, ParentChildSegme
 from rag_modules.embeddings import OpenAICompatibleEmbeddingClient
 from rag_modules.vector_stores.factory import get_vector_store
 from rag_modules.config.settings import settings
+from rag_modules.graph.indexer import make_graph_indexer
 from rag_modules.common import utcnow
 
 
@@ -195,6 +196,7 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
         vector_target_resolver=IndexTargetCoordinator(session, vector_store),
         vector_store=vector_store,
         keyword_extractor=KeywordExtractor(),
+        graph_indexer=make_graph_indexer(),
     )
 
     def command_factory(_row):

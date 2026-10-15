@@ -82,6 +82,7 @@ class DocumentIndexingEngine:
         vector_target_resolver: VectorTargetResolver,
         vector_store: IndexVectorStore,
         keyword_extractor: IndexKeywordExtractor,
+        graph_indexer: Any = None,
     ) -> None:
         self._object_storage = object_storage
         self._parser_registry = parser_registry
@@ -91,6 +92,7 @@ class DocumentIndexingEngine:
         self._vector_target_resolver = vector_target_resolver
         self._vector_store = vector_store
         self._keyword_extractor = keyword_extractor
+        self._graph_indexer = graph_indexer
 
     async def run(
         self, command: IndexDocumentCommand, progress: ProgressReporter
@@ -181,6 +183,9 @@ class DocumentIndexingEngine:
                 True,
                 "Indexed vector count did not match the document segment count.",
             )
+        if self._graph_indexer is not None:
+            await self._check_cancelled(progress)
+            await self._graph_indexer.index(command, indexable)
         await self._update(progress, "validate", 100, processed_segments)
         return IndexDocumentResult(
             total_segments=len(records),

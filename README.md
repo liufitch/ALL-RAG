@@ -1,6 +1,6 @@
 # Graph-RAG
 
-Graph-RAG 是一个基于 FastAPI 和 React 的知识库管理与检索项目。项目正在从知识库管理原型演进为完整的异步索引系统：PostgreSQL 保存业务元数据和正文，MinIO 保存原始文件，RabbitMQ/Celery 执行持久化索引任务，OpenAI-compatible API 生成 Embedding，Milvus 保存高质量向量，Neo4j 承载后续图关系检索。
+Graph-RAG 是一个基于 FastAPI 和 React 的知识库管理与检索项目。项目正在从知识库管理原型演进为完整的异步索引系统：PostgreSQL 保存业务元数据和正文，MinIO 保存原始文件，RabbitMQ/Celery 执行持久化索引任务，OpenAI-compatible API 生成 Embedding，Milvus 保存高质量向量，Neo4j 可选保存实体关系图。
 
 ## 项目架构
 
@@ -17,7 +17,7 @@ Graph-RAG 是一个基于 FastAPI 和 React 的知识库管理与检索项目。
 - RabbitMQ：Celery broker，只投递任务标识，不保存业务事实。
 - OpenAI-compatible API：高质量索引的 Embedding 生成。
 - Milvus：高质量索引向量，向量 ID 与 PostgreSQL segment ID 对齐。
-- Neo4j：图实体和关系；当前 Python Graph-RAG 检索模块仍处于预留阶段。
+- Neo4j：可选的实体关系图；启用后从分段抽取实体、属性和关系，支持图检索。
 
 > 当前代码处于分阶段演进状态。已实现能力和目标能力的区别以[架构状态说明](docs/architecture.md#2-架构状态说明)为准。
 
@@ -61,6 +61,18 @@ npm run dev
 
 访问 `http://127.0.0.1:5173`。
 
+## 控制台建立索引
+
+在控制台点击“新建知识库”，填写名称并创建。新知识库打开后，上传文件会自动进入索引配置；先预览分段，再确认启动索引。页面随后显示任务总进度、文档级阶段及错误。离开后重新打开知识库，可继续查看最近的索引任务；有失败文档时可在进度面板重试。
+
+上传和索引是两个明确的步骤：上传成功后若关闭配置面板，文档仍保留在知识库中，可通过“配置索引”继续。索引任务运行需要 PostgreSQL、MinIO、RabbitMQ、Celery Worker 与对应模型或 Milvus 服务可用。
+
+高质量索引可选择父子分段，并设置“按段落”或“全文”父块模式、父块长度、子块长度和子块重叠。预览会把子块列在对应父块下；索引时只为子块生成向量。检索命中子块后展示父块上下文，同一父块的多个命中只占一个结果名额。经济索引只支持普通分段。
+
+## 知识库证据检索
+
+在知识库文档页打开“检索证据”，输入问题后，后端从当前有效索引中检索可见分段，并按已保存的检索参数召回证据。接口 `POST /api/knowledge_base/{dataset_id}/retrieve/stream` 通过 SSE 逐条返回命中分段。页面直接显示原文、文档名称和源定位；点击来源编号可跳到对应分段卡片，也可下载原文件。没有命中时显示空结果，关闭页面或点击“停止检索”会取消浏览器请求。证据检索不需要 Chat 模型服务。
+
 生产模式可以先构建前端，再由 FastAPI 托管静态文件：
 
 ```bash
@@ -71,6 +83,14 @@ uvicorn main:app --reload
 ```
 
 访问 `http://127.0.0.1:8000`。
+
+## Neo4j 实体关系图
+
+设置 `.env` 中的 `GRAPH__ENABLED=true`、`GRAPH__URI`、`GRAPH__USERNAME`、`GRAPH__PASSWORD` 和 `GRAPH__EXTRACTION_MODEL` 后重启 API 与索引 Worker。`GRAPH__EXTRACTION_BASE_URL` 和 `GRAPH__EXTRACTION_API_KEY` 指向兼容 `/chat/completions` 且支持 JSON 响应格式的模型服务。Neo4j 已在 `docker-compose.yml` 中定义；容器内 Worker 使用 `bolt://neo4j:7687`，本机运行使用 `bolt://localhost:7687`。
+
+启用后，文档索引会按分段抽取实体、属性和关系，并以知识库索引版本与来源分段 ID 写入 Neo4j。抽取提示参考 [腾讯 Youtu-GraphRAG 的 Schema 引导抽取](https://github.com/TencentCloudADP/youtu-graphrag/blob/main/README-CN.md)：优先使用预设实体和关系类型，校验实体确实出现在原文，并且关系端点存在。已有文档需要重建索引才能生成图。知识库设置中的“图检索 (Neo4j)”按问题中出现的实体名称召回其邻接实体所在分段，结果仍经过 PostgreSQL 中的文档可见性和有效索引过滤。该模式适合明确提到实体的问题；当前未实现社区摘要和复杂问题分解。
+
+关闭 `GRAPH__ENABLED` 后不连接 Neo4j，也不会调用抽取模型；选择图检索时后端会返回配置错误。PostgreSQL 继续保存业务元数据和正文，Milvus 继续保存高质量索引向量。
 
 ## Milvus
 

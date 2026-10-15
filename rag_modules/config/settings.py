@@ -152,6 +152,20 @@ class EmbeddingSettings(BaseModel):
         raise ValueError(f"unknown or disabled embedding model: {model_id}")
 
 
+class GraphSettings(BaseModel):
+    enabled: bool = False
+    uri: str = "bolt://localhost:7687"
+    username: str = "neo4j"
+    password: SecretStr = SecretStr("")
+    database: str = "neo4j"
+    extraction_base_url: str = "http://localhost:8001/v1"
+    extraction_api_key: SecretStr = SecretStr("")
+    extraction_model: str = ""
+    extraction_max_characters: int = Field(default=6000, ge=100, le=50000)
+    entity_types: tuple[str, ...] = ("person", "organization", "location", "event", "concept", "product")
+    relation_types: tuple[str, ...] = ("属于", "位于", "参与", "合作", "使用", "影响")
+
+
 class ObjectStorageSettings(BaseModel):
     provider: Literal["minio"] = "minio"
     endpoint: str = "localhost:9000"
@@ -251,6 +265,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    graph: GraphSettings = Field(default_factory=GraphSettings)
     object_storage: ObjectStorageSettings = Field(default_factory=ObjectStorageSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     upload: UploadSettings = Field(default_factory=UploadSettings)
