@@ -9,4 +9,7 @@ SUPPORTED_UPLOAD_EXTENSIONS: Final[tuple[str, ...]] = (
     ".xls",
     ".xlsx",
     ".csv",
+    ".png",
+    ".jpg",
+    ".jpeg",
 )

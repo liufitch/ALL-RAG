@@ -35,7 +35,7 @@ from .models import (
 )
 
 _SUPPORTED_EXTENSIONS = frozenset(
-    {".txt", ".md", ".pdf", ".docx", ".xls", ".xlsx", ".csv"}
+    {".txt", ".md", ".pdf", ".docx", ".xls", ".xlsx", ".csv", ".png", ".jpg", ".jpeg"}
 )
 _COLLECTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,254}\Z")
 _SAFE_WARNING_CODES = frozenset(
@@ -45,6 +45,8 @@ _SAFE_WARNING_CODES = frozenset(
         "HIDDEN_SHEET_SKIPPED",
         "PARENT_FULL_DOCUMENT_FALLBACK",
         "PDF_EMPTY_PAGE",
+        "OCR_REPEATED_HEADER_FOOTER_REMOVED",
+        "OCR_PAGE_FAILED",
         "SEGMENT_DELIMITER_OMITTED",
         "WARNINGS_TRUNCATED",
     }

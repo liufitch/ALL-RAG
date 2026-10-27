@@ -327,7 +327,8 @@ sequenceDiagram
 
 - TXT：`.txt`
 - Markdown：`.md`
-- PDF：`.pdf`，仅文本层，本期不做 OCR
+- PDF：`.pdf`，优先读取文本层；没有文本的页面可使用可选 PaddleOCR，保留页码和 OCR 来源 metadata
+- 图片：`.png`、`.jpg`、`.jpeg`，使用可选 PaddleOCR 解析并经过标准自动清洗
 - Word：`.docx`
 - Excel：`.xls`、`.xlsx`
 - CSV：`.csv`

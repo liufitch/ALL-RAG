@@ -6,13 +6,28 @@ export async function request(path, options = {}) {
     const problem = await response.json().catch(() => ({}));
     const detail = problem.detail;
     // FastAPI 校验错误的 detail 是数组，不能直接交给 Error，否则只会显示 [object Object]。
-    const message = Array.isArray(detail)
+    const message = problem.code && OCR_ERROR_MESSAGES[problem.code]
+      ? OCR_ERROR_MESSAGES[problem.code]
+      : Array.isArray(detail)
       ? detail.map(item => item.msg || item.message).filter(Boolean).join("; ")
       : typeof detail === "string" ? detail : problem.message;
     throw new Error(message || `请求失败 (${response.status})`);
   }
   return response.status === 204 ? null : response.json();
 }
+
+const OCR_ERROR_MESSAGES = {
+  OCR_NOT_ENABLED: "请先在服务端启用 OCR 后再解析扫描文档",
+  OCR_DEPENDENCY_MISSING: "服务端未安装 OCR 解析依赖",
+  OCR_INITIALIZATION_FAILED: "OCR 引擎初始化失败，请检查设备和模型配置",
+  OCR_FAILED: "OCR 识别失败，请稍后重试",
+  OCR_NO_EXTRACTABLE_TEXT: "图片中没有识别到可用文字",
+  OCR_LINE_LIMIT_EXCEEDED: "文档识别内容超过系统限制",
+  PDF_RENDER_FAILED: "扫描版 PDF 页面渲染失败",
+  IMAGE_MALFORMED: "图片无法读取，请检查文件是否损坏",
+  IMAGE_DIMENSION_LIMIT_EXCEEDED: "图片或 PDF 页面尺寸超过系统限制",
+  PDF_NO_EXTRACTABLE_TEXT: "PDF 中没有可识别文字",
+};
 
 export async function downloadDocument(path) {
   const response = await fetch(`${API_BASE}${path}`);

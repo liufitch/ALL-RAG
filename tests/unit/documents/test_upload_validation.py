@@ -210,6 +210,41 @@ async def test_prepare_upload_accepts_empty_text_file():
 
 
 @pytest.mark.asyncio
+async def test_prepare_upload_rejects_image_with_wrong_signature():
+    with pytest.raises(UploadValidationError) as error:
+        await prepare_upload(
+            make_upload("scan.png", b"not-an-image", "image/png"), UploadSettings()
+        )
+
+    assert error.value.code == "INVALID_FILE_SIGNATURE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content", "content_type"),
+    [
+        (
+            "scan.png",
+            bytes.fromhex(
+                "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+                "0000000d49444154789c6360f8cf00000003000101f8187d0000000049454e44ae426082"
+            ),
+            "image/png",
+        ),
+        ("scan.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 16, "image/jpeg"),
+    ],
+)
+async def test_prepare_upload_accepts_supported_image_extensions(
+    filename: str, content: bytes, content_type: str
+):
+    prepared = await prepare_upload(
+        make_upload(filename, content, content_type), UploadSettings()
+    )
+
+    assert prepared.extension == filename[filename.rfind(".") :]
+
+
+@pytest.mark.asyncio
 async def test_prepare_upload_stops_when_stream_exceeds_configured_size_limit():
     file = make_upload("large.txt", b"x" * (1024 * 1024 + 1), "text/plain")
 

@@ -13,9 +13,12 @@ def test_indexing_options_expose_enabled_models_without_secrets(client):
         ".xls",
         ".xlsx",
         ".csv",
+        ".png",
+        ".jpg",
+        ".jpeg",
     ]
     assert ".doc" not in payload["supported_files"]
-    assert not {".png", ".jpg", ".jpeg", ".tif", ".tiff"} & set(payload["supported_files"])
+    assert not {".tif", ".tiff"} & set(payload["supported_files"])
     serialized = response.text.lower()
     assert "api_key" not in serialized
     assert "base_url" not in serialized

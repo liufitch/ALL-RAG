@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { Save, X } from "lucide-react";
 import { request } from "../api";
 
+function sourceLabel(metadata = {}) {
+  return [metadata.ocr && "OCR", metadata.page && `第 ${metadata.page} 页`, metadata.sheet && `Sheet ${metadata.sheet}`].filter(Boolean).join(" · ");
+}
+
 export default function SegmentEditor({ datasetId, document, onClose, onSaved }) {
   const [segments, setSegments] = useState([]);
   const [version, setVersion] = useState(null);
@@ -57,6 +61,7 @@ export default function SegmentEditor({ datasetId, document, onClose, onSaved })
       {loading ? <p>加载分段中...</p> : <div className="segment-list">
         {segments.length === 0 ? <p className="muted">暂无可编辑分段</p> : segments.map((segment, index) => <article className="segment-card" key={segment.id}>
           <div className="segment-card-head"><span>分段 {index + 1}</span><span className="muted">{segment.index_type}</span></div>
+          {sourceLabel(segment.source_metadata) && <small className="muted">来源：{sourceLabel(segment.source_metadata)}</small>}
           <label>内容<textarea rows="5" value={segment.content} onChange={event => updateSegment(index, "content", event.target.value)} /></label>
           <div className="segment-fields"><label>问题<input value={segment.question || ""} onChange={event => updateSegment(index, "question", event.target.value)} /></label>
             <label>答案<input value={segment.answer || ""} onChange={event => updateSegment(index, "answer", event.target.value)} /></label></div>

@@ -22,7 +22,7 @@ function makeConfig(options) {
 }
 
 function sourceLabel(metadata = {}) {
-  return [metadata.page && `第 ${metadata.page} 页`, metadata.sheet && `Sheet ${metadata.sheet}`, metadata.row_start && `第 ${metadata.row_start} 行`].filter(Boolean).join(" · ") || "来源定位未提供";
+  return [metadata.ocr && "OCR", metadata.page && `第 ${metadata.page} 页`, metadata.sheet && `Sheet ${metadata.sheet}`, metadata.row_start && `第 ${metadata.row_start} 行`].filter(Boolean).join(" · ") || "来源定位未提供";
 }
 
 function SegmentedButton({ active, disabled, onClick, children }) {

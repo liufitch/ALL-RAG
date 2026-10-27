@@ -98,15 +98,15 @@ def test_pdf_parser_bounds_empty_page_warnings_and_keeps_later_text(
     assert "page" not in summary.metadata
 
 
-def test_scanned_pdf_reports_specific_error(fixture_bytes):
-    """对没有文本的 PDF 返回成功，会掩盖需要 OCR 才能继续处理的边界。"""
+def test_scanned_pdf_reports_ocr_disabled_error(fixture_bytes):
+    """OCR 未启用时不能把扫描版 PDF 误报为空文本解析结果。"""
     with pytest.raises(DocumentParseError) as error:
         PdfParser().parse(
             io.BytesIO(fixture_bytes("image-only.pdf")),
             ParseContext("d", "scan.pdf"),
         )
 
-    assert error.value.code == "PDF_NO_EXTRACTABLE_TEXT"
+    assert error.value.code == "OCR_NOT_ENABLED"
     assert error.value.retryable is False
 
 
@@ -144,6 +144,18 @@ def test_pdf_parser_enforces_configured_page_limit(monkeypatch, fixture_bytes):
 
     assert error.value.code == "PDF_PAGE_LIMIT_EXCEEDED"
     assert error.value.retryable is False
+
+
+def test_pdf_parser_uses_injected_parser_settings_for_page_limit(fixture_bytes):
+    parser_settings = settings.parser.model_copy(update={"max_pdf_pages": 1})
+
+    with pytest.raises(DocumentParseError) as error:
+        PdfParser(parser_settings=parser_settings).parse(
+            io.BytesIO(fixture_bytes("two-pages.pdf")),
+            ParseContext("d", "two-pages.pdf"),
+        )
+
+    assert error.value.code == "PDF_PAGE_LIMIT_EXCEEDED"
 
 
 def test_docx_preserves_headings_lists_tables_and_source_order(fixture_bytes):

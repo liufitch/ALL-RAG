@@ -18,6 +18,9 @@ MAX_COMPRESSION_RATIO: Final = 100
 
 MAGIC_PREFIXES: Final = {
     ".pdf": (b"%PDF-",),
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
     ".docx": (b"PK\x03\x04",),
     ".xlsx": (b"PK\x03\x04",),
     ".xls": (bytes.fromhex("D0CF11E0A1B11AE1"),),
@@ -44,6 +47,9 @@ FIXED_CONTENT_TYPES: Final = {
             "application/octet-stream",
         }
     ),
+    ".png": frozenset({"image/png", "application/octet-stream"}),
+    ".jpg": frozenset({"image/jpeg", "application/octet-stream"}),
+    ".jpeg": frozenset({"image/jpeg", "application/octet-stream"}),
 }
 
 #文件校验

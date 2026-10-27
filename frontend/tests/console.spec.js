@@ -102,7 +102,7 @@ test("new knowledge base continues from upload through preview to live indexing 
     if (path.endsWith("/indexing/preview") && method === "POST") {
       previewIds = route.request().postDataJSON().document_ids;
       await route.fulfill({ json: { chunks: [{ id: "chunk-1", document_id: "doc-1", local_id: "1", parent_id: null,
-        position: 0, content: "hello from guide", source_metadata: { page: 1 }, index_type: "general" }],
+        position: 0, content: "hello from guide", source_metadata: { ocr: true, page: 1 }, index_type: "general" }],
         total_chunks: 1, truncated: false, warnings: [], documents: [] } });
       return true;
     }
@@ -137,10 +137,55 @@ test("new knowledge base continues from upload through preview to live indexing 
   await expect(page.getByRole("heading", { name: "配置并预览索引" })).toBeVisible();
   await page.getByRole("button", { name: "预览块" }).click();
   await expect(page.getByText("hello from guide")).toBeVisible();
+  await expect(page.getByText("OCR · 第 1 页")).toBeVisible();
   expect(previewIds).toEqual(["doc-1"]);
   await page.getByRole("button", { name: "确认并开始索引" }).click();
   await expect(page.getByRole("region", { name: "索引任务进度" })).toContainText("45%");
   await expect(page.getByRole("region", { name: "索引任务进度" })).toContainText("已完成");
+});
+
+test("OCR segments can be manually cleaned and saved through the revision API", async ({ page }) => {
+  let revisionUpdate;
+  await mockAPI(page, { handler: async (route, url) => {
+    const method = route.request().method();
+    const path = url.pathname;
+    if (path === "/api/knowledge_base/kb-1/documents" && method === "GET") {
+      await route.fulfill({ json: { items: [
+        { id: "doc-1", dataset_id: "kb-1", name: "scan.pdf", status: "completed" },
+      ], total: 1 } });
+      return true;
+    }
+    if (path === "/api/knowledge_base/kb-1/documents/doc-1/segments" && method === "GET") {
+      await route.fulfill({ json: { revision: 7, items: [
+        { id: "segment-1", content: "OCR识别的原始片段", question: "", answer: "", keywords: [],
+          source_metadata: { ocr: true, page: 2 }, index_type: "general" },
+      ] } });
+      return true;
+    }
+    if (path === "/api/knowledge_base/kb-1/documents/doc-1/segments" && method === "PATCH") {
+      revisionUpdate = route.request().postDataJSON();
+      await route.fulfill({ status: 202, json: { revision_id: "revision-8", version: 8, job_id: "job-8" } });
+      return true;
+    }
+    if (path === "/api/knowledge_base/kb-1/documents/doc-1/jobs/job-8" && method === "GET") {
+      await route.fulfill({ json: { status: "completed" } });
+      return true;
+    }
+    return false;
+  } });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "kb-1", exact: true }).click();
+  await page.getByRole("button", { name: "编辑 scan.pdf" }).click();
+  const editor = page.getByRole("dialog", { name: "编辑 scan.pdf 分段" });
+  await expect(editor.getByText("来源：OCR · 第 2 页")).toBeVisible();
+  await editor.getByLabel("内容").fill("手动清洗后的片段");
+  await editor.getByRole("button", { name: "保存并重新索引" }).click();
+
+  await expect.poll(() => revisionUpdate).toMatchObject({
+    base_version: 7,
+    segments: [{ id: "segment-1", content: "手动清洗后的片段" }],
+  });
 });
 
 test("parent child configuration previews children under parents and saves full document mode", async ({ page }) => {

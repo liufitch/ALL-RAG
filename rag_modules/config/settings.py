@@ -212,6 +212,16 @@ class UploadSettings(BaseModel):
 
 
 class ParserSettings(BaseModel):
+    ocr_enabled: bool = False
+    ocr_device: Literal["cpu", "gpu"] = "cpu"
+    ocr_language: str = Field(default="ch", min_length=1, max_length=32)
+    ocr_model_dir: str | None = Field(default=None, max_length=1024)
+    ocr_min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    ocr_max_image_width: int = Field(default=12_000, ge=1, le=100_000)
+    ocr_max_image_height: int = Field(default=12_000, ge=1, le=100_000)
+    ocr_max_image_pixels: int = Field(default=40_000_000, ge=1, le=500_000_000)
+    ocr_max_lines_per_document: int = Field(default=20_000, ge=1, le=1_000_000)
+    ocr_pdf_render_dpi: int = Field(default=144, ge=36, le=600)
     max_pdf_pages: int = Field(default=500, ge=1)
     max_rows: int = Field(default=100_000, ge=1)
     max_columns: int = Field(default=1_000, ge=1)

@@ -27,6 +27,9 @@ PUBLIC_SUPPORTED_FILES = (
     ".xls",
     ".xlsx",
     ".csv",
+    ".png",
+    ".jpg",
+    ".jpeg",
 )
 
 

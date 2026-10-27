@@ -29,7 +29,7 @@ services:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 20s
       retries: 3
@@ -156,6 +156,77 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    profiles: ["app"]
+    platform: ${APP_PLATFORM:-linux/amd64}
+    image: graph-rag-app:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    environment: &app-environment
+      DATABASE__TYPE: postgresql
+      DATABASE__HOST: postgres
+      DATABASE__PORT: 5432
+      DATABASE__DATABASE: ${POSTGRES_DB:-graph_rag}
+      DATABASE__USERNAME: ${POSTGRES_USER:-pg}
+      DATABASE__PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      OBJECT_STORAGE__ENDPOINT: minio:9000
+      OBJECT_STORAGE__SECURE: "false"
+      OBJECT_STORAGE__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      OBJECT_STORAGE__SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      BROKER__HOST: ${BROKER__HOST:-rabbitmq}
+      BROKER__PORT: 5672
+      BROKER__USERNAME: ${BROKER__USERNAME:?BROKER__USERNAME is required}
+      BROKER__PASSWORD: ${BROKER__PASSWORD:?BROKER__PASSWORD is required}
+      BROKER__VIRTUAL_HOST: ${BROKER__VIRTUAL_HOST:?BROKER__VIRTUAL_HOST is required}
+      VECTOR_STORE__HOST: standalone
+      VECTOR_STORE__PORT: 19530
+      VECTOR_STORE__URI: http://standalone:19530
+      GRAPH__URI: ${GRAPH__URI:-bolt://neo4j:7687}
+      GRAPH__PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      EMBEDDING__BASE_URL: ${EMBEDDING__BASE_URL:-http://host.docker.internal:8001/v1}
+      GRAPH__EXTRACTION_BASE_URL: ${GRAPH__EXTRACTION_BASE_URL:-http://host.docker.internal:8001/v1}
+      PARSER__OCR_ENABLED: ${PARSER__OCR_ENABLED:-true}
+      PARSER__OCR_DEVICE: ${PARSER__OCR_DEVICE:-cpu}
+      PARSER__OCR_LANGUAGE: ${PARSER__OCR_LANGUAGE:-ch}
+      PARSER__OCR_MODEL_DIR: ${PARSER__OCR_MODEL_DIR:-}
+      UPLOAD__ALLOWED_EXTENSIONS: '[".txt", ".md", ".pdf", ".docx", ".xls", ".xlsx", ".csv", ".png", ".jpg", ".jpeg"]'
+      PADDLE_PDX_CACHE_HOME: /home/app/.paddlex
+    volumes:
+      - paddle_models:/home/app/.paddlex
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      standalone:
+        condition: service_healthy
+
+  worker:
+    profiles: ["app"]
+    platform: ${APP_PLATFORM:-linux/amd64}
+    image: graph-rag-app:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    command: ["celery", "-A", "rag_modules.tasks.celery_app:celery_app", "worker", "--beat", "--schedule=/tmp/celerybeat-schedule", "--without-mingle", "--without-gossip", "--without-heartbeat", "--loglevel=INFO", "--concurrency=1"]
+    environment: *app-environment
+    volumes:
+      - paddle_models:/home/app/.paddlex
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      standalone:
+        condition: service_healthy
+
 
 volumes:
   neo4j_data:
@@ -163,6 +234,7 @@ volumes:
   neo4j_plugins:
   postgres_data:
   rabbitmq_data:
+  paddle_models:
 
 networks:
   default:

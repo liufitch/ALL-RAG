@@ -141,3 +141,26 @@ class User:
 ```
 
 `User.from_string(" Alice ")` 会调用类方法 `from_string`，其中 `cls` 指向 `User`，所以它会返回一个 `User` 对象。
+### OCR 文档解析
+
+完整安装、配置、清洗规则、预览和手动修订流程，以及常见问题见 [PaddleOCR 文档解析与清洗说明](docs/paddleocr.md)。
+
+默认宿主机安装不会拉取 PaddleOCR、PaddlePaddle 或图像渲染依赖。Docker CPU 镜像会安装 `.[ocr]`，API 和 Worker 共用该镜像。准备 `.env` 后，设置 `PARSER__OCR_ENABLED=true` 并启动应用容器：
+
+```bash
+docker compose --profile app up -d --build api worker
+```
+
+首次启动应用容器前，在 PostgreSQL 中升级表结构：
+
+```bash
+docker compose --profile app run --rm api python -m alembic upgrade head
+```
+
+API 地址为 `http://localhost:8000`。Compose 的 `app` profile 启动 API 与索引 Worker（Worker 同时运行 Celery Beat）；普通 `docker compose up -d` 仍只启动基础设施。前端仍可按上面的本地开发方式单独运行。模型会保存到 `paddle_models` named volume，首次识别需要下载模型。
+
+容器内使用 `postgres`、`minio`、`rabbitmq` 和 `standalone` 作为服务地址。调用宿主机上的 Embedding API 时，Compose 默认使用 `http://host.docker.internal:8001/v1`，可在 `.env` 覆盖 `EMBEDDING__BASE_URL`。
+
+当前按 `linux/amd64` 构建 CPU 镜像，以兼容 PaddlePaddle 的 Linux x86_64 wheel；在 Apple Silicon Docker Desktop 上会使用架构仿真，首次构建和 OCR 推理会较慢。Docker Desktop 不提供 NVIDIA CUDA GPU 直通；GPU 部署需要 Linux/NVIDIA 主机和匹配的 PaddlePaddle GPU 镜像。宿主机直接运行 API/Worker 时，仍可按 [OCR 文档](docs/paddleocr.md) 安装 `pip install -e '.[ocr]'`。
+
+启用后，`.png`、`.jpg`、`.jpeg` 直接使用 OCR；PDF 逐页优先使用文本层，只有没有文本的页面才渲染并 OCR。OCR 先执行标准清洗，用户在分段预览后仍可使用现有分段编辑器手动修改；保存会创建 revision，原始上传文件保持不变。

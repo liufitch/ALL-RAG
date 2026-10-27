@@ -159,6 +159,25 @@ def test_warning_limits_have_approved_defaults():
     assert preview.max_warnings == 100
 
 
+def test_ocr_settings_default_to_cpu_and_have_bounded_confidence():
+    parser = ParserSettings()
+
+    assert parser.ocr_device == "cpu"
+    assert parser.ocr_enabled is False
+    with pytest.raises(ValueError):
+        ParserSettings(ocr_min_confidence=2)
+
+
+def test_ocr_environment_values_are_loaded(monkeypatch):
+    monkeypatch.setenv("PARSER__OCR_ENABLED", "true")
+    monkeypatch.setenv("PARSER__OCR_DEVICE", "cpu")
+
+    loaded = Settings(_env_file=None)
+
+    assert loaded.parser.ocr_enabled is True
+    assert loaded.parser.ocr_device == "cpu"
+
+
 @pytest.mark.parametrize(
     ("settings_type", "field_name", "value"),
     (

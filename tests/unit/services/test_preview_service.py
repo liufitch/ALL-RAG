@@ -16,6 +16,8 @@ from rag_modules.config.settings import (
     PreviewSettings,
     UploadSettings,
 )
+from rag_modules.parsing.image_parser import ImageParser
+from rag_modules.parsing.ocr import OcrLine
 from rag_modules.db.models import DocumentRecord
 from rag_modules.parsing.models import ParsedBlock, ParsedDocument, ParserWarning
 from rag_modules.parsing.registry import ParserRegistry
@@ -203,6 +205,47 @@ async def test_preview_uses_real_parser_and_truncates_response():
     assert response.truncated is True
     assert response.chunks[0].document_id == "doc-1"
     assert service.segmenter.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_returns_image_ocr_metadata_and_page_location():
+    class FakeImage:
+        width = 20
+        height = 10
+
+    class FakeOcrEngine:
+        def recognize(self, image):
+            assert isinstance(image, FakeImage)
+            return (OcrLine("扫描文本", 0.96, None),)
+
+    payload = b"image bytes"
+    record = _record(
+        name="scan.png",
+        size=len(payload),
+        key="datasets/dataset-1/documents/doc-1/source.png",
+    )
+    registry = ParserRegistry(
+        {
+            ".png": ImageParser(
+                FakeOcrEngine(), decoder=lambda stream: FakeImage()
+            )
+        }
+    )
+    service = _service(
+        [record],
+        {record.data_source_info["object_key"]: payload},
+        registry=registry,
+    )
+
+    response = await service.preview(
+        "dataset-1", ["doc-1"], _request("doc-1", max_chunk_length=20)
+    )
+
+    assert response.documents[0].source_type == "image"
+    assert response.documents[0].source_metadata["ocr"] is True
+    assert response.chunks[0].content == "扫描文本"
+    assert response.chunks[0].source_metadata["ocr"] is True
+    assert response.chunks[0].source_metadata["page"] == 1
 
 
 @pytest.mark.asyncio
