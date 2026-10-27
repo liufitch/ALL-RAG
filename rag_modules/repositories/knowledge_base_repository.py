@@ -249,8 +249,8 @@ class KnowledgeBaseRepository:
         retrieval = dict(dataset.retrieval_model_config or {})
         job_id, index_id = uuid4().hex, uuid4().hex
         job = IndexingJobRecord(
-            id=job_id, dataset_id=dataset_id, target_index_id=index_id,
-            job_type="reindex_dataset", scope="all_documents", status="pending",
+            id=job_id, dataset_id=dataset_id, target_index_id=None,
+            job_type="reindex_dataset", scope="entire_dataset", status="pending",
             indexing_technique=dataset.indexing_technique,
             segmentation_mode=process_rule.get("mode", "general"),
             embedding_model_provider=dataset.embedding_model_provider,
@@ -268,7 +268,13 @@ class KnowledgeBaseRepository:
             config_hash=uuid4().hex,
         )
         rows = [IndexingJobDocumentRecord(id=uuid4().hex, job_id=job_id, document_id=item.id, status="pending") for item in documents]
-        self.session.add_all([job, index, *rows])
+        # Break the job/index foreign-key cycle inside this transaction.
+        self.session.add(job)
+        await self.session.flush()
+        self.session.add(index)
+        await self.session.flush()
+        job.target_index_id = index_id
+        self.session.add_all(rows)
         await self.session.commit()
         return job, rows
 

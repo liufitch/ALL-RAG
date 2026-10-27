@@ -20,7 +20,7 @@ from rag_modules.object_storage.factory import get_object_storage
 from rag_modules.parsing.factory import get_parser_registry
 from rag_modules.repositories.segment_repository import SegmentRepository
 from rag_modules.segmentation import GeneralSegmentationConfig, ParentChildSegmentationConfig, Segmenter
-from rag_modules.embeddings import OpenAICompatibleEmbeddingClient
+from rag_modules.embeddings import EmbeddingError, OpenAICompatibleEmbeddingClient
 from rag_modules.vector_stores.factory import get_vector_store
 from rag_modules.config.settings import settings
 from rag_modules.graph.indexer import make_graph_indexer
@@ -72,7 +72,7 @@ class IndexingTaskRunner:
             )
         except IndexingCancelled:
             await self.repository.cancel_job_document(job_document_id, worker_id=self.worker_id)
-        except DocumentIndexingError as exc:
+        except (DocumentIndexingError, EmbeddingError) as exc:
             delay = _RETRY_DELAYS[min(max(int(row.attempt or 1) - 1, 0), len(_RETRY_DELAYS) - 1)]
             await self.repository.fail_job_document(
                 job_document_id,
@@ -219,7 +219,7 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
             collection_name=index.collection_name if job.indexing_technique == "high_quality" and index.embedding_dimension else None,
             expected_dimension=index.embedding_dimension,
             revision_segments=revision_segments,
-            segment_namespace=job.id if job.job_type == "document_reindex" else None,
+            segment_namespace=job.id if job.job_type in {"document_reindex", "reindex_documents"} else None,
         )
 
     return IndexingTaskRunner(repository=repository, engine=engine, command_factory=command_factory)

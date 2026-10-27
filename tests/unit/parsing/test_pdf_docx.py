@@ -15,6 +15,12 @@ from rag_modules.parsing.pdf_parser import PdfParser
 FIXTURE_DIRECTORY = Path(__file__).parents[2] / "fixtures" / "documents"
 
 
+@pytest.fixture(autouse=True)
+def disable_ocr_for_text_layer_tests(monkeypatch):
+    """本模块测试文本层及 OCR 关闭行为，不受开发环境开关影响。"""
+    monkeypatch.setattr(settings.parser, "ocr_enabled", False)
+
+
 @pytest.fixture
 def fixture_bytes():
     def load(name: str) -> bytes:

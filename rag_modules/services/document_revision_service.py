@@ -103,7 +103,7 @@ class DocumentRevisionService:
             dataset_id=dataset_id,
             target_index_id=active_index.id,
             revision_id=revision.id,
-            job_type="document_reindex",
+            job_type="reindex_documents",
             scope="selected_documents",
             status="pending",
             indexing_technique=active_index.index_type,
@@ -125,6 +125,9 @@ class DocumentRevisionService:
         document.indexing_status = "queued"
         document.updated_by = actor_id
         document.updated_at = __import__("rag_modules.common", fromlist=["utcnow"]).utcnow()
-        self.session.add_all([revision, job, job_document])
+        # The revision references its indexing job through an immediate FK.
+        self.session.add(job)
+        await self.session.flush()
+        self.session.add_all([revision, job_document])
         await self.session.commit()
         return RevisionJobResult(revision=revision, job=job, job_document_id=job_document.id)

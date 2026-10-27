@@ -31,13 +31,14 @@ class ProcessRuleService:
             raise ProcessRuleValidationError("Parent-child segmentation requires high quality indexing.")
         if request.indexing_technique == "high_quality" and not request.embedding_model:
             raise ProcessRuleValidationError("An embedding model is required for high quality indexing.")
+        embedding_model = request.embedding_model if request.indexing_technique == "high_quality" else None
 
         segmentation = request.segmentation.model_dump() if hasattr(request.segmentation, "model_dump") else vars(request.segmentation).copy()
         segmentation.pop("mode", None)
         process_rule = {"segmentation": {"mode": request.segmentation.mode, **segmentation}}
         snapshot = {
             "indexing_technique": request.indexing_technique,
-            "embedding_model": request.embedding_model,
+            "embedding_model": embedding_model,
             "segmentation": process_rule["segmentation"],
         }
         config_hash = hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -68,8 +69,8 @@ class ProcessRuleService:
             status="pending",
             indexing_technique=request.indexing_technique,
             segmentation_mode=request.segmentation.mode,
-            embedding_model_provider="openai_compatible" if request.embedding_model else None,
-            embedding_model=request.embedding_model,
+            embedding_model_provider="openai_compatible" if embedding_model else None,
+            embedding_model=embedding_model,
             process_rule=snapshot,
             retrieval_config={},
             total_documents=len(documents),
@@ -81,8 +82,8 @@ class ProcessRuleService:
             created_by_job_id=job_id,
             index_type=request.indexing_technique,
             status="building",
-            embedding_model_provider="openai_compatible" if request.embedding_model else None,
-            embedding_model=request.embedding_model,
+            embedding_model_provider="openai_compatible" if embedding_model else None,
+            embedding_model=embedding_model,
             vector_store_provider="milvus" if request.indexing_technique == "high_quality" else None,
             process_rule=snapshot,
             retrieval_config={},

@@ -196,6 +196,14 @@ class DocumentService:
         await self.get_document(dataset_id, document_id)
         return await self.repository.list_segments(dataset_id, document_id)
 
+    async def get_segment_revision(self, dataset_id: str, document_id: str) -> int:
+        await self.get_document(dataset_id, document_id)
+        revision = await self.repository.get_latest_revision(dataset_id, document_id)
+        if revision is not None and revision.status not in {"completed", "failed", "cancelled"}:
+            from rag_modules.services.document_revision_service import RevisionConflictError
+            raise RevisionConflictError("A revision is still being indexed; reload after it completes.")
+        return int(revision.version) if revision is not None else 0
+
     @staticmethod
     def _item(record: DocumentRecord, *, duplicate: bool = False) -> DocumentUploadItem:
         return DocumentUploadItem(

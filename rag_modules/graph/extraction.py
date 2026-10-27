@@ -95,11 +95,18 @@ class GraphExtractor:
             f"关系类型 {json.dumps(self.relation_types, ensure_ascii=False)}。"
             "只返回 JSON 对象：entities 是 [{name,type,attributes}]；"
             "relations 是 [{source,target,type}]。关系的端点必须在 entities 中。"
+            "attributes 必须是字符串键值组成的 JSON 对象，未知时使用 {}，不能使用数组。"
+            "source 和 target 必须填写对应实体的 name 字符串，不能使用数字、索引或编号。"
+            "例如原文为‘甲公司位于乙市’，输出应为："
+            '{"entities":[{"name":"甲公司","type":"organization","attributes":{}},'
+            '{"name":"乙市","type":"location","attributes":{}}],'
+            '"relations":[{"source":"甲公司","target":"乙市","type":"位于"}]}。'
+            "示例仅用于说明结构，不要将示例实体写入结果。"
         )
         try:
             response = await self._client.post(
                 f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
                 json={
                     "model": self.model,
                     "stream": False,

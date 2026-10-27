@@ -10,6 +10,7 @@ from sqlalchemy import select
 from rag_modules.api.dto.retrieval import RetrievalRequest, RetrievalResponse, RetrievalItemResponse
 from rag_modules.db.session import get_db_session
 from rag_modules.embeddings.openai_compatible import OpenAICompatibleEmbeddingClient
+from rag_modules.embeddings import EmbeddingError
 from rag_modules.config.settings import settings
 from rag_modules.graph.factory import get_graph_store
 from rag_modules.retrieval import RetrievalService
@@ -70,6 +71,9 @@ async def retrieve(
             payload.query,
             **_retrieval_options(payload, saved),
         )
+    except EmbeddingError as exc:
+        status = 422 if exc.code == "EMBEDDING_INPUT_INVALID" else 503
+        raise HTTPException(status_code=status, detail=exc.safe_message) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -115,6 +119,11 @@ async def retrieve_stream(
                     "match_type": item.match_type,
                 })
             yield _sse("done", {"count": len(result.items)})
+        except EmbeddingError as exc:
+            if exc.code == "EMBEDDING_INPUT_INVALID":
+                yield _sse("error", {"code": "RETRIEVAL_INPUT_INVALID", "message": "检索问题无效。"})
+            else:
+                yield _sse("error", {"code": "RETRIEVAL_FAILED", "message": "检索服务暂时不可用。"})
         except ValueError:
             yield _sse("error", {"code": "RETRIEVAL_INPUT_INVALID", "message": "检索问题无效。"})
         except Exception:

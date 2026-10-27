@@ -1,4 +1,9 @@
 from types import SimpleNamespace
+from contextlib import asynccontextmanager
+from io import BytesIO
+from urllib.parse import unquote
+
+import pytest
 
 from rag_modules.api.file_api import get_document_service
 from rag_modules.services.document_service import DocumentUploadItem
@@ -39,6 +44,9 @@ class GovernanceStub:
     async def list_segments(self, *args):
         return []
 
+    async def get_segment_revision(self, *args):
+        return 7
+
 
 def test_document_governance_actions_return_document_contract(client):
     service = GovernanceStub()
@@ -62,5 +70,44 @@ def test_document_governance_actions_return_document_contract(client):
         )
         assert segments.status_code == 200
         assert segments.json()["items"] == []
+        assert segments.json()["revision"] == 7
     finally:
         app.dependency_overrides.clear()
+
+
+def test_editor_refuses_inflight_revision_before_reading_segment_content(client):
+    from rag_modules.services.document_revision_service import RevisionConflictError
+
+    class BusyService(GovernanceStub):
+        async def get_segment_revision(self, *args):
+            raise RevisionConflictError("A revision is still being indexed.")
+
+        async def list_segments(self, *args):
+            raise AssertionError("Do not expose old segment content with an inflight token")
+
+    app.dependency_overrides[get_document_service] = lambda: BusyService()
+    response = client.get("/api/knowledge_base/dataset-1/documents/doc-1/segments")
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize("filename", ["中文功能测试.txt", "报告 📄.txt", "guide.txt", 'quote";name.txt'])
+def test_download_preserves_unicode_and_special_filenames(client, filename):
+    service = GovernanceStub()
+    service.document.name = filename
+
+    @asynccontextmanager
+    async def get_stream(object_key):
+        assert object_key == "documents/doc-1/source.txt"
+        yield BytesIO(b"original document bytes")
+
+    service.storage.get_stream = get_stream
+    app.dependency_overrides[get_document_service] = lambda: service
+    response = client.get("/api/knowledge_base/dataset-1/documents/doc-1/download")
+
+    assert response.status_code == 200
+    assert response.content == b"original document bytes"
+    disposition = response.headers["content-disposition"]
+    if "filename*=" in disposition:
+        assert unquote(disposition.split("filename*=utf-8''", 1)[1]) == filename
+    else:
+        assert disposition == f'attachment; filename="{filename}"'

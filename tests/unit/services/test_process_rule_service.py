@@ -84,3 +84,16 @@ async def test_confirm_same_configuration_is_idempotent():
 
     assert first.rule.id == second.rule.id
     assert len(repository.rules) == 1
+
+
+@pytest.mark.asyncio
+async def test_economy_confirmation_drops_stale_embedding_selection():
+    from rag_modules.services.process_rule_service import ProcessRuleService
+
+    payload = request(technique="economy")
+    payload.embedding_model = "bge-m3"
+    result = await ProcessRuleService(FakeRepository()).confirm("dataset-1", payload, actor_id="user-1")
+
+    assert result.job.embedding_model is None
+    assert result.job.embedding_model_provider is None
+    assert result.job.process_rule["embedding_model"] is None

@@ -14,6 +14,7 @@ from rag_modules.parsing import ParseContext, ParserWarning
 from rag_modules.segmentation import (
     GeneralSegmentationConfig,
     ParentChildSegmentationConfig,
+    PreviewSegment,
 )
 from rag_modules.vector_stores.base import VectorEntity
 
@@ -175,6 +176,7 @@ class DocumentIndexingEngine:
             vector_count, processed_segments = await self._index_high_quality(
                 command, indexable, progress
             )
+            await self._persist_high_quality_keywords(command, indexable, progress)
 
         await self._check_cancelled(progress)
         if command.staging.indexing_technique == "high_quality" and (
@@ -227,6 +229,25 @@ class DocumentIndexingEngine:
                 keywords_by_segment_id=updates,
             )
         return len(records)
+
+    async def _persist_high_quality_keywords(
+        self,
+        command: IndexDocumentCommand,
+        records: Sequence[IndexSegmentRecord],
+        progress: ProgressReporter,
+    ) -> None:
+        # Full-text and hybrid retrieval use the same keyword index in both
+        # techniques. Preserve explicit revision keywords and cached retries.
+        missing = [record for record in records if not record.keywords]
+        for batch in self._batches(missing, self._effective_batch_size(command)):
+            await self._check_cancelled(progress)
+            updates = await self._run_sync(self._keyword_batch, batch, command.keyword_limit)
+            await self._check_cancelled(progress)
+            await self._segment_repository.update_keywords(
+                dataset_index_id=command.staging.dataset_index_id,
+                document_id=command.staging.document_id,
+                keywords_by_segment_id=updates,
+            )
 
     def _keyword_batch(
         self, records: Sequence[IndexSegmentRecord], limit: int

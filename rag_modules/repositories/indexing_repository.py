@@ -479,6 +479,9 @@ class IndexingRepository:
                 previous.status = "retired"
                 previous.retired_at = previous.retired_at or timestamp
                 previous.updated_at = timestamp
+            # PostgreSQL checks the one-active-index constraint immediately;
+            # retire the old version before the new version becomes active.
+            await self.session.flush()
 
         for segment in segments:
             segment.status = "completed"
@@ -624,12 +627,13 @@ class IndexingRepository:
             created_by=document.created_by or "system",
         )
         self.session.add(rule)
+        await self.session.flush()
         document.dataset_process_rule_id = rule_id
         job = IndexingJobRecord(
             id=job_id,
             dataset_id=dataset_id,
-            target_index_id=target_id,
-            job_type="document_reindex" if active_index is not None else "initial_index",
+            target_index_id=target_id if active_index is not None else None,
+            job_type="reindex_documents" if active_index is not None else "initial_index",
             scope="selected_documents",
             status="pending",
             indexing_technique=technique,
@@ -642,6 +646,7 @@ class IndexingRepository:
             created_by=document.created_by or "system",
         )
         self.session.add(job)
+        await self.session.flush()
         if active_index is None:
             index = DatasetIndexRecord(
                 id=target_id,
@@ -658,6 +663,8 @@ class IndexingRepository:
                 config_hash=config_hash,
             )
             self.session.add(index)
+            await self.session.flush()
+            job.target_index_id = target_id
         job_document = IndexingJobDocumentRecord(
             id=uuid4().hex,
             job_id=job_id,

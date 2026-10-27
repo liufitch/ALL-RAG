@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 import importlib
 import inspect
 import math
@@ -43,8 +44,15 @@ class PaddleOcrEngine:
         self._backend: Any = None
         self._backend_lock = Lock()
         self._inference_lock = Lock()
+        # Native Paddle predictors retain thread-local state. Celery tasks use
+        # separate asyncio thread pools, so keep initialization and inference
+        # on one long-lived thread even when callers change between tasks.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paddle-ocr")
 
     def recognize(self, image: object) -> tuple[OcrLine, ...]:
+        return self._executor.submit(self._recognize, image).result()
+
+    def _recognize(self, image: object) -> tuple[OcrLine, ...]:
         backend = self._get_backend()
         with self._inference_lock:
             try:

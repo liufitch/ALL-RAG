@@ -72,6 +72,8 @@ test("new knowledge base continues from upload through preview to live indexing 
   let uploaded = false;
   let jobReads = 0;
   let previewIds;
+  let previewModel;
+  let configuredModel;
   await mockAPI(page, { handler: async (route, url) => {
     const method = route.request().method();
     const path = url.pathname;
@@ -95,18 +97,20 @@ test("new knowledge base continues from upload through preview to live indexing 
     if (path === "/api/indexing/options") {
       await route.fulfill({ json: { indexing_techniques: [{ id: "economy" }], embedding_models: [],
         segmentation_modes: [{ id: "general", supported_indexing_techniques: ["economy"] }],
-        defaults: { indexing_technique: "economy", embedding_model: "", general: { max_chunk_length: 1024, overlap: 100 },
+        defaults: { indexing_technique: "high_quality", embedding_model: "bge-m3", general: { max_chunk_length: 1024, overlap: 100 },
           parent_child: { parent_mode: "paragraph", parent_max_chunk_length: 4096, child_max_chunk_length: 512, child_overlap: 50 } } } });
       return true;
     }
     if (path.endsWith("/indexing/preview") && method === "POST") {
       previewIds = route.request().postDataJSON().document_ids;
+      previewModel = route.request().postDataJSON().embedding_model;
       await route.fulfill({ json: { chunks: [{ id: "chunk-1", document_id: "doc-1", local_id: "1", parent_id: null,
         position: 0, content: "hello from guide", source_metadata: { ocr: true, page: 1 }, index_type: "general" }],
         total_chunks: 1, truncated: false, warnings: [], documents: [] } });
       return true;
     }
     if (path.endsWith("/indexing/configure") && method === "POST") {
+      configuredModel = route.request().postDataJSON().embedding_model;
       await route.fulfill({ status: 202, json: { rule_id: "rule-1", job_id: "job-1", document_ids: ["doc-1"], status: "queued" } });
       return true;
     }
@@ -135,13 +139,16 @@ test("new knowledge base continues from upload through preview to live indexing 
   await expect(page.getByText("上传文件以继续建立索引")).toBeVisible();
   await page.getByLabel("上传文件", { exact: true }).setInputFiles({ name: "guide.txt", mimeType: "text/plain", buffer: Buffer.from("hello") });
   await expect(page.getByRole("heading", { name: "配置并预览索引" })).toBeVisible();
+  await page.getByRole("button", { name: "经济", exact: true }).click();
   await page.getByRole("button", { name: "预览块" }).click();
   await expect(page.getByText("hello from guide")).toBeVisible();
   await expect(page.getByText("OCR · 第 1 页")).toBeVisible();
   expect(previewIds).toEqual(["doc-1"]);
+  expect(previewModel).toBeNull();
   await page.getByRole("button", { name: "确认并开始索引" }).click();
   await expect(page.getByRole("region", { name: "索引任务进度" })).toContainText("45%");
   await expect(page.getByRole("region", { name: "索引任务进度" })).toContainText("已完成");
+  expect(configuredModel).toBeNull();
 });
 
 test("OCR segments can be manually cleaned and saved through the revision API", async ({ page }) => {

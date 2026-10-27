@@ -8,16 +8,57 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import PurePath
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 from uuid import uuid4
 
 import anyio
+from pydantic import BaseModel, Field, field_validator
 
 from rag_modules.api.dto.knowledge_base.settings import RetrievalConfig
 
 
 class ArchiveValidationError(ValueError):
     pass
+
+
+class _ArchiveFile(BaseModel):
+    path: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0, strict=True)
+
+
+class _ArchiveManifest(BaseModel):
+    format_version: Literal[1]
+    document_count: int = Field(ge=0, strict=True)
+    files: list[_ArchiveFile]
+
+
+class _ArchiveDataset(BaseModel):
+    name: str = "导入知识库"
+    description: str | None = None
+    permission: Literal["only_me", "all_team_members", "all_members"] = "only_me"
+    category: str = "通用知识"
+    indexing_technique: Literal["high_quality", "economy"] = "high_quality"
+    embedding_model: str | None = None
+    embedding_model_provider: str | None = None
+    partial_user_config: dict = Field(default_factory=dict)
+
+    @field_validator("permission", mode="before")
+    @classmethod
+    def normalize_legacy_permission(cls, value):
+        aliases = {"private": "only_me", "team": "all_team_members", "public": "all_members"}
+        return aliases.get(value, value) if isinstance(value, str) else value
+
+
+class _ArchiveDocument(BaseModel):
+    id: str | None = None
+    name: str = "document"
+    position: int = 0
+    data_source_type: str = "upload_file"
+    data_source_info: dict = Field(default_factory=dict)
+    archive_path: str
+    enabled: bool = True
+    archived: bool = False
 
 
 class KnowledgeBaseArchiveService:
@@ -110,11 +151,14 @@ class KnowledgeBaseArchiveService:
             if not required.issubset(names):
                 raise ArchiveValidationError("archive is missing required metadata")
             try:
-                manifest = json.loads(archive.read("manifest.json"))
-                dataset_payload = json.loads(archive.read("dataset.json"))
+                manifest = _ArchiveManifest.model_validate_json(archive.read("manifest.json")).model_dump()
+                dataset_payload = _ArchiveDataset.model_validate_json(archive.read("dataset.json")).model_dump()
                 retrieval_payload = RetrievalConfig.model_validate(json.loads(archive.read("retrieval.json"))).model_dump()
                 document_payload = json.loads(archive.read("documents.json"))
-            except (ValueError, KeyError, TypeError) as exc:
+                if not isinstance(document_payload, list):
+                    raise ArchiveValidationError("archive documents must be a list")
+                document_payload = [_ArchiveDocument.model_validate(item).model_dump() for item in document_payload]
+            except (ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
                 raise ArchiveValidationError("archive metadata is invalid") from exc
             entries = {item.get("path"): item for item in manifest.get("files", [])}
             if len(document_payload) > self.MAX_FILES or manifest.get("document_count") != len(document_payload):

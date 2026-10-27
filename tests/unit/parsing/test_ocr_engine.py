@@ -1,10 +1,30 @@
 import sys
 import types
+from concurrent.futures import ThreadPoolExecutor
+from threading import current_thread
 
 import pytest
 
 from rag_modules.parsing.models import DocumentParseError
 from rag_modules.parsing.ocr import OcrLine, PaddleOcrEngine
+
+
+def test_cached_paddle_backend_stays_on_its_initialization_thread(monkeypatch):
+    """连续 Celery 任务创建新线程池时，也须在同一线程初始化和使用预测器。"""
+    class ThreadBoundBackend:
+        def __init__(self, **kwargs):
+            self.owner = current_thread()
+
+        def predict(self, image):
+            if current_thread() is not self.owner:
+                raise RuntimeError("predictor used from a different thread")
+            return [{"rec_texts": ["正文"], "rec_scores": [0.95]}]
+
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCR=ThreadBoundBackend))
+    engine = PaddleOcrEngine()
+    for _ in range(3):
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            assert caller.submit(engine.recognize, object()).result() == (OcrLine("正文", 0.95),)
 
 
 def test_paddle_engine_reports_missing_optional_dependency(monkeypatch):

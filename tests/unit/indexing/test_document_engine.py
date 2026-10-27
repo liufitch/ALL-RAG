@@ -31,6 +31,7 @@ from rag_modules.parsing import (
 from rag_modules.segmentation import (
     GeneralSegmentationConfig,
     ParentChildSegmentationConfig,
+    PreviewSegment,
     Segmenter,
 )
 from rag_modules.repositories.segment_repository import SegmentRepository
@@ -532,6 +533,7 @@ async def test_high_quality_indexes_general_segments_and_keeps_vectors_out_of_po
         record.id for record in deps.repository.records
     ]
     assert all(record.embedding_status == "completed" for record in deps.repository.records)
+    assert all(record.keywords for record in deps.repository.records)
 
 
 @pytest.mark.asyncio
@@ -548,11 +550,35 @@ async def test_parent_child_embeds_only_children_and_leaves_parents_not_required
     assert {entity.id for entity in deps.vector_store.entities} == child_ids
     assert result.total_segments == 4
     assert result.total_indexable_segments == 2
+    assert all(record.keywords for record in deps.repository.records if record.index_type == "child")
+    assert all(not record.keywords for record in deps.repository.records if record.index_type == "parent")
     assert all(
         record.embedding_status == "not_required"
         for record in deps.repository.records
         if record.index_type == "parent"
     )
+
+
+@pytest.mark.asyncio
+async def test_revision_with_namespace_indexes_edited_text_without_reading_source():
+    engine, deps = make_engine(forbidden_high_quality=True)
+    deps.storage.forbidden = True
+    command = replace(
+        economy_command(), segment_namespace="revision-job-1",
+        revision_segments=(PreviewSegment(
+            local_id="edited-1", parent_local_id=None, position=0,
+            content="Corrected OCR text", source_metadata={"ocr": True, "page": 1},
+            index_type="general",
+        ),),
+    )
+
+    result = await engine.run(command, RecordingProgress())
+
+    assert result.total_segments == 1
+    assert deps.repository.records[0].content == "Corrected OCR text"
+    assert deps.repository.records[0].keywords
+    assert deps.storage.requested_keys == []
+    assert deps.parser.contexts == []
 
 
 @pytest.mark.asyncio

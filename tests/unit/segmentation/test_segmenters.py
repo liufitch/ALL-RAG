@@ -217,6 +217,49 @@ def test_general_merges_source_ranges_without_losing_heading_metadata():
     }
 
 
+@pytest.mark.parametrize("config", [
+    GeneralSegmentationConfig(max_chunk_length=100, overlap=0),
+    ParentChildSegmentationConfig(parent_mode="full_document", parent_max_length=100, child_max_length=100, child_overlap=0),
+])
+def test_merging_ocr_paragraphs_retains_confidence_and_line_boxes(config):
+    """合并不同 OCR 段落时，分段仍须提供可核对的置信度和全部行框。"""
+    first_box = [[0, 0], [20, 0], [20, 10], [0, 10]]
+    second_box = [[0, 30], [20, 30], [20, 40], [0, 40]]
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "First line", {"page": 1, "ocr": True, "confidence": 0.9, "boxes": [first_box]}),
+        ParsedBlock("paragraph", "Second line", {"page": 1, "ocr": True, "confidence": 0.98, "boxes": [second_box]}),
+        source_type="image",
+    )
+
+    result = Segmenter().segment(parsed, config)
+
+    for segment in result.segments:
+        assert segment.source_metadata["confidence"] == pytest.approx(0.94)
+        assert segment.source_metadata["boxes"] == [first_box, second_box]
+        assert segment.source_metadata["ocr"] is True
+        assert segment.source_metadata["page"] == 1
+    assert parsed.blocks[0].metadata["boxes"] == [first_box]
+
+
+@pytest.mark.parametrize("already_truncated", [False, True])
+def test_merged_ocr_line_boxes_remain_bounded(already_truncated):
+    box = [[0, 0], [20, 0], [20, 10], [0, 10]]
+    count = 2 if already_truncated else 60
+    metadata = {"page": 1, "ocr": True, "confidence": 0.9, "boxes": [box] * count}
+    if already_truncated:
+        metadata["boxes_truncated"] = True
+    parsed = parsed_document(
+        ParsedBlock("paragraph", "First", metadata),
+        ParsedBlock("paragraph", "Second", {**metadata, "confidence": 0.98}),
+        source_type="image",
+    )
+
+    result = Segmenter().segment(parsed, GeneralSegmentationConfig(max_chunk_length=100, overlap=0))
+
+    assert len(result.segments[0].source_metadata["boxes"]) == (4 if already_truncated else 100)
+    assert result.segments[0].source_metadata["boxes_truncated"] is True
+
+
 @pytest.mark.parametrize(
     "config",
     [

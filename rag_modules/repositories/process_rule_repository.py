@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 
 from rag_modules.db.models import (
     DatasetIndexRecord,
+    DatasetRecord,
     DocumentRecord,
     IndexingJobDocumentRecord,
     IndexingJobRecord,
@@ -39,8 +40,26 @@ class ProcessRuleRepository:
     async def create_rule_and_job(self, *, rule, job, index, documents, job_documents, rule_is_new=True):
         if rule_is_new:
             self.session.add(rule)
-        self.session.add(index)
+        # The job and index reference each other; insert the job without its
+        # nullable target first, then bind it after the index exists.
+        target_index_id = job.target_index_id
+        job.target_index_id = None
         self.session.add(job)
+        await self.session.flush()
+        self.session.add(index)
+        await self.session.flush()
+        job.target_index_id = target_index_id
+        dataset = await self.session.get(DatasetRecord, job.dataset_id)
+        if dataset is not None:
+            dataset.indexing_technique = job.indexing_technique
+            dataset.embedding_model = job.embedding_model
+            dataset.embedding_model_provider = job.embedding_model_provider
+            dataset.partial_user_config = {
+                **(dataset.partial_user_config or {}),
+                "process_rule": dict(job.process_rule["segmentation"]),
+            }
+            dataset.updated_by = job.created_by
+            dataset.updated_at = job.created_at
         self.session.add_all(job_documents)
         for document in documents:
             document.dataset_process_rule_id = rule.id

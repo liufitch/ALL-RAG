@@ -713,6 +713,21 @@ def _merge_metadata(metadata_items: Iterable[dict[str, Any]]) -> dict[str, Any]:
         distinct_paths = list(dict.fromkeys(tuple(path) for path in paths))
         if len(distinct_paths) > 1:
             merged["heading_paths"] = [list(path) for path in distinct_paths]
+    ocr_items = [item for item in items if item.get("ocr")]
+    if ocr_items:
+        confidences = [item["confidence"] for item in ocr_items if "confidence" in item]
+        if confidences:
+            merged["confidence"] = round(sum(confidences) / len(confidences), 4)
+        boxes = []
+        box_count = 0
+        for item in ocr_items:
+            item_boxes = item.get("boxes", [])
+            box_count += len(item_boxes)
+            boxes.extend(item_boxes[:max(0, 100 - len(boxes))])
+        if boxes:
+            merged["boxes"] = boxes
+        if box_count > len(boxes) or any(item.get("boxes_truncated") for item in ocr_items):
+            merged["boxes_truncated"] = True
     for key in sorted(set().union(*(item.keys() for item in items))):
         if key in merged or key in {"line_start", "line_end", "page", "row", "heading_path"}:
             continue

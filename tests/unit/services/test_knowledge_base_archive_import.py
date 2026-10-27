@@ -60,3 +60,42 @@ async def test_import_rejects_path_traversal():
 async def test_import_rejects_hash_mismatch():
     with pytest.raises(ArchiveValidationError):
         await KnowledgeBaseArchiveService(Repo(), Storage()).import_dataset(io.BytesIO(archive_bytes(digest="0" * 64)))
+
+
+@pytest.mark.parametrize(("member", "replacement"), [
+    ("manifest.json", []),
+    ("manifest.json", {"format_version": 2}),
+    ("manifest.json", {"format_version": 1, "document_count": 1, "files": None}),
+    ("manifest.json", {"format_version": 1, "document_count": 1, "files": [None]}),
+    ("manifest.json", {"format_version": 1, "document_count": 1, "files": [{"path": []}]}),
+    ("dataset.json", []),
+    ("dataset.json", {"name": "test", "permission": "invalid"}),
+    ("dataset.json", {"name": "test", "indexing_technique": "invalid"}),
+    ("dataset.json", {"name": "test", "partial_user_config": []}),
+    ("documents.json", {"unexpected": "object"}),
+    ("documents.json", [None]),
+    ("documents.json", [{"archive_path": []}]),
+    ("documents.json", [{"archive_path": "files/doc-1/a.txt", "data_source_info": []}]),
+    ("documents.json", [{"archive_path": "files/doc-1/a.txt", "name": ["bad"]}]),
+    ("documents.json", [{"archive_path": "files/doc-1/a.txt", "position": "bad"}]),
+])
+@pytest.mark.asyncio
+async def test_import_rejects_invalid_metadata_before_writing_objects(member, replacement):
+    source = io.BytesIO(archive_bytes())
+    malformed = io.BytesIO()
+    with zipfile.ZipFile(source) as original, zipfile.ZipFile(malformed, "w") as output:
+        for name in original.namelist():
+            if name == member and name == "manifest.json" and isinstance(replacement, dict):
+                payload = json.loads(original.read(name))
+                payload.update(replacement)
+            else:
+                payload = replacement
+            output.writestr(name, json.dumps(payload) if name == member else original.read(name))
+    malformed.seek(0)
+    repo, storage = Repo(), Storage()
+
+    with pytest.raises(ArchiveValidationError):
+        await KnowledgeBaseArchiveService(repo, storage).import_dataset(malformed)
+
+    assert storage.keys == []
+    assert repo.payload is None

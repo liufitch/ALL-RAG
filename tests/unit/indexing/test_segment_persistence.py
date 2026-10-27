@@ -535,6 +535,43 @@ async def test_keyword_update_rejects_high_quality_general_without_mutation(segm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("technique", ["economy", "high_quality"])
+async def test_staging_retry_reuses_generated_search_keywords(segment_repository, technique):
+    snapshot = command(indexing_technique=technique, segmentation_mode="general")
+    preview = (general_preview_segment(content="alpha beta"),)
+    records = await segment_repository.stage(snapshot, preview)
+    if technique == "high_quality":
+        await segment_repository.mark_embeddings_completed(
+            dataset_index_id="index-1", document_id="doc-1", segment_ids=[records[0].id],
+        )
+    await segment_repository.update_keywords(
+        dataset_index_id="index-1", document_id="doc-1",
+        keywords_by_segment_id={records[0].id: ("alpha", "beta")},
+    )
+    await segment_repository.session.commit()
+
+    retried = await segment_repository.stage(snapshot, preview)
+    assert [record.id for record in retried] == [records[0].id]
+    assert retried[0].keywords == ["alpha", "beta"]
+
+
+@pytest.mark.asyncio
+async def test_completed_child_embeddings_can_receive_search_keywords(segment_repository):
+    records = await segment_repository.stage(command(), parent_child_preview_segments())
+    child = next(record for record in records if record.index_type == "child")
+    parent = next(record for record in records if record.index_type == "parent")
+    await segment_repository.mark_embeddings_completed(
+        dataset_index_id="index-1", document_id="doc-1", segment_ids=[child.id],
+    )
+    await segment_repository.update_keywords(
+        dataset_index_id="index-1", document_id="doc-1",
+        keywords_by_segment_id={child.id: ("searchable",)},
+    )
+    assert child.keywords == ["searchable"]
+    assert parent.keywords is None
+
+
+@pytest.mark.asyncio
 async def test_embedding_update_rejects_economy_general_without_mutation(segment_repository):
     records = await segment_repository.stage(
         command(indexing_technique="economy", segmentation_mode="general"),

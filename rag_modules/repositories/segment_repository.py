@@ -118,7 +118,7 @@ class SegmentRepository:
         document_id: str,
         keywords_by_segment_id: Mapping[str, Sequence[str]],
     ) -> None:
-        """仅为本次提交的暂存记录写入经济模式关键词。"""
+        """为经济分段或已写入向量的高质量分段保存检索关键词。"""
         if not keywords_by_segment_id:
             return
         records = await self._exact_mutation_records(
@@ -130,8 +130,10 @@ class SegmentRepository:
         for record in records:
             keywords = keywords_by_segment_id[record.id]
             if (
-                record.index_type != "general"
-                or record.embedding_status != "not_required"
+                not (
+                    (record.index_type == "general" and record.embedding_status == "not_required")
+                    or (record.index_type in {"general", "child"} and record.embedding_status == "completed")
+                )
                 or isinstance(keywords, (str, bytes))
                 or len(keywords) > 100
                 or any(
@@ -495,7 +497,10 @@ class SegmentRepository:
             and existing.content == candidate.content
             and existing.question == candidate.preview.question
             and existing.answer == candidate.preview.answer
-            and list(existing.keywords or []) == list(candidate.preview.keywords)
+            and (
+                not candidate.preview.keywords
+                or list(existing.keywords or []) == list(candidate.preview.keywords)
+            )
             and existing.source_metadata == candidate.source_metadata
             and existing.status == "indexing"
             and existing.deleted_at is None

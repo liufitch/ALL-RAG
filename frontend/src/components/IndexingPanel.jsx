@@ -88,6 +88,14 @@ export default function IndexingPanel({ dataset, documents, onClose, onStarted }
     update({ ...config, indexing_technique: mode === "parent_child" ? "high_quality" : config.indexing_technique, segmentation });
   }
 
+  function requestPayload() {
+    return {
+      ...config,
+      document_ids: documents.map(item => item.id),
+      embedding_model: config.indexing_technique === "high_quality" ? config.embedding_model : null,
+    };
+  }
+
   async function previewChunks() {
     if (!documents.length) return;
     setPreviewing(true);
@@ -96,7 +104,7 @@ export default function IndexingPanel({ dataset, documents, onClose, onStarted }
       const response = await request(`/api/knowledge_base/${encodeURIComponent(dataset.id)}/indexing/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ document_ids: documents.map(item => item.id), ...config }),
+        body: JSON.stringify(requestPayload()),
       });
       setPreview(response);
       setStale(false);
@@ -115,7 +123,7 @@ export default function IndexingPanel({ dataset, documents, onClose, onStarted }
       const response = await request(`/api/knowledge_base/${encodeURIComponent(dataset.id)}/indexing/configure`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ document_ids: documents.map(item => item.id), ...config }),
+        body: JSON.stringify(requestPayload()),
       });
       setConfirmed(response);
       onStarted?.(response.job_id);

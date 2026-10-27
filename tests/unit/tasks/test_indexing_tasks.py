@@ -122,6 +122,29 @@ async def test_retryable_engine_error_sets_retry_wait_with_safe_error():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("code", "retryable", "status"), [
+    ("EMBEDDING_AUTH_FAILED", False, "failed"),
+    ("EMBEDDING_INPUT_INVALID", False, "failed"),
+    ("EMBEDDING_REQUEST_FAILED", True, "retry_wait"),
+])
+async def test_embedding_provider_errors_keep_their_code_and_retry_policy(code, retryable, status):
+    from rag_modules.embeddings import EmbeddingError
+    from rag_modules.tasks.indexing_tasks import IndexingTaskRunner
+
+    class FailingEngine:
+        async def run(self, command, progress):
+            raise EmbeddingError(code, retryable, "Safe embedding failure.")
+
+    repo = FakeRepository()
+    runner = IndexingTaskRunner(repository=repo, engine=FailingEngine(), command_factory=lambda row: object())
+    await runner.run("jd-1")
+
+    assert repo.row.status == status
+    assert repo.row.error_code == code
+    assert repo.row.error == "Safe embedding failure."
+
+
+@pytest.mark.asyncio
 async def test_cancel_requested_stops_engine_and_marks_cancelled():
     from rag_modules.tasks.indexing_tasks import IndexingTaskRunner
 

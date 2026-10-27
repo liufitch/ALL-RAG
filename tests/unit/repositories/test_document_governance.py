@@ -82,3 +82,22 @@ async def test_document_repository_lists_only_active_segments(session):
 
     records = await DocumentRepository(session).list_segments("dataset-1", "doc-1")
     assert [record.id for record in records] == ["segment-1"]
+
+
+@pytest.mark.asyncio
+async def test_segment_editor_excludes_retired_index_and_legacy_segments_when_active_index_exists(session):
+    for identifier, status in [("active-index", "active"), ("retired-index", "retired")]:
+        session.add(DatasetIndexRecord(
+            id=identifier, dataset_id="dataset-1", created_by_job_id="job-1",
+            index_type="economy", status=status, process_rule={}, retrieval_config={}, config_hash=identifier,
+        ))
+    for identifier, index in [("current", "active-index"), ("old", "retired-index"), ("legacy", None)]:
+        session.add(DocumentSegmentRecord(
+            id=identifier, document_id="doc-1", dataset_id="dataset-1", dataset_index_id=index,
+            position=0, content=identifier, status="completed", index_type="general", embedding_status="not_required",
+        ))
+    await session.commit()
+
+    records = await DocumentRepository(session).list_segments("dataset-1", "doc-1")
+
+    assert [record.content for record in records] == ["current"]

@@ -26,6 +26,7 @@ class Repo:
                 "object_key": "datasets/dataset-1/documents/doc-1/source.txt",
                 "content_type": "text/plain", "size": 5, "sha256": hashlib.sha256(b"hello").hexdigest(),
             }, name="guide.txt", created_from="api", created_by="u1", indexing_status="completed",
+            enabled=True, archived=False,
         )]
 
 
@@ -46,3 +47,35 @@ async def test_export_contains_manifest_metadata_and_file(tmp_path):
         assert manifest["format_version"] == 1
         assert manifest["files"][0]["sha256"] == hashlib.sha256(b"hello").hexdigest()
         assert archive.read("files/doc-1/guide.txt") == b"hello"
+
+
+@pytest.mark.parametrize(("permission", "canonical"), [
+    ("private", "only_me"), ("team", "all_team_members"), ("public", "all_members"),
+    ("only_me", "only_me"), ("all_team_members", "all_team_members"), ("all_members", "all_members"),
+])
+@pytest.mark.asyncio
+async def test_export_import_preserves_legacy_permission_meaning(tmp_path, permission, canonical):
+    class RoundTripRepo(Repo):
+        async def get_active(self, dataset_id):
+            record = await super().get_active(dataset_id)
+            record.permission = permission
+            return record
+
+        async def create_import_records(self, **payload):
+            self.imported = payload
+
+    class RoundTripStorage(Storage):
+        async def put_stream(self, object_key, stream, length, content_type):
+            assert stream.read() == b"hello"
+
+        async def remove_object(self, object_key):
+            pass
+
+    repository = RoundTripRepo()
+    service = KnowledgeBaseArchiveService(repository, RoundTripStorage(), temp_dir=tmp_path)
+    path = await service.export_dataset("legacy-dataset")
+    with open(path, "rb") as archive:
+        result = await service.import_dataset(archive)
+
+    assert result["document_count"] == 1
+    assert repository.imported["dataset"]["permission"] == canonical

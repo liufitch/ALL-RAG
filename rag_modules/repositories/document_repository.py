@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag_modules.db.models import DocumentRecord, DocumentSegmentRecord
+from rag_modules.db.models import DatasetIndexRecord, DocumentRecord, DocumentRevisionRecord, DocumentSegmentRecord
 
 
 class DocumentRepository:
@@ -83,6 +83,11 @@ class DocumentRepository:
     async def list_segments(
         self, dataset_id: str, document_id: str
     ) -> list[DocumentSegmentRecord]:
+        active_indexes = select(DatasetIndexRecord.id).where(
+            DatasetIndexRecord.dataset_id == dataset_id,
+            DatasetIndexRecord.status == "active",
+            DatasetIndexRecord.deleted_at.is_(None),
+        )
         result = await self.session.execute(
             select(DocumentSegmentRecord)
             .where(
@@ -90,10 +95,20 @@ class DocumentRepository:
                 DocumentSegmentRecord.document_id == document_id,
                 DocumentSegmentRecord.deleted_at.is_(None),
                 DocumentSegmentRecord.status == "completed",
+                or_(
+                    DocumentSegmentRecord.dataset_index_id.in_(active_indexes),
+                    and_(DocumentSegmentRecord.dataset_index_id.is_(None), ~exists(active_indexes)),
+                ),
             )
             .order_by(DocumentSegmentRecord.position.asc(), DocumentSegmentRecord.id.asc())
         )
         return list(result.scalars())
+
+    async def get_latest_revision(self, dataset_id: str, document_id: str) -> DocumentRevisionRecord | None:
+        return await self.session.scalar(select(DocumentRevisionRecord).where(
+            DocumentRevisionRecord.dataset_id == dataset_id,
+            DocumentRevisionRecord.document_id == document_id,
+        ).order_by(DocumentRevisionRecord.version.desc()).limit(1))
 
     async def get_active_by_ids(
         self, dataset_id: str, document_ids: list[str]

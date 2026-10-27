@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from rag_modules.db.base import Base
@@ -36,12 +36,12 @@ async def indexing_database(tmp_path):
     await engine.dispose()
 
 
-async def _seed_build(session, *, document_statuses: tuple[str, ...]):
+async def _seed_build(session, *, document_statuses: tuple[str, ...], old_index_id=None, target_index_id=None):
     dataset_id = "dataset-1"
     old_job_id = uuid4().hex
-    old_index_id = uuid4().hex
+    old_index_id = old_index_id or uuid4().hex
     job_id = uuid4().hex
-    target_index_id = uuid4().hex
+    target_index_id = target_index_id or uuid4().hex
     session.add(
         DatasetRecord(
             id=dataset_id,
@@ -135,6 +135,29 @@ async def _seed_build(session, *, document_statuses: tuple[str, ...]):
             )
     await session.commit()
     return old_index_id, target_index_id, job_id
+
+
+@pytest.mark.asyncio
+async def test_activation_retires_old_index_before_unique_active_constraint_is_checked(indexing_database):
+    """新主键排在旧版本之前时，也不能短暂出现两个 active 版本。"""
+    old_id, target_id, job_id = await _seed_build(
+        indexing_database, document_statuses=("completed",),
+        old_index_id="zz-old-index", target_index_id="aa-new-index",
+    )
+    await indexing_database.execute(text(
+        "CREATE UNIQUE INDEX uq_dataset_indexes_one_active ON dataset_indexes (dataset_id) "
+        "WHERE status = 'active' AND deleted_at IS NULL"
+    ))
+    await indexing_database.commit()
+
+    assert await IndexingRepository(indexing_database).finalize_indexing_job(job_id) is True
+
+    assert (await indexing_database.get(DatasetIndexRecord, old_id)).status == "retired"
+    assert (await indexing_database.get(DatasetIndexRecord, target_id)).status == "active"
+    segment = await indexing_database.scalar(select(DocumentSegmentRecord).where(
+        DocumentSegmentRecord.dataset_index_id == target_id,
+    ))
+    assert segment.status == "completed"
 
 
 @pytest.mark.asyncio

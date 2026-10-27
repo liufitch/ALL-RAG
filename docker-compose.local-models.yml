@@ -1,0 +1,69 @@
+# Local BGE Large Chinese v1.5 inference and the existing native Ollama server.
+# Use together with docker-compose.yml; LOCAL_EMBEDDING_MODEL_PATH must point
+# to the complete BAAI/bge-large-zh-v1.5 weights directory on this machine.
+services:
+  embedding:
+    profiles: ["app"]
+    platform: ${LOCAL_EMBEDDING_PLATFORM:-linux/arm64}
+    image: ${LOCAL_EMBEDDING_IMAGE:-ghcr.io/huggingface/text-embeddings-inference@sha256:35c50d7494de22deecdb783b8f5b7e1d05765709bd90071b03469b9440d28656}
+    container_name: graph-rag-embedding
+    restart: unless-stopped
+    mem_limit: 2g
+    ports:
+      - "127.0.0.1:8001:80"
+    volumes:
+      - type: bind
+        source: ${LOCAL_EMBEDDING_MODEL_PATH:?set LOCAL_EMBEDDING_MODEL_PATH to the BGE model directory}
+        target: /models/embedding
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - --model-id
+      - /models/embedding
+      - --served-model-name
+      - bge-large-zh-v1.5
+      - --pooling
+      - cls
+      - --port
+      - "80"
+      - --hostname
+      - 0.0.0.0
+      - --max-concurrent-requests
+      - "4"
+      - --max-batch-tokens
+      - "4096"
+      - --max-batch-requests
+      - "4"
+      - --auto-truncate
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  api:
+    environment: &local-model-environment
+      EMBEDDING__BASE_URL: http://embedding/v1
+      EMBEDDING__DEFAULT_MODEL: bge-large-zh-v1.5
+      EMBEDDING__MODELS: >-
+        [{"id":"bge-large-zh-v1.5","model":"bge-large-zh-v1.5","display_name":"BGE Large Chinese v1.5 (local TEI)","dimensions":1024,"batch_size":4,"max_input_characters":500,"request_timeout":60}]
+      # BGE's 512-token context requires smaller chunks than the BGE-M3 defaults.
+      INDEXING__GENERAL_MAX_CHUNK_LENGTH: "400"
+      INDEXING__GENERAL_OVERLAP: "40"
+      INDEXING__CHILD_MAX_CHUNK_LENGTH: "200"
+      INDEXING__CHILD_OVERLAP: "20"
+      GRAPH__ENABLED: ${LOCAL_GRAPH_ENABLED:-true}
+      GRAPH__URI: bolt://neo4j:7687
+      GRAPH__EXTRACTION_BASE_URL: ${LOCAL_GRAPH_BASE_URL:-http://host.docker.internal:11434/v1}
+      GRAPH__EXTRACTION_MODEL: ${LOCAL_GRAPH_MODEL:-graph-qwen2.5:1.5b}
+    depends_on:
+      embedding:
+        condition: service_healthy
+
+  worker:
+    environment: *local-model-environment
+    depends_on:
+      embedding:
+        condition: service_healthy

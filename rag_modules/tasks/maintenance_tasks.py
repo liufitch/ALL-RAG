@@ -43,7 +43,7 @@ async def _dispatch_pending_indexing() -> list[str]:
     try:
       async with factory() as session:
         result = await session.execute(select(IndexingJobDocumentRecord).where(
-            IndexingJobDocumentRecord.status == "pending",
+            IndexingJobDocumentRecord.status.in_(("pending", "retry_wait")),
             IndexingJobDocumentRecord.available_at <= utcnow(),
         ).limit(100).with_for_update())
         rows = list(result.scalars())

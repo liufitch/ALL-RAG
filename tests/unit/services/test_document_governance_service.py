@@ -50,6 +50,9 @@ class Repository:
     async def list_segments(self, *args):
         return ["segment"]
 
+    async def get_latest_revision(self, *args):
+        return getattr(self, "revision", None)
+
 
 def service(repository):
     return DocumentService(
@@ -58,6 +61,19 @@ def service(repository):
         storage=SimpleNamespace(),
         upload_settings=SimpleNamespace(),
     )
+
+
+@pytest.mark.asyncio
+async def test_edit_version_rejects_inflight_revision_but_allows_terminal_versions():
+    from rag_modules.services.document_revision_service import RevisionConflictError
+    repository = Repository(SimpleNamespace())
+    target = service(repository)
+    repository.revision = SimpleNamespace(version=3, status="pending")
+    with pytest.raises(RevisionConflictError):
+        await target.get_segment_revision("dataset-1", "doc-1")
+    for status in ["completed", "failed", "cancelled"]:
+        repository.revision.status = status
+        assert await target.get_segment_revision("dataset-1", "doc-1") == 3
 
 
 @pytest.mark.asyncio

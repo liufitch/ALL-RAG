@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -265,12 +266,18 @@ async def download_document(
             logger.warning("document_download_failed document_id=%s", document_id)
             raise HTTPException(status_code=503, detail="document storage is temporarily unavailable") from exc
 
-    filename = document.name.replace('"', "'").replace("\r", " ").replace("\n", " ")
+    filename = document.name.replace("\r", " ").replace("\n", " ")
+    quoted_filename = quote(filename, safe="")
+    disposition = (
+        f"attachment; filename*=utf-8''{quoted_filename}"
+        if quoted_filename != filename
+        else f'attachment; filename="{filename}"'
+    )
     media_type = info.get("content_type") or "application/octet-stream"
     return StreamingResponse(
         stream(),
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": disposition},
     )
 
 
@@ -347,11 +354,17 @@ async def delete_document(
 @router.get("/{document_id}/segments", response_model=DocumentSegmentListResponse)
 async def list_document_segments(dataset_id: str, document_id: str, service: DocumentService = Depends(get_document_service)):
     try:
+        # Read the token before the content: a revision published between the
+        # reads can only make this token stale, so saving will reject it.
+        revision = await service.get_segment_revision(dataset_id, document_id)
         segments = await service.list_segments(dataset_id, document_id)
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail="document not found") from exc
+    except RevisionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return DocumentSegmentListResponse(
         document_id=document_id,
+        revision=revision,
         items=[_document_segment_item(segment) for segment in segments],
     )
 

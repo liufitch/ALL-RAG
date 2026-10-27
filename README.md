@@ -84,6 +84,12 @@ uvicorn main:app --reload
 
 访问 `http://127.0.0.1:8000`。
 
+FastAPI 启动时会检测项目内的 `frontend/dist/index.html`，存在时托管首页及构建资源。若先启动 API 再构建前端，需要重启 API；未构建前端时，API 仍可独立启动。当前 Docker 应用镜像只包含后端，前端可按开发方式单独运行。
+
+功能测试、问题现象、原因、修复及复验结果见 [2026-10-27 项目功能测试记录](docs/2026-10-27-functional-test.md)。
+
+本地 Docker 的真实 Embedding、高质量/父子索引、混合检索、CPU OCR 与 Neo4j 抽取/图检索已补验，复启命令、模型配置和修复记录见 [实际环境能力验收](docs/2026-10-27-real-environment-test.md)。已有 BGE 权重和原生 Ollama 模型时，可使用 `docker-compose.local-models.yml` 与主 Compose 文件合并启动。
+
 ## Neo4j 实体关系图
 
 设置 `.env` 中的 `GRAPH__ENABLED=true`、`GRAPH__URI`、`GRAPH__USERNAME`、`GRAPH__PASSWORD` 和 `GRAPH__EXTRACTION_MODEL` 后重启 API 与索引 Worker。`GRAPH__EXTRACTION_BASE_URL` 和 `GRAPH__EXTRACTION_API_KEY` 指向兼容 `/chat/completions` 且支持 JSON 响应格式的模型服务。Neo4j 已在 `docker-compose.yml` 中定义；容器内 Worker 使用 `bolt://neo4j:7687`，本机运行使用 `bolt://localhost:7687`。

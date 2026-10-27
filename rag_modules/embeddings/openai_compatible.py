@@ -167,16 +167,14 @@ class OpenAICompatibleEmbeddingClient:
         definition: EmbeddingModelDefinition,
         texts: tuple[str, ...],
     ) -> EmbeddingBatch:
+        api_key = self._settings.api_key.get_secret_value()
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         for attempt in range(self._settings.max_retries + 1):
             try:
                 response = await self._http_client.post(
                     self._endpoint,
                     json={"model": definition.model, "input": list(texts)},
-                    headers={
-                        "Authorization": (
-                            f"Bearer {self._settings.api_key.get_secret_value()}"
-                        )
-                    },
+                    headers=headers,
                     timeout=definition.request_timeout,
                 )
             except httpx.RequestError:
