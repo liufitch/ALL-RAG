@@ -7,6 +7,7 @@ Graph-RAG 是一个基于 FastAPI 和 React 的知识库管理与检索项目。
 完整架构、组件职责、数据模型、索引流程、可靠性设计和当前实施状态见：
 
 - [项目架构设计](docs/architecture.md)
+- [文件上传、解析、索引与检索整体链路](docs/document-processing-flow.md)
 - [Dify 风格知识库创建与完整索引设计](docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md)
 - [完整索引实施路线图](docs/superpowers/plans/2026-08-31-dataset-indexing-roadmap.md)
 
