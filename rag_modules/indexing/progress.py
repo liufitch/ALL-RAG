@@ -19,13 +19,17 @@ class DatabaseProgressReporter:
         self.worker_id = worker_id
         self.lease_seconds = lease_seconds
 
-    async def update(self, stage: str, progress: int, processed_segments: int) -> None:
+    async def update(
+        self, stage: str, progress: int, processed_segments: int,
+        total_segments: int | None = None,
+    ) -> None:
         result = self.repository.heartbeat(
             self.job_document_id,
             worker_id=self.worker_id,
             stage=stage,
             progress=progress,
             processed_segments=processed_segments,
+            total_segments=total_segments,
             lease_seconds=self.lease_seconds,
         )
         if inspect.isawaitable(result):

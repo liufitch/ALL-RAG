@@ -1,16 +1,16 @@
-# Complete Dataset Indexing Implementation Roadmap
+# 完整 Dataset 索引实施路线图
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向智能体工作者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项执行本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** 分七个可独立验收的阶段交付 Dify 风格知识库创建、MinIO 文档存储、真实解析分段、OpenAI-compatible Embedding、Milvus 向量索引、RabbitMQ/Celery 持久化任务和完整前端流程。
+**目标：** 分七个可独立验收的阶段交付 Dify 风格知识库创建、MinIO 文档存储、真实解析分段、OpenAI-compatible Embedding、Milvus 向量索引、RabbitMQ/Celery 持久化任务和完整前端流程。
 
-**Architecture:** FastAPI 负责短事务 API，PostgreSQL 保存业务事实，MinIO 保存原始文件，RabbitMQ 为 Celery broker，独立 Worker 完成解析和索引，Milvus 只保存高质量索引向量。全量重建通过 `dataset_indexes` 双版本构建和原子激活避免旧索引中断。
+**架构：** FastAPI 负责短事务 API，PostgreSQL 保存业务事实，MinIO 保存原始文件，RabbitMQ 为 Celery broker，独立 Worker 完成解析和索引，Milvus 只保存高质量索引向量。全量重建通过 `dataset_indexes` 双版本构建和原子激活避免旧索引中断。
 
-**Tech Stack:** Python 3.11、FastAPI、Pydantic Settings、SQLAlchemy async、Alembic、PostgreSQL、MinIO Python SDK、Celery、RabbitMQ、HTTPX、PyMilvus 2.5、React 19、React Router、Vitest、Testing Library。
+**技术栈：** Python 3.11、FastAPI、Pydantic Settings、SQLAlchemy async、Alembic、PostgreSQL、MinIO Python SDK、Celery、RabbitMQ、HTTPX、PyMilvus 2.5、React 19、React Router、Vitest、Testing Library。
 
-**Spec:** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
+**规格：** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
 
-## Global Constraints
+## 全局约束
 
 - 向量只写 Milvus；`document_segments.vector` 本期保持 `NULL`。
 - PostgreSQL 保存知识库、文档、正文分段、父子关系、关键词、任务、进度和索引版本。
@@ -28,19 +28,19 @@
 
 ---
 
-## Plan Set and Dependency Order
+## 计划集合与依赖顺序
 
 | 顺序 | 计划 | 独立交付物 | 依赖 |
 |---|---|---|---|
-| 1 | [Foundation and Schema](./2026-08-31-dataset-indexing-01-foundation-schema.md) | 配置、依赖、Alembic、任务/索引 ORM、空知识库 API、RabbitMQ 基础设施 | 无 |
-| 2 | [MinIO Documents](./2026-08-31-dataset-indexing-02-minio-documents.md) | MinIO 存储抽象、文件校验、批量上传和文档列表 | 1 |
-| 3 | [Parsing, Segmentation, Preview](./2026-08-31-dataset-indexing-03-parsing-preview.md) | 七种扩展名解析、普通/父子分段、真实预览 API | 2 |
-| 4 | [Embedding and Milvus](./2026-08-31-dataset-indexing-04-embedding-milvus.md) | OpenAI-compatible 客户端、关键词、高质量/经济索引执行原语、Milvus schema/upsert | 1、3 |
-| 5 | [Celery Orchestration](./2026-08-31-dataset-indexing-05-celery-orchestration.md) | 持久化任务 API、RabbitMQ/Celery Worker、恢复/取消/重试、版本切换和清理 | 2、4 |
-| 6 | [Frontend Workflow](./2026-08-31-dataset-indexing-06-frontend-workflow.md) | Dify 风格三步页面、模型选择、真实预览、任务进度 | 2、3、5 |
-| 7 | [End-to-End Hardening](./2026-08-31-dataset-indexing-07-e2e-hardening.md) | 真实基础设施 E2E、故障恢复、资源清理、旧 JSON 清理和运维文档 | 1–6 |
+| 1 | [基础与 Schema](./2026-08-31-dataset-indexing-01-foundation-schema.md) | 配置、依赖、Alembic、任务/索引 ORM、空知识库 API、RabbitMQ 基础设施 | 无 |
+| 2 | [MinIO 文档](./2026-08-31-dataset-indexing-02-minio-documents.md) | MinIO 存储抽象、文件校验、批量上传和文档列表 | 1 |
+| 3 | [解析、分段与预览](./2026-08-31-dataset-indexing-03-parsing-preview.md) | 七种扩展名解析、普通/父子分段、真实预览 API | 2 |
+| 4 | [Embedding 与 Milvus](./2026-08-31-dataset-indexing-04-embedding-milvus.md) | OpenAI-compatible 客户端、关键词、高质量/经济索引执行原语、Milvus schema/upsert | 1、3 |
+| 5 | [Celery 编排](./2026-08-31-dataset-indexing-05-celery-orchestration.md) | 持久化任务 API、RabbitMQ/Celery Worker、恢复/取消/重试、版本切换和清理 | 2、4 |
+| 6 | [前端流程](./2026-08-31-dataset-indexing-06-frontend-workflow.md) | Dify 风格三步页面、模型选择、真实预览、任务进度 | 2、3、5 |
+| 7 | [端到端加固](./2026-08-31-dataset-indexing-07-e2e-hardening.md) | 真实基础设施 E2E、故障恢复、资源清理、旧 JSON 清理和运维文档 | 1–6 |
 
-## Delivery Gates
+## 交付门禁
 
 每个阶段只有满足以下门禁才能进入下一阶段：
 
@@ -51,7 +51,7 @@
 5. 对外接口或迁移有变更时，OpenAPI/迁移检查已运行。
 6. 阶段 6 以后还必须通过 `npm test -- --run` 和 `npm run build`。
 
-## Full Verification Command Set
+## 完整验证命令集
 
 后端快速回归：
 
@@ -81,7 +81,7 @@ docker compose --profile app up -d --build
 python -m pytest tests/e2e -v
 ```
 
-## Execution Checkpoints
+## 执行检查点
 
 - 阶段 1 后审查迁移是否只增量修改现有三张业务表。
 - 阶段 3 后用真实样例确认预览和正式分段调用同一实现。
@@ -90,7 +90,7 @@ python -m pytest tests/e2e -v
 - 阶段 6 后由用户进行页面流程验收。
 - 阶段 7 后运行完整验收矩阵并使用 `superpowers:verification-before-completion` 做最终证据检查。
 
-## Spec Acceptance Coverage
+## 规格验收覆盖
 
 | 规格验收项 | 实施任务 |
 |---|---|
@@ -107,7 +107,7 @@ python -m pytest tests/e2e -v
 | 29：真实基础设施和 mock Embedding E2E | 07 Tasks 1–5 |
 | 30：移除 `knowledge_bases.json` 和无用引用 | 07 Task 6 |
 
-## Approved Extension: Source Change Synchronization
+## 已批准扩展：数据源变更同步
 
 完整索引阶段 1–5 建立安全索引原语、RabbitMQ/Celery 和版本切换后，按[数据源变更同步路线图](./2026-08-31-source-sync-roadmap.md)继续实施：
 

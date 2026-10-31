@@ -1,16 +1,16 @@
-# Dify-Style Dataset Frontend Workflow Implementation Plan
+# Dify 风格 Dataset 前端流程实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向智能体工作者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项执行本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** 将当前单弹窗页面改为“创建空知识库 → 上传文档 → 配置/真实预览 → 异步处理进度”的可刷新路由流程。
+**目标：** 将当前单弹窗页面改为“创建空知识库 → 上传文档 → 配置/真实预览 → 异步处理进度”的可刷新路由流程。
 
-**Architecture:** React Router 按 dataset URL 恢复页面状态，API 模块集中处理错误和 JSON，feature 组件按三步职责拆分。任务轮询 hook 只读取 PostgreSQL 驱动的 API 状态，并在终态或卸载时停止。
+**架构：** React Router 按 dataset URL 恢复页面状态，API 模块集中处理错误和 JSON，feature 组件按三步职责拆分。任务轮询 hook 只读取 PostgreSQL 驱动的 API 状态，并在终态或卸载时停止。
 
-**Tech Stack:** React 19、React Router、Vite 8、Vitest、jsdom、React Testing Library。
+**技术栈：** React 19、React Router、Vite 8、Vitest、jsdom、React Testing Library。
 
-**Spec:** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
+**规格：** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
 
-## Global Constraints
+## 全局约束
 
 - 创建知识库弹窗只显示名称、描述和权限。
 - 页面任何位置不得出现可编辑 Milvus host、port、collection、dimension 或 metric。
@@ -23,39 +23,39 @@
 
 ---
 
-## File Structure
+## 文件结构
 
-- Modify: `frontend/package.json` — Router 和测试依赖/脚本。
-- Modify: `frontend/vite.config.js` — Vitest jsdom 配置。
-- Create: `frontend/src/test/setup.js` — jest-dom 和浏览器 mock。
-- Create: `frontend/src/api/client.js` — `requestJson`/`ApiError`。
-- Create: `frontend/src/api/datasets.js`。
-- Create: `frontend/src/api/documents.js`。
-- Create: `frontend/src/api/indexing.js`。
-- Create: `frontend/src/components/Modal.jsx`。
-- Create: `frontend/src/components/StatusBadge.jsx`。
-- Create: `frontend/src/components/ProgressBar.jsx`。
-- Create: `frontend/src/features/datasets/CreateDatasetModal.jsx`。
-- Create: `frontend/src/features/datasets/DocumentUploadStep.jsx`。
-- Create: `frontend/src/features/datasets/IndexingSettingsStep.jsx`。
-- Create: `frontend/src/features/datasets/ChunkPreview.jsx`。
-- Create: `frontend/src/features/datasets/IndexingProgressStep.jsx`。
-- Create: `frontend/src/hooks/useIndexingJob.js`。
-- Create: `frontend/src/pages/DatasetListPage.jsx`。
-- Create: `frontend/src/pages/DatasetDocumentsPage.jsx`。
-- Create: `frontend/src/pages/DatasetProcessPage.jsx`。
-- Modify: `frontend/src/App.jsx` — 路由壳，不再承载业务表单细节。
-- Modify: `frontend/src/main.jsx` — BrowserRouter。
-- Modify: `frontend/src/styles.css` — 新页面布局和响应式样式。
-- Test: matching `*.test.jsx`/`*.test.js` files next to features/hooks/api。
+- 修改：`frontend/package.json` — Router 和测试依赖/脚本。
+- 修改：`frontend/vite.config.js` — Vitest jsdom 配置。
+- 创建：`frontend/src/test/setup.js` — jest-dom 和浏览器 mock。
+- 创建: `frontend/src/api/client.js` — `requestJson`/`ApiError`。
+- 创建: `frontend/src/api/datasets.js`。
+- 创建: `frontend/src/api/documents.js`。
+- 创建: `frontend/src/api/indexing.js`。
+- 创建: `frontend/src/components/Modal.jsx`。
+- 创建: `frontend/src/components/StatusBadge.jsx`。
+- 创建: `frontend/src/components/ProgressBar.jsx`。
+- 创建: `frontend/src/features/datasets/CreateDatasetModal.jsx`。
+- 创建: `frontend/src/features/datasets/DocumentUploadStep.jsx`。
+- 创建: `frontend/src/features/datasets/IndexingSettingsStep.jsx`。
+- 创建: `frontend/src/features/datasets/ChunkPreview.jsx`。
+- 创建: `frontend/src/features/datasets/IndexingProgressStep.jsx`。
+- 创建: `frontend/src/hooks/useIndexingJob.js`。
+- 创建: `frontend/src/pages/DatasetListPage.jsx`。
+- 创建: `frontend/src/pages/DatasetDocumentsPage.jsx`。
+- 创建: `frontend/src/pages/DatasetProcessPage.jsx`。
+- 修改: `frontend/src/App.jsx` — 路由壳，不再承载业务表单细节。
+- 修改: `frontend/src/main.jsx` — BrowserRouter。
+- 修改: `frontend/src/styles.css` — 新页面布局和响应式样式。
+- 测试：features/hooks/api 旁对应的 `*.test.jsx`/`*.test.js` 文件。
 
-### Task 1: Test Harness, API Client, and Routes
+### 任务 1：测试框架、API 客户端与路由
 
-**Interfaces:**
-- Produces: `requestJson(path, options) -> Promise<unknown>` and `ApiError`。
-- Produces routes `/datasets`, `/datasets/:datasetId/documents`, `/datasets/:datasetId/process`。
+**接口：**
+- 提供：`requestJson(path, options) -> Promise<unknown>` 和 `ApiError`。
+- 提供路由 `/datasets`、`/datasets/:datasetId/documents`、`/datasets/:datasetId/process`。
 
-- [ ] **Step 1: Add failing API and routing tests**
+- [ ] **步骤 1：添加失败的 API 和路由测试**
 
 ```javascript
 // frontend/src/api/client.test.js
@@ -74,18 +74,18 @@ it("restores the dataset documents page from the URL", async () => {
 });
 ```
 
-- [ ] **Step 2: Install dependencies and verify tests fail**
+- [ ] **步骤 2：安装依赖并验证测试失败**
 
-Add scripts/dependencies, then run:
+添加脚本/依赖，然后运行：
 
 ```bash
 npm --prefix frontend install
 npm --prefix frontend test -- --run
 ```
 
-Expected: FAIL because API client/routes do not exist.
+预期：失败，因为 API 客户端/路由不存在。
 
-- [ ] **Step 3: Implement the minimal client and route shell**
+- [ ] **步骤 3：实现最小客户端和路由壳**
 
 Add:
 
@@ -93,30 +93,30 @@ Add:
 "scripts": { "test": "vitest", "test:run": "vitest run" }
 ```
 
-and dependencies `react-router-dom`; dev dependencies `vitest`, `jsdom`, `@testing-library/react`, `@testing-library/jest-dom`, `@testing-library/user-event`.
+并添加依赖 `react-router-dom`；开发依赖包括 `vitest`、`jsdom`、`@testing-library/react`、`@testing-library/jest-dom` 和 `@testing-library/user-event`。
 
-Implement `requestJson` to prepend `VITE_API_BASE`, set JSON content type only for non-FormData bodies, parse structured errors, and treat 204 as `undefined`. `App` contains only layout plus `<Routes>`; unknown routes redirect to `/datasets`.
+实现 `requestJson`：添加 `VITE_API_BASE` 前缀，仅对非 FormData body 设置 JSON content type，解析结构化错误，并将 204 视为 `undefined`。`App` 只包含布局和 `<Routes>`；未知路由重定向到 `/datasets`。
 
-- [ ] **Step 4: Run frontend base tests**
+- [ ] **步骤 4：运行前端基础测试**
 
-Run: `npm --prefix frontend test -- --run src/api/client.test.js src/App.test.jsx`
+运行: `npm --prefix frontend test -- --run src/api/client.test.js src/App.test.jsx`
 
-Expected: PASS.
+预期：通过。
 
-- [ ] **Step 5: Commit frontend foundation**
+- [ ] **步骤 5：提交前端基础**
 
 ```bash
 git add frontend/package.json frontend/package-lock.json frontend/vite.config.js frontend/src/test frontend/src/api/client.js frontend/src/api/client.test.js frontend/src/App.jsx frontend/src/App.test.jsx frontend/src/main.jsx
 git commit -m "feat: add dataset frontend routing foundation"
 ```
 
-### Task 2: Dataset List and Empty Dataset Modal
+### 任务 2：Dataset 列表与空 Dataset 弹窗
 
-**Interfaces:**
-- Produces: `listDatasets(filters)`, `getDatasetStats()`, `createDataset(payload)`。
-- `CreateDatasetModal.onCreated(dataset)` navigates to `/datasets/{id}/documents`。
+**接口：**
+- 产出: `listDatasets(filters)`, `getDatasetStats()`, `createDataset(payload)`。
+- `CreateDatasetModal.onCreated(dataset)` 会导航至 `/datasets/{id}/documents`。
 
-- [ ] **Step 1: Write failing UI contracts**
+- [ ] **步骤 1：编写失败的 UI 契约**
 
 ```javascript
 // frontend/src/features/datasets/CreateDatasetModal.test.jsx
@@ -133,42 +133,42 @@ it("only asks for empty-dataset fields and navigates after create", async () => 
 });
 ```
 
-- [ ] **Step 2: Run and verify feature absence**
+- [ ] **步骤 2：运行并验证功能缺失**
 
-Run: `npm --prefix frontend test -- --run src/features/datasets/CreateDatasetModal.test.jsx`
+运行: `npm --prefix frontend test -- --run src/features/datasets/CreateDatasetModal.test.jsx`
 
-Expected: FAIL on missing component.
+预期：因组件缺失而失败。
 
-- [ ] **Step 3: Extract list page and implement minimal modal**
+- [ ] **步骤 3：提取列表页并实现最小弹窗**
 
-Move list/stats/filter/delete behavior out of `App.jsx` into `DatasetListPage`. Submit exactly:
+将列表/统计/筛选/删除行为从 `App.jsx` 移到 `DatasetListPage`。提交内容必须严格为：
 
 ```javascript
 { name: form.name.trim(), description: form.description.trim(), permission: form.permission }
 ```
 
-Do not send category, owner, tags, retrieval config, embedding model or vector store. On success close the modal and call `navigate(`/datasets/${dataset.id}/documents`)` without waiting for another list refresh.
+不要发送 category、owner、tags、retrieval config、embedding model 或 vector store。成功后关闭弹窗，并调用 `navigate(`/datasets/${dataset.id}/documents`)`，无需等待下一次列表刷新。
 
-- [ ] **Step 4: Run list/modal tests**
+- [ ] **步骤 4：运行列表/弹窗测试**
 
-Run: `npm --prefix frontend test -- --run src/features/datasets/CreateDatasetModal.test.jsx src/pages/DatasetListPage.test.jsx`
+运行: `npm --prefix frontend test -- --run src/features/datasets/CreateDatasetModal.test.jsx src/pages/DatasetListPage.test.jsx`
 
-Expected: PASS; a serialized DOM scan contains no Milvus configuration labels.
+预期：通过；序列化 DOM 扫描不包含 Milvus 配置标签。
 
-- [ ] **Step 5: Commit empty dataset UI**
+- [ ] **步骤 5：提交空 Dataset UI**
 
 ```bash
 git add frontend/src/api/datasets.js frontend/src/components/Modal.jsx frontend/src/features/datasets/CreateDatasetModal.jsx frontend/src/features/datasets/CreateDatasetModal.test.jsx frontend/src/pages/DatasetListPage.jsx frontend/src/pages/DatasetListPage.test.jsx frontend/src/App.jsx
 git commit -m "feat: create empty datasets from the frontend"
 ```
 
-### Task 3: Document Upload Step
+### 任务 3：文档上传步骤
 
-**Interfaces:**
-- Produces: `uploadDocuments(datasetId, files)` and `listDocuments(datasetId, filters)`。
-- `DocumentUploadStep.onContinue(documentIds)` navigates to process page.
+**接口：**
+- 产出: `uploadDocuments(datasetId, files)` and `listDocuments(datasetId, filters)`。
+- `DocumentUploadStep.onContinue(documentIds)` 会导航至处理页面。
 
-- [ ] **Step 1: Write failing upload interaction test**
+- [ ] **步骤 1：编写失败的上传交互测试**
 
 ```javascript
 // frontend/src/features/datasets/DocumentUploadStep.test.jsx
@@ -185,37 +185,37 @@ it("uploads allowed files and displays per-file rejection", async () => {
 });
 ```
 
-- [ ] **Step 2: Run and verify component missing**
+- [ ] **步骤 2：运行并验证组件缺失**
 
-Run: `npm --prefix frontend test -- --run src/features/datasets/DocumentUploadStep.test.jsx`
+运行: `npm --prefix frontend test -- --run src/features/datasets/DocumentUploadStep.test.jsx`
 
-Expected: FAIL on import.
+预期：导入时失败。
 
-- [ ] **Step 3: Implement drag/drop, pending list, and partial result rendering**
+- [ ] **步骤 3：实现拖放、待处理列表和部分结果渲染**
 
-Client-side extension/size checks improve feedback but do not replace backend validation. Build one `FormData`, append each accepted file under `files`, and never set multipart `Content-Type` manually. Display pending, uploading, accepted, duplicate and rejected states. Continue button includes selected accepted document IDs in navigation state and also remains recoverable from the server document list after refresh.
+客户端扩展名/大小检查用于改善反馈，但不能替代后端校验。构建一个 `FormData`，将每个接受的文件以 `files` 字段追加，绝不手动设置 multipart `Content-Type`。显示 pending、uploading、accepted、duplicate 和 rejected 状态。继续按钮将已接受文档 ID 放入导航状态，刷新后也能从服务器文档列表恢复。
 
-- [ ] **Step 4: Run upload/page tests**
+- [ ] **步骤 4：运行上传/页面测试**
 
-Run: `npm --prefix frontend test -- --run src/features/datasets/DocumentUploadStep.test.jsx src/pages/DatasetDocumentsPage.test.jsx`
+运行: `npm --prefix frontend test -- --run src/features/datasets/DocumentUploadStep.test.jsx src/pages/DatasetDocumentsPage.test.jsx`
 
-Expected: PASS for drop, chooser, remove, partial failure, duplicate, refresh list and continue navigation.
+预期：拖放、选择器、移除、部分失败、重复、刷新列表和继续导航测试均通过。
 
-- [ ] **Step 5: Commit document workflow**
+- [ ] **步骤 5：提交文档流程**
 
 ```bash
 git add frontend/src/api/documents.js frontend/src/features/datasets/DocumentUploadStep.jsx frontend/src/features/datasets/DocumentUploadStep.test.jsx frontend/src/pages/DatasetDocumentsPage.jsx frontend/src/pages/DatasetDocumentsPage.test.jsx frontend/src/App.jsx
 git commit -m "feat: upload dataset documents in a separate step"
 ```
 
-### Task 4: Indexing Settings and Real Preview
+### 任务 4：索引设置与真实预览
 
-**Interfaces:**
-- Produces: `getIndexingOptions()` and `previewSegments(datasetId, request)`。
-- Produces validated UI request matching `IndexingPreviewRequest`.
-- `ChunkPreview` renders a flat list or parent-child tree.
+**接口：**
+- 产出: `getIndexingOptions()` and `previewSegments(datasetId, request)`。
+- 产出符合 `IndexingPreviewRequest` 的已校验 UI 请求。
+- `ChunkPreview` 以平铺列表或父子树的形式渲染分段预览。
 
-- [ ] **Step 1: Write failing mode and preview tests**
+- [ ] **步骤 1：编写失败的模式和预览测试**
 
 ```javascript
 // frontend/src/features/datasets/IndexingSettingsStep.test.jsx
@@ -242,37 +242,37 @@ it("requests preview only when the preview button is clicked", async () => {
 });
 ```
 
-- [ ] **Step 2: Run and verify settings component missing**
+- [ ] **步骤 2：运行并验证设置组件缺失**
 
-Run: `npm --prefix frontend test -- --run src/features/datasets/IndexingSettingsStep.test.jsx`
+运行: `npm --prefix frontend test -- --run src/features/datasets/IndexingSettingsStep.test.jsx`
 
-Expected: FAIL on import.
+预期：导入时失败。
 
-- [ ] **Step 3: Implement options-driven form and preview rendering**
+- [ ] **步骤 3：实现由选项驱动的表单和预览渲染**
 
-Initialize from `/api/indexing/options`, not hard-coded model arrays. General request fields are separator, max chunk length and overlap. Parent-child fields are parent mode/length and child length/overlap. Retrieval fields include search method, Top K, score-threshold enable switch and threshold value. Validate overlap, Top K and threshold before request. After any config edit set `previewStale=true`; keep the old preview visible with “配置已变化，请重新预览”. Render source page, heading, sheet and row range from metadata, plus parser warnings.
+从 `/api/indexing/options` 初始化，不使用硬编码模型数组。普通模式请求字段为 separator、max chunk length 和 overlap。父子模式字段为 parent mode/length 以及 child length/overlap。检索字段包括 search method、Top K、score-threshold 开关和阈值。请求前校验 overlap、Top K 和阈值。任何配置编辑后设置 `previewStale=true`；保留旧预览，并显示“配置已变化，请重新预览”。从 metadata 渲染源页、标题、工作表和行范围，并显示 Parser 警告。
 
-- [ ] **Step 4: Run settings/preview tests**
+- [ ] **步骤 4：运行设置/预览测试**
 
-Run: `npm --prefix frontend test -- --run src/features/datasets/IndexingSettingsStep.test.jsx src/features/datasets/ChunkPreview.test.jsx`
+运行: `npm --prefix frontend test -- --run src/features/datasets/IndexingSettingsStep.test.jsx src/features/datasets/ChunkPreview.test.jsx`
 
-Expected: PASS for defaults, model selection, economy, parent-child tree, flat chunks, warnings, validation and stale preview.
+预期：默认值、模型选择、经济模式、父子树、平面分段、警告、校验和过期预览测试均通过。
 
-- [ ] **Step 5: Commit settings and preview**
+- [ ] **步骤 5：提交设置与预览**
 
 ```bash
 git add frontend/src/api/indexing.js frontend/src/features/datasets/IndexingSettingsStep.jsx frontend/src/features/datasets/IndexingSettingsStep.test.jsx frontend/src/features/datasets/ChunkPreview.jsx frontend/src/features/datasets/ChunkPreview.test.jsx
 git commit -m "feat: configure and preview dataset chunks"
 ```
 
-### Task 5: Create Job and Poll Persistent Progress
+### 任务 5：创建任务并轮询持久化进度
 
-**Interfaces:**
-- Produces: `createIndexingJob`, `getIndexingJob`, `retryIndexingJob`, `cancelIndexingJob`。
-- Produces: `useIndexingJob(datasetId, jobId, {activeInterval, hiddenInterval})`。
-- Terminal statuses: completed, partial_success, failed, cancelled.
+**接口：**
+- 产出: `createIndexingJob`, `getIndexingJob`, `retryIndexingJob`, `cancelIndexingJob`。
+- 产出: `useIndexingJob(datasetId, jobId, {activeInterval, hiddenInterval})`。
+- 终态：`completed`、`partial_success`、`failed`、`cancelled`。
 
-- [ ] **Step 1: Write failing polling and progress tests**
+- [ ] **步骤 1：编写失败的轮询和进度测试**
 
 ```javascript
 // frontend/src/hooks/useIndexingJob.test.js
@@ -298,37 +298,37 @@ it("shows failed documents with retry and running task with cancel", async () =>
 });
 ```
 
-- [ ] **Step 2: Run and observe missing hook/components**
+- [ ] **步骤 2：运行并观察 hook/组件缺失**
 
-Run: `npm --prefix frontend test -- --run src/hooks/useIndexingJob.test.js src/features/datasets/IndexingProgressStep.test.jsx`
+运行: `npm --prefix frontend test -- --run src/hooks/useIndexingJob.test.js src/features/datasets/IndexingProgressStep.test.jsx`
 
-Expected: FAIL on imports.
+预期：导入失败。
 
-- [ ] **Step 3: Implement save/process confirmation and robust polling**
+- [ ] **步骤 3：实现保存/处理确认和稳健轮询**
 
-On the first “保存并处理” request send `confirm_full_reindex=false`. If the backend returns `FULL_REINDEX_CONFIRMATION_REQUIRED`, display the returned full-document count and scope, then resend the unchanged request with `confirm_full_reindex=true` only after user confirmation. Navigate to the process page with `job_id` in URL search params so refresh can resume.
+首次“保存并处理”请求发送 `confirm_full_reindex=false`。若后端返回 `FULL_REINDEX_CONFIRMATION_REQUIRED`，显示返回的全文档计数和范围，仅在用户确认后以 `confirm_full_reindex=true` 重发未改变的请求。跳转到处理页时将 `job_id` 放入 URL 查询参数，使刷新后能够恢复。
 
-Polling starts at 2 seconds, uses a slower configured interval when `document.visibilityState === "hidden"`, aborts in-flight fetches on unmount, backs off on network error and never converts a network error into job `failed`. Render overall and per-document progress/stage, safe errors, warnings, cancel for non-terminal jobs and retry for failed documents.
+轮询从 2 秒开始；当 `document.visibilityState === "hidden"` 时使用配置的较慢间隔；卸载时中止进行中的 fetch；网络错误时退避，绝不将网络错误转换为任务 `failed`。渲染总体和逐文档进度/阶段、安全错误、警告；为非终态任务提供取消，为失败文档提供重试。
 
-- [ ] **Step 4: Run job workflow tests**
+- [ ] **步骤 4：运行任务流程测试**
 
-Run: `npm --prefix frontend test -- --run src/hooks/useIndexingJob.test.js src/features/datasets/IndexingProgressStep.test.jsx src/pages/DatasetProcessPage.test.jsx`
+运行: `npm --prefix frontend test -- --run src/hooks/useIndexingJob.test.js src/features/datasets/IndexingProgressStep.test.jsx src/pages/DatasetProcessPage.test.jsx`
 
-Expected: PASS for submit, expanded-scope confirmation, running/hidden/terminal polling, retry, cancel and refresh recovery.
+预期：提交、范围扩大确认、运行中/隐藏/终态轮询、重试、取消和刷新恢复测试均通过。
 
-- [ ] **Step 5: Commit task progress UI**
+- [ ] **步骤 5：提交任务进度 UI**
 
 ```bash
 git add frontend/src/hooks/useIndexingJob.js frontend/src/hooks/useIndexingJob.test.js frontend/src/features/datasets/IndexingProgressStep.jsx frontend/src/features/datasets/IndexingProgressStep.test.jsx frontend/src/pages/DatasetProcessPage.jsx frontend/src/pages/DatasetProcessPage.test.jsx frontend/src/api/indexing.js frontend/src/App.jsx
 git commit -m "feat: track persistent indexing progress"
 ```
 
-### Task 6: Visual Integration, Accessibility, and Production Build
+### 任务 6：视觉整合、无障碍与生产构建
 
-**Interfaces:**
-- Produces responsive two-column settings/preview layout and usable mobile single column.
+**接口：**
+- 提供响应式双列设置/预览布局，以及可用的移动端单列布局。
 
-- [ ] **Step 1: Add accessibility and page-flow assertions**
+- [ ] **步骤 1：添加无障碍和页面流程断言**
 
 ```javascript
 // frontend/src/pages/DatasetFlow.test.jsx
@@ -341,39 +341,39 @@ it("supports the full keyboard-visible flow without milvus controls", async () =
 });
 ```
 
-- [ ] **Step 2: Run full frontend tests before final styles**
+- [ ] **步骤 2：在最终样式前运行完整前端测试**
 
-Run: `npm --prefix frontend test -- --run`
+运行: `npm --prefix frontend test -- --run`
 
-Expected: feature tests pass; the new page-flow assertion may fail on missing dialog/accessible labels.
+预期：功能测试通过；新的页面流程断言可能因缺少对话框/无障碍标签而失败。
 
-- [ ] **Step 3: Finish shared components and CSS**
+- [ ] **步骤 3：完成共享组件和 CSS**
 
-Create accessible modal focus handling, status badge and progress bar with `role="progressbar"`, error/warning notices and loading skeletons. Update `styles.css` for three-step header, upload dropzone, two-column settings/preview, parent tree, document progress rows and existing sidebar. At widths below 920px collapse settings/preview to one column; below 620px stack actions. Remove obsolete `.vector-store-summary`, `.connection-status`, Milvus form and old oversized modal styles when no longer referenced.
+创建可访问的弹窗焦点处理、状态徽章和带 `role="progressbar"` 的进度条、错误/警告提示以及加载骨架。更新 `styles.css`，支持三步页头、上传拖放区、双列设置/预览、父级树、文档进度行和现有侧栏。宽度低于 920px 时将设置/预览折叠为单列；低于 620px 时堆叠操作。无引用后移除过时的 `.vector-store-summary`、`.connection-status`、Milvus 表单和旧的大型弹窗样式。
 
-- [ ] **Step 4: Run tests and production build**
+- [ ] **步骤 4：运行测试并进行生产构建**
 
-Run:
+运行:
 
 ```bash
 npm --prefix frontend test -- --run
 npm --prefix frontend run build
 ```
 
-Expected: all tests pass and Vite creates `frontend/dist` without compile warnings caused by missing imports.
+预期：所有测试通过，Vite 创建 `frontend/dist`，且没有由缺少导入导致的编译警告。
 
-- [ ] **Step 5: Commit visual integration**
+- [ ] **步骤 5：提交视觉整合**
 
 ```bash
 git add frontend/src/components/Modal.jsx frontend/src/components/StatusBadge.jsx frontend/src/components/ProgressBar.jsx frontend/src/styles.css frontend/src/pages/DatasetFlow.test.jsx
 git commit -m "feat: complete dataset indexing user experience"
 ```
 
-`frontend/dist` is a verified build artifact but remains ignored; deployment builds it from source.
+`frontend/dist` 是已验证的构建产物，但仍保持忽略；部署时从源代码构建。
 
-## Phase Verification
+## 阶段验证
 
-Run:
+运行:
 
 ```bash
 npm --prefix frontend test -- --run
@@ -382,4 +382,4 @@ rg -n "Milvus|collectionName|embeddingDimension|metricType|autoCreateCollection"
 git diff --check
 ```
 
-Expected: tests/build pass and `rg` has no user-facing Milvus configuration state; any remaining “Milvus” text is limited to non-rendered developer/API naming only and must be reviewed manually.
+预期：测试/构建通过，且 `rg` 找不到面向用户的 Milvus 配置状态；剩余的 “Milvus” 文本只能是未渲染的开发者/API 命名，并且必须人工审查。

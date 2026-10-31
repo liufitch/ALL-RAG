@@ -1,16 +1,16 @@
-# Document Parsing, Segmentation, and Preview Implementation Plan
+# 文档解析、分段与预览实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向智能体工作者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项执行本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** 为全部支持格式提供统一解析结果、普通/父子分段，并让预览 API 使用与正式索引完全相同的实现。
+**目标：** 为全部支持格式提供统一解析结果、普通/父子分段，并让预览 API 使用与正式索引完全相同的实现。
 
-**Architecture:** 格式 parser 只负责把文件转换成带源定位的 `ParsedDocument`；splitter 只消费统一 block，不依赖文件库。`PreviewService` 从 MinIO 读取文件，调用 registry 和 splitter，限制时间与返回数量但不持久化分段。
+**架构：** 格式 parser 只负责把文件转换成带源定位的 `ParsedDocument`；splitter 只消费统一 block，不依赖文件库。`PreviewService` 从 MinIO 读取文件，调用 registry 和 splitter，限制时间与返回数量但不持久化分段。
 
-**Tech Stack:** charset-normalizer、markdown-it-py、pypdf、python-docx、openpyxl、xlrd、Python csv、FastAPI、pytest。
+**技术栈：** charset-normalizer、markdown-it-py、pypdf、python-docx、openpyxl、xlrd、Python csv、FastAPI、pytest。
 
-**Spec:** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
+**规格：** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
 
-## Global Constraints
+## 全局约束
 
 - 预览和 Celery 正式索引必须调用同一个 `ParserRegistry` 和 `Segmenter`。
 - PDF 只支持文本层；无文本返回 `PDF_NO_EXTRACTABLE_TEXT`，不得假装成功。
@@ -22,42 +22,42 @@
 
 ---
 
-## File Structure
+## 文件结构
 
-- Create: `rag_modules/parsing/models.py` — parsed document/block/warning/error。
-- Create: `rag_modules/parsing/base.py` — parser protocol/context。
-- Create: `rag_modules/parsing/registry.py` — extension-to-parser registry。
-- Create: `rag_modules/parsing/text_parser.py` — TXT。
-- Create: `rag_modules/parsing/markdown_parser.py` — Markdown。
-- Create: `rag_modules/parsing/pdf_parser.py` — PDF text layer。
-- Create: `rag_modules/parsing/docx_parser.py` — DOCX。
-- Create: `rag_modules/parsing/tabular.py` — 公共表头、类型格式化和行转换。
-- Create: `rag_modules/parsing/xlsx_parser.py` — XLSX。
-- Create: `rag_modules/parsing/xls_parser.py` — XLS。
-- Create: `rag_modules/parsing/csv_parser.py` — CSV。
-- Create: `rag_modules/segmentation/models.py` — 配置和 preview segment 类型。
-- Create: `rag_modules/segmentation/general.py` — 普通递归分段。
-- Create: `rag_modules/segmentation/parent_child.py` — 父子分段。
-- Create: `rag_modules/segmentation/service.py` — 统一 `Segmenter`。
-- Create: `rag_modules/services/preview_service.py` — MinIO 读取和限制。
-- Create: `rag_modules/api/dto/indexing_preview.py` — 请求/响应校验。
-- Create: `rag_modules/api/indexing_preview_api.py` — preview route。
-- Modify: `main.py` — 注册 preview router。
-- Create: `tests/fixtures/documents/*` — 小型、无敏感信息的格式样例。
-- Test: `tests/unit/parsing/`。
-- Test: `tests/unit/segmentation/`。
-- Test: `tests/unit/services/test_preview_service.py`。
-- Test: `tests/api/test_indexing_preview_api.py`。
+- 创建: `rag_modules/parsing/models.py` — parsed document/block/warning/error。
+- 创建: `rag_modules/parsing/base.py` — parser protocol/context。
+- 创建: `rag_modules/parsing/registry.py` — extension-to-parser registry。
+- 创建: `rag_modules/parsing/text_parser.py` — TXT。
+- 创建: `rag_modules/parsing/markdown_parser.py` — Markdown。
+- 创建: `rag_modules/parsing/pdf_parser.py` — PDF text layer。
+- 创建: `rag_modules/parsing/docx_parser.py` — DOCX。
+- 创建: `rag_modules/parsing/tabular.py` — 公共表头、类型格式化和行转换。
+- 创建: `rag_modules/parsing/xlsx_parser.py` — XLSX。
+- 创建: `rag_modules/parsing/xls_parser.py` — XLS。
+- 创建: `rag_modules/parsing/csv_parser.py` — CSV。
+- 创建: `rag_modules/segmentation/models.py` — 配置和 preview segment 类型。
+- 创建: `rag_modules/segmentation/general.py` — 普通递归分段。
+- 创建: `rag_modules/segmentation/parent_child.py` — 父子分段。
+- 创建: `rag_modules/segmentation/service.py` — 统一 `Segmenter`。
+- 创建: `rag_modules/services/preview_service.py` — MinIO 读取和限制。
+- 创建: `rag_modules/api/dto/indexing_preview.py` — 请求/响应校验。
+- 创建: `rag_modules/api/indexing_preview_api.py` — preview route。
+- 修改: `main.py` — 注册 preview router。
+- 创建: `tests/fixtures/documents/*` — 小型、无敏感信息的格式样例。
+- 测试: `tests/unit/parsing/`。
+- 测试: `tests/unit/segmentation/`。
+- 测试: `tests/unit/services/test_preview_service.py`。
+- 测试: `tests/api/test_indexing_preview_api.py`。
 
-### Task 1: Unified Parser Types and Registry
+### 任务 1：统一 Parser 类型与 Registry
 
-**Interfaces:**
-- Produces: `ParsedBlock(block_type, text, metadata)`。
-- Produces: `ParsedDocument(document_id, filename, source_type, blocks, metadata, warnings)`。
-- Produces: `ParserRegistry.parse(extension, stream, context) -> ParsedDocument`。
-- Raises: `DocumentParseError(code, message, retryable=False)`。
+**接口：**
+- 产出: `ParsedBlock(block_type, text, metadata)`。
+- 产出: `ParsedDocument(document_id, filename, source_type, blocks, metadata, warnings)`。
+- 产出: `ParserRegistry.parse(extension, stream, context) -> ParsedDocument`。
+- 抛出: `DocumentParseError(code, message, retryable=False)`。
 
-- [ ] **Step 1: Write failing registry tests**
+- [ ] **步骤 1：编写失败的 Registry 测试**
 
 ```python
 # tests/unit/parsing/test_registry.py
@@ -78,13 +78,13 @@ def test_registry_rejects_unknown_extension_with_stable_code():
     assert error.value.code == "UNSUPPORTED_FILE_TYPE"
 ```
 
-- [ ] **Step 2: Run and confirm missing parser package**
+- [ ] **步骤 2：运行并确认 Parser 包缺失**
 
-Run: `python -m pytest tests/unit/parsing/test_registry.py -v`
+运行: `python -m pytest tests/unit/parsing/test_registry.py -v`
 
-Expected: FAIL on import.
+预期：导入时失败。
 
-- [ ] **Step 3: Implement immutable parser models and registry**
+- [ ] **步骤 3：实现不可变 Parser 模型与 Registry**
 
 ```python
 @dataclass(frozen=True)
@@ -111,29 +111,29 @@ class ParsedDocument:
     warnings: tuple[ParserWarning, ...] = ()
 ```
 
-Registry must seek the stream to 0 before dispatch and reject an empty `blocks` result with `NO_EXTRACTABLE_TEXT` unless the parser already emitted a more specific error.
+Registry 分发前必须将流 seek 到 0；若 `blocks` 结果为空，则应返回 `NO_EXTRACTABLE_TEXT`，除非 Parser 已给出更具体的错误。
 
-- [ ] **Step 4: Run registry tests**
+- [ ] **步骤 4：运行 Registry 测试**
 
-Run: `python -m pytest tests/unit/parsing/test_registry.py -v`
+运行: `python -m pytest tests/unit/parsing/test_registry.py -v`
 
-Expected: PASS.
+预期：通过。
 
-- [ ] **Step 5: Commit parser boundary**
+- [ ] **步骤 5：提交 Parser 边界**
 
 ```bash
 git add rag_modules/parsing/models.py rag_modules/parsing/base.py rag_modules/parsing/registry.py tests/unit/parsing/test_registry.py
 git commit -m "feat: add unified document parser boundary"
 ```
 
-### Task 2: TXT and Markdown Parsers
+### 任务 2：TXT 与 Markdown Parser
 
-**Interfaces:**
-- Produces: `TextParser.parse(stream, context)`。
-- Produces: `MarkdownParser.parse(stream, context)` with `heading_path` metadata。
-- Consumes: unified parser models.
+**接口：**
+- 产出: `TextParser.parse(stream, context)`。
+- 产出: `MarkdownParser.parse(stream, context)` with `heading_path` metadata。
+- 依赖: unified parser models.
 
-- [ ] **Step 1: Write failing text/Markdown behavior tests**
+- [ ] **步骤 1：编写失败的文本/Markdown 行为测试**
 
 ```python
 # tests/unit/parsing/test_text_markdown.py
@@ -154,38 +154,38 @@ def test_markdown_parser_keeps_heading_path_and_code_block_atomic():
     assert code.metadata["heading_path"] == ["Install"]
 ```
 
-- [ ] **Step 2: Run and verify parser classes are missing**
+- [ ] **步骤 2：运行并验证 Parser 类缺失**
 
-Run: `python -m pytest tests/unit/parsing/test_text_markdown.py -v`
+运行: `python -m pytest tests/unit/parsing/test_text_markdown.py -v`
 
-Expected: FAIL on imports.
+预期：导入失败。
 
-- [ ] **Step 3: Implement decoding and Markdown token walking**
+- [ ] **步骤 3：实现解码与 Markdown token 遍历**
 
-Create `decode_text(data: bytes) -> tuple[str, str]` that tries UTF-8-SIG first, then `charset_normalizer.from_bytes(data).best()`, and rejects low-confidence/chaotic results with `TEXT_ENCODING_UNCERTAIN`. Normalize CRLF/CR to LF, strip NUL, and split TXT on blank-line paragraph boundaries while tracking source line ranges.
+创建 `decode_text(data: bytes) -> tuple[str, str]`，先尝试 UTF-8-SIG，再尝试 `charset_normalizer.from_bytes(data).best()`；对于置信度低或内容混乱的结果，使用 `TEXT_ENCODING_UNCERTAIN` 拒绝。将 CRLF/CR 规范为 LF，移除 NUL，并按空行段落边界拆分 TXT，同时跟踪源行范围。
 
-Use `MarkdownIt("commonmark", {"html": False})` tokens to maintain a heading stack. Emit headings, paragraphs, list items, fenced code, and table rows as distinct blocks. Put link destinations and front matter in document metadata; never execute HTML or code.
+使用 `MarkdownIt("commonmark", {"html": False})` token 维护标题栈。将标题、段落、列表项、围栏代码和表格行分别输出为独立 block。将链接目标和 front matter 放入文档 metadata；绝不执行 HTML 或代码。
 
-- [ ] **Step 4: Run text/Markdown tests**
+- [ ] **步骤 4：运行文本/Markdown 测试**
 
-Run: `python -m pytest tests/unit/parsing/test_text_markdown.py -v`
+运行: `python -m pytest tests/unit/parsing/test_text_markdown.py -v`
 
-Expected: PASS including UTF-8 BOM, GB18030, low-confidence binary rejection, headings, lists, code and tables.
+预期：UTF-8 BOM、GB18030、低置信度二进制拒绝、标题、列表、代码和表格等测试均通过。
 
-- [ ] **Step 5: Commit text parsers**
+- [ ] **步骤 5：提交文本 Parser**
 
 ```bash
 git add rag_modules/parsing/text_parser.py rag_modules/parsing/markdown_parser.py tests/unit/parsing/test_text_markdown.py
 git commit -m "feat: parse text and markdown documents"
 ```
 
-### Task 3: PDF and DOCX Parsers
+### 任务 3：PDF 与 DOCX Parser
 
-**Interfaces:**
-- Produces: PDF paragraph blocks with `page` metadata。
-- Produces: DOCX paragraph/table blocks with `heading_path` metadata。
+**接口：**
+- 产出: PDF paragraph blocks with `page` metadata。
+- 产出: DOCX paragraph/table blocks with `heading_path` metadata。
 
-- [ ] **Step 1: Add fixtures and failing parser tests**
+- [ ] **步骤 1：添加 fixture 和失败的 Parser 测试**
 
 ```python
 # tests/unit/parsing/test_pdf_docx.py
@@ -209,39 +209,39 @@ def test_docx_preserves_heading_and_table_headers(fixture_bytes):
     assert row.metadata["heading_path"] == ["产品表"]
 ```
 
-- [ ] **Step 2: Run and observe missing implementations**
+- [ ] **步骤 2：运行并观察实现缺失**
 
-Run: `python -m pytest tests/unit/parsing/test_pdf_docx.py -v`
+运行: `python -m pytest tests/unit/parsing/test_pdf_docx.py -v`
 
-Expected: FAIL on missing `PdfParser`/`DocxParser`.
+预期：因缺少 `PdfParser`/`DocxParser` 而失败。
 
-- [ ] **Step 3: Implement bounded PDF and DOCX parsing**
+- [ ] **步骤 3：实现有界 PDF 和 DOCX 解析**
 
-PDF: construct `PdfReader`, reject encryption that cannot be decrypted, enforce `settings.parser.max_pdf_pages`, extract per page, normalize common line-wrap artifacts, emit `PDF_EMPTY_PAGE` warnings, and raise `PDF_NO_EXTRACTABLE_TEXT` when all pages are empty.
+PDF：构造 `PdfReader`，拒绝无法解密的加密文件，执行 `settings.parser.max_pdf_pages` 限制，逐页提取文本，规范常见的换行伪影，发出 `PDF_EMPTY_PAGE` 警告，并在所有页面均为空时抛出 `PDF_NO_EXTRACTABLE_TEXT`。
 
-DOCX: use `Document(stream)`, iterate body XML children so paragraphs and tables retain source order, update heading path from `Heading 1`–`Heading 6`, flatten table rows through the shared tabular formatter, and skip headers/footers/images.
+DOCX：使用 `Document(stream)`，遍历 body XML 子元素以保留段落和表格的源顺序；根据 `Heading 1`–`Heading 6` 更新标题路径；通过共享表格格式化器展开表格行，并跳过页眉/页脚/图像。
 
-- [ ] **Step 4: Run format tests**
+- [ ] **步骤 4：运行格式测试**
 
-Run: `python -m pytest tests/unit/parsing/test_pdf_docx.py -v`
+运行: `python -m pytest tests/unit/parsing/test_pdf_docx.py -v`
 
-Expected: PASS for text PDF, image-only PDF, encrypted/corrupt PDF, headings, lists and DOCX tables.
+预期：文本 PDF、纯图像 PDF、加密/损坏 PDF、标题、列表和 DOCX 表格测试均通过。
 
-- [ ] **Step 5: Commit PDF/DOCX support**
+- [ ] **步骤 5：提交 PDF/DOCX 支持**
 
 ```bash
 git add rag_modules/parsing/pdf_parser.py rag_modules/parsing/docx_parser.py tests/fixtures/documents tests/unit/parsing/test_pdf_docx.py
 git commit -m "feat: parse pdf and docx documents"
 ```
 
-### Task 4: XLS, XLSX, and CSV Parsers
+### 任务 4：XLS、XLSX 与 CSV Parser
 
-**Interfaces:**
-- Produces: `format_table_row(headers, values) -> str`。
-- Produces: table row metadata `sheet`, `row`, `headers`。
-- CSV uses logical sheet name `CSV`.
+**接口：**
+- 产出: `format_table_row(headers, values) -> str`。
+- 产出: table row metadata `sheet`, `row`, `headers`。
+- CSV 使用逻辑工作表名称 `CSV`。
 
-- [ ] **Step 1: Write failing tabular tests**
+- [ ] **步骤 1： Write failing tabular tests**
 
 ```python
 # tests/unit/parsing/test_tabular.py
@@ -262,39 +262,39 @@ def test_xlsx_uses_sheet_name_and_skips_hidden_sheet(parser_registry, fixture_by
     assert any(warning.code == "HIDDEN_SHEET_SKIPPED" for warning in parsed.warnings)
 ```
 
-- [ ] **Step 2: Run and verify missing parsers**
+- [ ] **步骤 2：运行测试并确认解析器缺失**
 
-Run: `python -m pytest tests/unit/parsing/test_tabular.py -v`
+运行: `python -m pytest tests/unit/parsing/test_tabular.py -v`
 
-Expected: FAIL on missing tabular modules.
+预期：因表格解析模块缺失而失败。
 
-- [ ] **Step 3: Implement shared tabular normalization and bounded readers**
+- [ ] **步骤 3：实现共享表格规范化逻辑和有界读取器**
 
-Format dates as ISO strings, booleans as `true`/`false`, integers without `.0`, and skip null cells while retaining header alignment. Detect the first non-empty row as headers, deduplicate blank/duplicate headers into stable names, and enforce configured row/column/cell limits.
+日期格式化为 ISO 字符串，布尔值格式化为 `true`/`false`，整数不附加 `.0`。跳过空单元格时仍需保持表头对齐。将首个非空行识别为表头，把空表头和重复表头转换为稳定且不重复的名称，并强制执行已配置的行数、列数和单元格数量限制。
 
-Use `openpyxl.load_workbook(stream, read_only=True, data_only=False)` for XLSX, `xlrd.open_workbook(file_contents=stream.read(), on_demand=True)` for XLS, and Python `csv` with `csv.Sniffer` plus the shared text decoder for CSV. CSV metadata uses `sheet="CSV"` and true source line numbers.
+XLSX 使用 `openpyxl.load_workbook(stream, read_only=True, data_only=False)`；XLS 使用 `xlrd.open_workbook(file_contents=stream.read(), on_demand=True)`；CSV 使用 Python `csv`、`csv.Sniffer` 和共享文本解码器。CSV 元数据使用 `sheet="CSV"`，并记录真实源行号。
 
-- [ ] **Step 4: Run tabular tests**
+- [ ] **步骤 4： Run tabular tests**
 
-Run: `python -m pytest tests/unit/parsing/test_tabular.py -v`
+运行: `python -m pytest tests/unit/parsing/test_tabular.py -v`
 
-Expected: PASS for multiple sheets, hidden/empty sheets, dates, formulas without cached values, quoted CSV newlines and semicolon delimiters.
+预期：多工作表、隐藏/空工作表、日期、无缓存值的公式、带引号的 CSV 换行以及分号分隔符测试均通过。
 
-- [ ] **Step 5: Commit tabular parsers**
+- [ ] **步骤 5： Commit tabular parsers**
 
 ```bash
 git add rag_modules/parsing/tabular.py rag_modules/parsing/xlsx_parser.py rag_modules/parsing/xls_parser.py rag_modules/parsing/csv_parser.py tests/fixtures/documents tests/unit/parsing/test_tabular.py
 git commit -m "feat: parse spreadsheet and csv documents"
 ```
 
-### Task 5: General and Parent-Child Segmenters
+### 任务 5：普通与父子分段器
 
-**Interfaces:**
-- Produces: `Segmenter.segment(parsed, config) -> SegmentationResult`。
-- Produces: `PreviewSegment(local_id, parent_local_id, position, content, source_metadata, index_type)`。
-- Consumes: discriminated union `GeneralSegmentationConfig | ParentChildSegmentationConfig`。
+**接口：**
+- 产出: `Segmenter.segment(parsed, config) -> SegmentationResult`。
+- 产出: `PreviewSegment(local_id, parent_local_id, position, content, source_metadata, index_type)`。
+- 依赖: discriminated union `GeneralSegmentationConfig | ParentChildSegmentationConfig`。
 
-- [ ] **Step 1: Write failing segmentation contracts**
+- [ ] **步骤 1： Write failing segmentation contracts**
 
 ```python
 # tests/unit/segmentation/test_segmenters.py
@@ -317,39 +317,39 @@ def test_parent_child_emits_parent_before_children_and_links_them():
     assert all(item.index_type == "child" for item in children)
 ```
 
-- [ ] **Step 2: Run and observe missing segmenters**
+- [ ] **步骤 2： Run and observe missing segmenters**
 
-Run: `python -m pytest tests/unit/segmentation/test_segmenters.py -v`
+运行: `python -m pytest tests/unit/segmentation/test_segmenters.py -v`
 
-Expected: FAIL on missing segmentation package.
+预期: FAIL on missing segmentation package.
 
-- [ ] **Step 3: Implement deterministic recursive splitting**
+- [ ] **步骤 3： Implement deterministic recursive splitting**
 
-Use boundary order: configured separator, `\n\n`, `\n`, Chinese sentence punctuation, English sentence punctuation, whitespace, hard character split. Validate `0 <= overlap < max_chunk_length`. Preserve merged source metadata ranges. Treat code/table rows as atomic until they exceed the hard maximum.
+边界选择顺序为：配置的分隔符、`\n\n`、`\n`、中文句末标点、英文句末标点、空白字符，最后才按字符硬切分。校验 `0 <= overlap < max_chunk_length`。保留合并后的源元数据范围。代码块和表格行在超过硬性上限前视为不可拆分的整体。
 
-For parent-child mode, generate deterministic local IDs such as `p-000001` and `c-000001`, parent rows before their children, and full-document fallback warnings when a parent exceeds the configured limit. For spreadsheets, group consecutive table rows under a sheet/row-group parent and keep headers in every child.
+父子模式需生成确定性的本地 ID，例如 `p-000001` 和 `c-000001`；先输出父行，再输出其子行。父块超过配置上限时，使用全文回退并产生 warning。对于电子表格，将连续表格行归入对应工作表/行组父块，并在每个子块中保留表头。
 
-- [ ] **Step 4: Run all segmentation tests**
+- [ ] **步骤 4： Run all segmentation tests**
 
-Run: `python -m pytest tests/unit/segmentation -v`
+运行: `python -m pytest tests/unit/segmentation -v`
 
-Expected: PASS for Chinese/English boundaries, hard split, overlap, code, tables, parent links and empty content.
+预期：中英文边界、硬切分、重叠、代码、表格、父子链接和空内容测试均通过。
 
-- [ ] **Step 5: Commit segmentation**
+- [ ] **步骤 5： Commit segmentation**
 
 ```bash
 git add rag_modules/segmentation tests/unit/segmentation
 git commit -m "feat: add general and parent child segmentation"
 ```
 
-### Task 6: Real Preview Service and API
+### 任务 6：真实预览服务与 API
 
-**Interfaces:**
-- Produces: `PreviewService.preview(dataset_id, document_ids, request) -> PreviewResponse`。
-- Produces: `POST /api/knowledge_base/{dataset_id}/indexing/preview`。
-- Consumes: `DocumentRepository`, `ObjectStorage`, `ParserRegistry`, `Segmenter`。
+**接口：**
+- 产出: `PreviewService.preview(dataset_id, document_ids, request) -> PreviewResponse`。
+- 产出: `POST /api/knowledge_base/{dataset_id}/indexing/preview`。
+- 依赖: `DocumentRepository`, `ObjectStorage`, `ParserRegistry`, `Segmenter`。
 
-- [ ] **Step 1: Write failing service and route tests**
+- [ ] **步骤 1： Write failing service and route tests**
 
 ```python
 # tests/unit/services/test_preview_service.py
@@ -373,36 +373,36 @@ def test_parent_child_with_economy_is_rejected(client):
     assert response.json()["code"] == "PARENT_CHILD_REQUIRES_HIGH_QUALITY"
 ```
 
-- [ ] **Step 2: Run and confirm route/service absence**
+- [ ] **步骤 2： Run and confirm route/service absence**
 
-Run: `python -m pytest tests/unit/services/test_preview_service.py tests/api/test_indexing_preview_api.py -v`
+运行: `python -m pytest tests/unit/services/test_preview_service.py tests/api/test_indexing_preview_api.py -v`
 
-Expected: FAIL with imports/404.
+预期：因导入缺失或路由返回 404 而失败。
 
-- [ ] **Step 3: Implement preview orchestration and validation**
+- [ ] **步骤 3： Implement preview orchestration and validation**
 
-Validate ownership of all document IDs in one repository query. Reject deleted documents, too many documents, over-limit files, parent-child/economy, invalid overlaps and unknown models. Run synchronous parser and splitter work through `anyio.to_thread.run_sync` so PDF/Office processing does not block the FastAPI event loop, and apply `anyio.fail_after(settings.preview.timeout_seconds)` with abandoned late results. Accumulate complete counts but return at most `max_chunks`; serialize parser warnings and source metadata. Do not call any segment repository or vector provider.
+通过一次 repository 查询校验所有文档 ID 的归属。拒绝已删除文档、文档数量过多、文件超限、父子模式与经济模式组合、无效重叠值和未知模型。使用 `anyio.to_thread.run_sync` 执行同步解析与分段，避免 PDF/Office 处理阻塞 FastAPI 事件循环；并通过 `anyio.fail_after(settings.preview.timeout_seconds)` 设置超时，丢弃超时后才返回的结果。统计完整数量，但最多返回 `max_chunks` 个分段；序列化 parser warning 和源元数据。不得调用分段 repository 或向量 provider。
 
-- [ ] **Step 4: Run preview and parser regression tests**
+- [ ] **步骤 4： Run preview and parser regression tests**
 
-Run: `python -m pytest tests/unit/parsing tests/unit/segmentation tests/unit/services/test_preview_service.py tests/api/test_indexing_preview_api.py -v`
+运行: `python -m pytest tests/unit/parsing tests/unit/segmentation tests/unit/services/test_preview_service.py tests/api/test_indexing_preview_api.py -v`
 
-Expected: PASS; spies prove zero DB segment writes and zero Embedding/Milvus calls.
+预期：测试通过；spy 应证明没有写入数据库分段，也没有调用 Embedding/Milvus。
 
-- [ ] **Step 5: Commit preview API**
+- [ ] **步骤 5： Commit preview API**
 
 ```bash
 git add rag_modules/services/preview_service.py rag_modules/api/dto/indexing_preview.py rag_modules/api/indexing_preview_api.py main.py tests/unit/services/test_preview_service.py tests/api/test_indexing_preview_api.py
 git commit -m "feat: preview real document segments"
 ```
 
-## Phase Verification
+## 阶段验证
 
-Run:
+运行:
 
 ```bash
 python -m pytest tests/unit/parsing tests/unit/segmentation tests/unit/services/test_preview_service.py tests/api/test_indexing_preview_api.py -v
 git diff --check
 ```
 
-Expected: every supported extension parses into the unified model, preview and future indexing share the same registry/segmenter, and preview causes no persistent or vector writes.
+预期：所有支持的扩展名都能解析为统一模型；预览与后续正式索引共用同一 registry/segmenter；预览不会产生持久化写入或向量写入。

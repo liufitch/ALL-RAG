@@ -1,14 +1,14 @@
 # PaddleOCR 文档解析与清洗实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向代理工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 按任务逐步实施本计划。各步骤使用 checkbox（`- [ ]`）语法跟踪进度。
 
-**Goal:** 在现有统一解析、预览、索引和分段修订流程中增加 PaddleOCR 图片与扫描版 PDF 解析，并提供标准自动清洗和分段后的手动编辑支持。
+**目标：** 在现有统一解析、预览、索引和分段修订流程中增加 PaddleOCR 图片与扫描版 PDF 解析，并提供标准自动清洗和分段后的手动编辑支持。
 
-**Architecture:** 以 `OcrEngine` 协议隔离 PaddleOCR，真实适配器延迟导入可选依赖，测试通过 fake engine 注入。图片解析器直接处理已验证的图像；PDF 逐页优先读取文本层，仅把没有文本的页面交给可注入的页面渲染器和 OCR。OCR 输出先经过固定清洗，再生成现有 `ParsedDocument`，沿用 `ParserRegistry`、`PreviewService`、索引引擎和 `DocumentRevisionService`。
+**架构：** 以 `OcrEngine` 协议隔离 PaddleOCR，真实适配器延迟导入可选依赖，测试通过 fake engine 注入。图片解析器直接处理已验证的图像；PDF 逐页优先读取文本层，仅把没有文本的页面交给可注入的页面渲染器和 OCR。OCR 输出先经过固定清洗，再生成现有 `ParsedDocument`，沿用 `ParserRegistry`、`PreviewService`、索引引擎和 `DocumentRevisionService`。
 
-**Tech Stack:** Python 3.11、Pydantic Settings、pypdf、Pillow、可选 PaddleOCR/PaddlePaddle、现有 FastAPI/Celery/React 流程、pytest。
+**技术栈：** Python 3.11、Pydantic Settings、pypdf、Pillow、可选 PaddleOCR/PaddlePaddle、现有 FastAPI/Celery/React 流程、pytest。
 
-**Spec:** `docs/superpowers/specs/2026-10-24-paddleocr-document-processing-design.md`
+**规格：** `docs/superpowers/specs/2026-10-24-paddleocr-document-processing-design.md`
 
 ## 最终实现与验证记录（2026-10-24）
 
@@ -21,7 +21,7 @@
 - 自动化测试使用模拟 OCR/解码/渲染边界，并使用真实 NumPy 验证数组适配。后续在 Docker Desktop `linux/amd64` CPU 容器中安装并验证 PaddleOCR 3.7.0、PaddlePaddle 3.2.2、Pillow 12.3.0、pypdfium2 5.14.0；PP-OCRv5 成功识别合成中英文 PNG 和扫描 PDF，清洗正文、页码、置信度及文本框元数据符合预期。GPU 和生产文档识别效果尚未验证。
 - 改动保留在工作区，未提交 Git。
 
-## Global Constraints
+## 全局约束
 
 - OCR 依赖必须是可选依赖，基础文本、Office 和文本层 PDF 流程不能因为未安装 PaddleOCR 而失效。
 - 默认设备为 CPU；GPU 只能通过配置选择，API 进程和 Worker 必须读取同一 OCR 配置。
@@ -35,21 +35,21 @@
 
 ---
 
-### Task 1: OCR 结果契约与标准清洗
+### 任务 1：OCR 结果契约与标准清洗
 
-**Files:**
-- Create: `rag_modules/parsing/ocr.py`
-- Create: `rag_modules/parsing/ocr_cleaning.py`
-- Modify: `rag_modules/parsing/models.py` only if a shared metadata type is needed; retain existing public dataclasses
-- Test: `tests/unit/parsing/test_ocr_cleaning.py`
-- Test: `tests/unit/parsing/test_ocr_engine.py`
+**文件：**
+- 创建: `rag_modules/parsing/ocr.py`
+- 创建: `rag_modules/parsing/ocr_cleaning.py`
+- 修改: `rag_modules/parsing/models.py` only if a shared metadata type is needed; retain existing public dataclasses
+- 测试: `tests/unit/parsing/test_ocr_cleaning.py`
+- 测试: `tests/unit/parsing/test_ocr_engine.py`
 
-**Interfaces:**
-- Produces `OcrLine(text: str, confidence: float, box: tuple[tuple[float, float], ...] | None)`, `OcrEngine.recognize(image: object) -> tuple[OcrLine, ...]`, and `clean_ocr_lines(lines, *, page_number, settings, repeated_lines) -> CleanedOcrPage`.
-- `CleanedOcrPage` exposes cleaned paragraph strings, retained line metadata, filtered-line count, and a repeated-header/footer removal flag for image/PDF parsers.
-- `PaddleOcrEngine` is importable without PaddleOCR installed; construction or recognition raises only stable `DocumentParseError` codes defined in the spec.
+**接口：**
+- 生成 `OcrLine(text: str, confidence: float, box: tuple[tuple[float, float], ...] | None)`、`OcrEngine.recognize(image: object) -> tuple[OcrLine, ...]` 和 `clean_ocr_lines(lines, *, page_number, settings, repeated_lines) -> CleanedOcrPage`。
+- `CleanedOcrPage` 向图片/PDF parser 提供清洗后的段落字符串、保留的行元数据、过滤行数和重复页眉/页脚移除标记。
+- 未安装 PaddleOCR 时仍可导入 `PaddleOcrEngine`；构造或识别时只抛出 spec 定义的稳定 `DocumentParseError` 错误码。
 
-- [ ] **Step 1: Write the failing cleaning tests**
+- [ ] **步骤 1：编写失败的清洗测试**
 
 ```python
 def test_clean_ocr_lines_normalizes_controls_filters_low_confidence_and_merges_lines():
@@ -70,13 +70,13 @@ def test_clean_ocr_lines_removes_repeated_short_header_and_footer():
     assert cleaned.repeated_header_footer_removed is True
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_ocr_cleaning.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_ocr_cleaning.py`
 
-Expected: FAIL because the OCR result and cleaner interfaces do not exist.
+预期：失败，因为 OCR 结果和清洗器接口尚不存在。
 
-- [ ] **Step 3: Write the failing engine adapter tests**
+- [ ] **步骤 3：编写失败的引擎适配器测试**
 
 ```python
 def test_paddle_engine_reports_missing_optional_dependency(monkeypatch):
@@ -93,48 +93,48 @@ def test_paddle_engine_adapts_common_ocr_result_shape(monkeypatch):
     assert lines == (OcrLine("标题", 0.97, ((1.0, 2.0), (3.0, 2.0), (3.0, 4.0), (1.0, 4.0))),)
 ```
 
-- [ ] **Step 4: Run engine tests to verify they fail**
+- [ ] **步骤 4：运行引擎测试以确认失败**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_ocr_engine.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_ocr_engine.py`
 
-Expected: FAIL because `PaddleOcrEngine` is not implemented.
+预期：失败，因为 `PaddleOcrEngine` 尚未实现。
 
-- [ ] **Step 5: Implement the minimal cleaner and lazy adapter**
+- [ ] **步骤 5：实现最小清洗器和延迟加载适配器**
 
-Implement `OcrLine`, the protocol, stable exception mapping, result-shape normalization for common PaddleOCR `ocr()`/`predict()` responses, and deterministic cleaning. Keep the PaddleOCR import inside engine initialization, clamp confidence and line-count behavior from `ParserSettings`, and return only safe metadata.
+实现 `OcrLine`、协议、稳定异常映射、常见 PaddleOCR `ocr()`/`predict()` 响应结果形状规范化和确定性清洗。将 PaddleOCR 导入放在引擎初始化内部，根据 `ParserSettings` 限制置信度和行数行为，并且只返回安全 metadata。
 
-- [ ] **Step 6: Run both test files**
+- [ ] **步骤 6：运行两个测试文件**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_ocr_cleaning.py tests/unit/parsing/test_ocr_engine.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_ocr_cleaning.py tests/unit/parsing/test_ocr_engine.py`
 
-Expected: PASS.
+预期：通过。
 
-- [ ] **Step 7: Run `git diff --check` and record the task as complete**
+- [ ] **步骤 7：运行 `git diff --check` 并将任务记录为完成**
 
-Run: `git diff --check`
+运行：`git diff --check`
 
-Expected: no whitespace errors. Keep changes in the working tree because this environment cannot create `.git/index.lock`.
+预期：无空白错误。由于当前环境无法创建 `.git/index.lock`，将改动保留在工作树中。
 
-### Task 2: Configuration, image parser, and upload validation
+### 任务 2：配置、图片 parser 和上传校验
 
-**Files:**
-- Create: `rag_modules/parsing/image_parser.py`
-- Modify: `rag_modules/config/settings.py`
-- Modify: `rag_modules/upload_formats.py`
-- Modify: `rag_modules/documents/validation.py`
-- Modify: `pyproject.toml`
-- Modify: `.env.example`
-- Test: `tests/unit/parsing/test_image_parser.py`
-- Test: `tests/unit/documents/test_upload_validation.py`
-- Test: `tests/unit/config/test_settings.py`
+**文件：**
+- 创建: `rag_modules/parsing/image_parser.py`
+- 修改: `rag_modules/config/settings.py`
+- 修改: `rag_modules/upload_formats.py`
+- 修改: `rag_modules/documents/validation.py`
+- 修改: `pyproject.toml`
+- 修改: `.env.example`
+- 测试: `tests/unit/parsing/test_image_parser.py`
+- 测试: `tests/unit/documents/test_upload_validation.py`
+- 测试: `tests/unit/config/test_settings.py`
 
-**Interfaces:**
-- `ParserSettings` gains bounded OCR fields: `ocr_enabled`, `ocr_device`, `ocr_language`, `ocr_model_dir`, `ocr_min_confidence`, `ocr_max_image_width`, `ocr_max_image_height`, `ocr_max_image_pixels`, and `ocr_max_lines_per_document`.
-- `ImageParser(engine: OcrEngine | None = None)` implements `Parser.parse` and returns `ParsedDocument(source_type="image")`.
-- Image MIME/signature maps accept PNG and JPEG; invalid or undecodable payloads use `IMAGE_MALFORMED` or `INVALID_FILE_SIGNATURE`.
-- Optional dependency group exposes Pillow, `pypdfium2`, PaddleOCR and a compatible PaddlePaddle backend without adding them to the default install.
+**接口：**
+- `ParserSettings` 增加有界 OCR 字段：`ocr_enabled`、`ocr_device`、`ocr_language`、`ocr_model_dir`、`ocr_min_confidence`、`ocr_max_image_width`、`ocr_max_image_height`、`ocr_max_image_pixels` 和 `ocr_max_lines_per_document`。
+- `ImageParser(engine: OcrEngine | None = None)` 实现 `Parser.parse`，并返回 `ParsedDocument(source_type="image")`。
+- 图片 MIME/签名映射接受 PNG 和 JPEG；无效或无法解码的负载使用 `IMAGE_MALFORMED` 或 `INVALID_FILE_SIGNATURE`。
+- 可选依赖组提供 Pillow、`pypdfium2`、PaddleOCR 和兼容的 PaddlePaddle backend，但不加入默认安装。
 
-- [ ] **Step 1: Write failing settings, parser, and validation tests**
+- [ ] **步骤 1：编写失败的设置、parser 和校验测试**
 
 ```python
 def test_parser_settings_default_to_cpu_and_bound_ocr_limits():
@@ -160,42 +160,42 @@ def test_upload_validation_rejects_png_with_wrong_signature():
     assert error.value.code == "INVALID_FILE_SIGNATURE"
 ```
 
-- [ ] **Step 2: Run the focused tests to verify they fail**
+- [ ] **步骤 2：运行针对性测试以确认失败**
 
-Run: `.venv/bin/pytest -q tests/unit/config/test_settings.py tests/unit/parsing/test_image_parser.py tests/unit/documents/test_upload_validation.py`
+运行：`.venv/bin/pytest -q tests/unit/config/test_settings.py tests/unit/parsing/test_image_parser.py tests/unit/documents/test_upload_validation.py`
 
-Expected: FAIL because image extensions, OCR settings, `ImageParser`, and image signatures are absent.
+预期：失败，因为图片扩展名、OCR 设置、`ImageParser` 和图片签名尚不存在。
 
-- [ ] **Step 3: Implement the minimal configuration and image path**
+- [ ] **步骤 3：实现最小配置和图片处理路径**
 
-Add image extensions and MIME/signatures, decode with Pillow under width/height/pixel limits, call the injected engine, clean lines into paragraph blocks, and produce page/box/confidence/OCR metadata. Add only the optional dependency group and environment examples required by the spec.
+添加图片扩展名和 MIME/签名，在宽度/高度/像素限制内使用 Pillow 解码，调用注入引擎，将行清洗为段落块，并生成页码/边界框/置信度/OCR metadata。只添加 spec 要求的可选依赖组和环境配置示例。
 
-- [ ] **Step 4: Run focused tests to verify they pass**
+- [ ] **步骤 4：运行针对性测试以确认通过**
 
-Run: `.venv/bin/pytest -q tests/unit/config/test_settings.py tests/unit/parsing/test_image_parser.py tests/unit/documents/test_upload_validation.py`
+运行：`.venv/bin/pytest -q tests/unit/config/test_settings.py tests/unit/parsing/test_image_parser.py tests/unit/documents/test_upload_validation.py`
 
-Expected: PASS.
+预期：通过。
 
-- [ ] **Step 5: Run existing text and upload regression tests**
+- [ ] **步骤 5：运行现有文本和上传回归测试**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_text_markdown.py tests/unit/documents/test_upload_validation.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_text_markdown.py tests/unit/documents/test_upload_validation.py`
 
-Expected: PASS with existing text behavior unchanged.
+预期：通过，且现有文本处理行为保持不变。
 
-### Task 3: PDF page rendering and mixed text/OCR parsing
+### 任务 3：PDF 页面渲染与文本/OCR 混合解析
 
-**Files:**
-- Create: `rag_modules/parsing/pdf_rendering.py`
-- Modify: `rag_modules/parsing/pdf_parser.py`
-- Modify: `rag_modules/config/settings.py` only for renderer DPI/limits if needed by the bounded fields
-- Test: `tests/unit/parsing/test_pdf_ocr.py`
+**文件：**
+- 创建: `rag_modules/parsing/pdf_rendering.py`
+- 修改: `rag_modules/parsing/pdf_parser.py`
+- 修改: `rag_modules/config/settings.py` only for renderer DPI/limits if needed by the bounded fields
+- 测试: `tests/unit/parsing/test_pdf_ocr.py`
 
-**Interfaces:**
-- `PdfPageRenderer.render(page) -> object` is a small injectable protocol; the default implementation uses an optional renderer dependency and never imports it at module import time.
-- `PdfParser(ocr_engine=None, page_renderer=None)` keeps the existing constructor compatibility and parses text pages without calling either OCR engine or renderer.
-- Empty pages call OCR once, preserve `page` metadata, and emit `PDF_EMPTY_PAGE` only when OCR yields no usable block; mixed documents retain both text and OCR blocks.
+**接口：**
+- `PdfPageRenderer.render(page) -> object` 是一个轻量且可注入的协议；默认实现使用可选的 renderer 依赖，并且绝不在模块导入时加载该依赖。
+- `PdfParser(ocr_engine=None, page_renderer=None)` 保持现有构造函数兼容性；解析文本页时不会调用 OCR engine 或 renderer。
+- 空白页面调用一次 OCR，保留 `page` 元数据；只有 OCR 未产生可用 block 时才发出 `PDF_EMPTY_PAGE`。混合文档同时保留文本层和 OCR 生成的 block。
 
-- [ ] **Step 1: Write failing PDF OCR tests**
+- [ ] **步骤 1：编写失败的 PDF OCR 测试**
 
 ```python
 def test_text_pdf_page_does_not_call_ocr():
@@ -218,43 +218,43 @@ def test_mixed_pdf_only_ocr_calls_empty_page():
     assert engine.calls == [1]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_pdf_ocr.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_pdf_ocr.py`
 
-Expected: FAIL because the renderer injection and OCR fallback do not exist.
+预期：失败，因为渲染器注入和 OCR 回退尚不存在。
 
-- [ ] **Step 3: Implement renderer protocol and mixed parser**
+- [ ] **步骤 3：实现渲染器协议和混合解析器**
 
-Keep pypdf extraction and existing malformed/encrypted/page-limit behavior. For each page, normalize text first; only if no paragraph exists, render and recognize. Convert cleaned OCR blocks to existing `ParsedBlock`, collect bounded warnings, count OCR pages, and map renderer/engine failures to stable errors. If all text and OCR are empty, retain `PDF_NO_EXTRACTABLE_TEXT`.
+保留 pypdf 提取和现有格式错误/加密/页数限制行为。逐页先规范化文本；只有不存在段落时才渲染并识别。将清洗后的 OCR 块转换为现有 `ParsedBlock`，收集有界 warning，统计 OCR 页数，并将渲染器/引擎失败映射为稳定错误。如果文本和 OCR 结果均为空，则继续使用 `PDF_NO_EXTRACTABLE_TEXT`。
 
-- [ ] **Step 4: Run PDF tests and existing PDF regression tests**
+- [ ] **步骤 4：运行 PDF 测试和现有 PDF 回归测试**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_pdf_ocr.py tests/unit/parsing/test_pdf_docx.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_pdf_ocr.py tests/unit/parsing/test_pdf_docx.py`
 
-Expected: PASS, including encrypted, malformed, text-and-empty-page, and image-only fixture behavior.
+预期：通过，覆盖加密、格式错误、文本页与空白页混合以及纯图像 fixture 行为。
 
-- [ ] **Step 5: Run `git diff --check`**
+- [ ] **步骤 5：运行 `git diff --check`**
 
-Expected: no whitespace errors.
+预期：无空白错误。
 
-### Task 4: Registry, factory, indexing, preview, and warning integration
+### 任务 4：Registry、factory、索引、预览和 warning 集成
 
-**Files:**
-- Modify: `rag_modules/parsing/factory.py`
-- Modify: `rag_modules/parsing/registry.py` only if parser construction/config injection requires it
-- Modify: `rag_modules/indexing/engine.py`
-- Modify: `rag_modules/services/preview_service.py` only where source validation or warning handling needs synchronization
-- Test: `tests/unit/parsing/test_registry_factory.py`
-- Test: `tests/unit/indexing/test_document_engine.py`
-- Test: `tests/unit/services/test_preview_service.py`
+**文件：**
+- 修改: `rag_modules/parsing/factory.py`
+- 修改: `rag_modules/parsing/registry.py` only if parser construction/config injection requires it
+- 修改: `rag_modules/indexing/engine.py`
+- 修改: `rag_modules/services/preview_service.py` only where source validation or warning handling needs synchronization
+- 测试: `tests/unit/parsing/test_registry_factory.py`
+- 测试: `tests/unit/indexing/test_document_engine.py`
+- 测试: `tests/unit/services/test_preview_service.py`
 
-**Interfaces:**
-- Factory builds one configured registry per process and registers `.png`, `.jpg`, `.jpeg` with `ImageParser`, plus the configured `PdfParser`.
-- `_SUPPORTED_EXTENSIONS` and `_SAFE_WARNING_CODES` include image formats and OCR warning codes.
-- Preview source validation accepts the same extensions as upload validation, and `PreviewDocument.source_metadata` plus `PreviewChunk.source_metadata` preserve OCR flags.
+**接口：**
+- Factory 为每个进程构建一个已配置的 registry，并将 `.png`、`.jpg`、`.jpeg` 注册到 `ImageParser`，同时注册已配置的 `PdfParser`。
+- `_SUPPORTED_EXTENSIONS` 和 `_SAFE_WARNING_CODES` 包含图像格式和 OCR warning code。
+- 预览源校验接受与上传校验相同的扩展名；`PreviewDocument.source_metadata` 和 `PreviewChunk.source_metadata` 均保留 OCR 标记。
 
-- [ ] **Step 1: Write failing integration tests**
+- [ ] **步骤 1：编写失败的集成测试**
 
 ```python
 def test_factory_registers_image_extensions(monkeypatch):
@@ -273,38 +273,38 @@ def test_preview_accepts_image_source_and_returns_ocr_metadata():
     assert response.chunks[0].source_metadata["ocr"] is True
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_registry_factory.py tests/unit/indexing/test_document_engine.py tests/unit/services/test_preview_service.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_registry_factory.py tests/unit/indexing/test_document_engine.py tests/unit/services/test_preview_service.py`
 
-Expected: FAIL because image extensions are not registered/allowed and OCR warnings are filtered.
+预期：失败，因为图片扩展名尚未注册/允许，且 OCR warning 会被过滤。
 
-- [ ] **Step 3: Implement synchronized integration**
+- [ ] **步骤 3：实现同步集成**
 
-Inject one configured engine/renderer into factory-created parsers, extend allowlists, preserve existing source metadata validation, and add only stable OCR warnings to safe serialization. Do not add a new API route.
+向 factory 创建的 parser 注入同一个已配置引擎/渲染器，扩展允许列表，保留现有源 metadata 校验，并仅将稳定的 OCR warning 加入安全序列化。不要添加新的 API 路由。
 
-- [ ] **Step 4: Run focused tests and existing registry/preview/indexing tests**
+- [ ] **步骤 4：运行针对性测试和现有 registry/预览/索引测试**
 
-Run: `.venv/bin/pytest -q tests/unit/parsing/test_registry_factory.py tests/unit/parsing/test_registry.py tests/unit/indexing/test_document_engine.py tests/unit/services/test_preview_service.py`
+运行：`.venv/bin/pytest -q tests/unit/parsing/test_registry_factory.py tests/unit/parsing/test_registry.py tests/unit/indexing/test_document_engine.py tests/unit/services/test_preview_service.py`
 
-Expected: PASS.
+预期：通过。
 
-### Task 5: API and frontend source information with existing post-segmentation editing
+### 任务 5：API 与前端来源信息及现有分段后编辑流程
 
-**Files:**
-- Modify: `rag_modules/api/dto/indexing_preview.py` only if OCR metadata needs an explicit bounded field
-- Modify: `frontend/src/components/IndexingPanel.jsx`
-- Modify: `frontend/src/components/SegmentEditor.jsx` only to show safe page/OCR source hints while retaining existing edit/save calls
-- Modify: `frontend/src/styles.css` if a small metadata style is required
-- Test: `tests/api/test_indexing_preview_api.py`
-- Test: `frontend/src` existing test setup or a focused component test if the repository has a configured frontend runner
+**文件：**
+- 修改: `rag_modules/api/dto/indexing_preview.py` only if OCR metadata needs an explicit bounded field
+- 修改: `frontend/src/components/IndexingPanel.jsx`
+- 修改: `frontend/src/components/SegmentEditor.jsx` only to show safe page/OCR source hints while retaining existing edit/save calls
+- 修改: `frontend/src/styles.css` if a small metadata style is required
+- 测试: `tests/api/test_indexing_preview_api.py`
+- 测试: `frontend/src` existing test setup or a focused component test if the repository has a configured frontend runner
 
-**Interfaces:**
-- Existing `/indexing/preview` request and response paths remain unchanged.
-- OCR metadata is rendered as a source hint; content/question/answer/keywords remain editable only through the existing segment revision API.
-- Error messages map stable OCR codes to safe Chinese text and never display raw PaddleOCR exceptions.
+**接口：**
+- 现有 `/indexing/preview` 请求和响应路径保持不变。
+- OCR 元数据显示为来源提示；content/question/answer/keywords 仍只能通过现有分段 revision API 编辑。
+- 错误消息将稳定的 OCR code 映射为安全的中文文本，绝不展示 PaddleOCR 原始异常。
 
-- [ ] **Step 1: Write a failing API serialization test**
+- [ ] **步骤 1：编写失败的 API 序列化测试**
 
 ```python
 async def test_preview_serializes_ocr_source_metadata_and_warning(client):
@@ -314,38 +314,38 @@ async def test_preview_serializes_ocr_source_metadata_and_warning(client):
     assert response.json()["warnings"][0]["code"] == "OCR_REPEATED_HEADER_FOOTER_REMOVED"
 ```
 
-- [ ] **Step 2: Run the API test to verify it fails**
+- [ ] **步骤 2：运行 API 测试以确认失败**
 
-Run: `.venv/bin/pytest -q tests/api/test_indexing_preview_api.py -k ocr`
+运行：`.venv/bin/pytest -q tests/api/test_indexing_preview_api.py -k ocr`
 
-Expected: FAIL because the fixture/serialization path does not yet expose OCR metadata safely.
+预期：失败，因为 fixture/序列化路径尚未安全暴露 OCR metadata。
 
-- [ ] **Step 3: Implement the minimal UI/API integration**
+- [ ] **步骤 3：实现最小 UI/API 集成**
 
-Keep DTOs permissive only for bounded safe metadata already produced by parsers, add a small “OCR page source” hint beside each preview/segment, and reuse the current PATCH revision workflow. Do not add source-text editing before segmentation.
+DTO 仅对 parser 已生成的有界安全 metadata 保持宽容，在每个预览/分段旁添加简短的“OCR 页面来源”提示，并复用当前 PATCH 修订流程。不要增加分段前的源文本编辑。
 
-- [ ] **Step 4: Run API and frontend checks**
+- [ ] **步骤 4：运行 API 和前端检查**
 
-Run: `.venv/bin/pytest -q tests/api/test_indexing_preview_api.py tests/api/test_document_api.py`
+运行：`.venv/bin/pytest -q tests/api/test_indexing_preview_api.py tests/api/test_document_api.py`
 
-Run: `npm test -- --runInBand` from `frontend/` when a frontend test script exists; otherwise run the repository’s configured frontend lint/build command and record its actual result.
+如果存在前端测试脚本，则在 `frontend/` 中运行 `npm test -- --runInBand`；否则运行仓库配置的前端 lint/build 命令，并记录实际结果。
 
-Expected: existing API behavior passes and the frontend build/lint has no new errors.
+预期：现有 API 行为测试通过，前端 build/lint 没有新增错误。
 
-### Task 6: Documentation and operational setup
+### 任务 6：文档和运维配置
 
-**Files:**
-- Modify: `README.md`
-- Modify: `docs/architecture.md`
-- Modify: `docs/pending-features.md`
-- Modify: `.env.example`
-- Test: `tests/unit/config/test_settings.py` for environment parsing examples where practical
+**文件：**
+- 修改: `README.md`
+- 修改: `docs/architecture.md`
+- 修改: `docs/pending-features.md`
+- 修改: `.env.example`
+- 测试: `tests/unit/config/test_settings.py` for environment parsing examples where practical
 
-**Interfaces:**
-- Documentation states supported image formats, mixed PDF behavior, optional installation, CPU/GPU configuration, model cache, and matching API/Worker environments.
-- Pending-features documentation removes OCR from incomplete features and leaves table/layout/formula/handwriting recognition as future work.
+**接口：**
+- 文档说明支持的图像格式、混合 PDF 行为、可选安装方式、CPU/GPU 配置、模型缓存，以及 API/Worker 环境一致性要求。
+- 待办功能文档将 OCR 从未完成功能中移除，并将表格/版面/公式/手写识别保留为后续工作。
 
-- [ ] **Step 1: Add a failing configuration documentation behavior test**
+- [ ] **步骤 1：添加失败的配置文档行为测试**
 
 ```python
 def test_ocr_environment_values_are_loaded(monkeypatch):
@@ -356,50 +356,50 @@ def test_ocr_environment_values_are_loaded(monkeypatch):
     assert loaded.parser.ocr_device == "cpu"
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `.venv/bin/pytest -q tests/unit/config/test_settings.py -k ocr`
+运行：`.venv/bin/pytest -q tests/unit/config/test_settings.py -k ocr`
 
-Expected: FAIL until the fields are wired to `ParserSettings`.
+预期：字段接入 `ParserSettings` 前测试失败。
 
-- [ ] **Step 3: Update docs and examples**
+- [ ] **步骤 3：更新文档和示例**
 
-Document the optional installation command, CPU default, GPU backend selection, model cache path, and the requirement that API and Worker install the same OCR extras. Explicitly state that post-segmentation manual cleaning creates a revision and leaves the original upload unchanged.
+记录可选安装命令、默认 CPU 模式、GPU backend 选择、模型缓存路径，以及 API 和 Worker 必须安装相同 OCR extras 的要求。明确说明：分段后的手动清洗会创建一个 revision，且不会修改原始上传文件。
 
-- [ ] **Step 4: Run documentation/config checks**
+- [ ] **步骤 4：运行文档/配置检查**
 
-Run: `.venv/bin/pytest -q tests/unit/config/test_settings.py -k ocr`
+运行：`.venv/bin/pytest -q tests/unit/config/test_settings.py -k ocr`
 
-Run: `git diff --check`
+运行：`git diff --check`
 
-Expected: PASS and no whitespace errors.
+预期：通过且无空白错误。
 
-### Task 7: Full regression and acceptance verification
+### 任务 7：完整回归和验收验证
 
-**Files:**
-- Modify only files required by failing regression results from Tasks 1–6.
-- Test: all existing `tests/` plus new OCR tests.
+**文件：**
+- 仅修改任务 1–6 的失败回归结果所必需的文件。
+- 测试：所有现有 `tests/` 以及新增 OCR 测试。
 
-**Interfaces:**
-- No real PaddleOCR model or GPU is required for the test suite.
-- Existing text, Markdown, Office, tabular, PDF, preview, indexing, revision, and upload flows remain green.
+**接口：**
+- 测试套件不需要真实 PaddleOCR 模型或 GPU。
+- 现有文本、Markdown、Office、表格、PDF、预览、索引、修订和上传流程测试均保持通过。
 
-- [ ] **Step 1: Run the complete test suite**
+- [ ] **步骤 1：运行完整测试套件**
 
-Run: `.venv/bin/pytest -q`
+运行：`.venv/bin/pytest -q`
 
-Expected: all collected tests pass; integration tests that require explicit external services may remain skipped according to existing markers.
+预期：所有收集到的测试通过；依赖明确外部服务的集成测试可按现有标记跳过。
 
-- [ ] **Step 2: Run frontend validation**
+- [ ] **步骤 2：运行前端验证**
 
-Run the frontend package’s configured test/lint/build commands and capture the actual output.
+运行前端包配置的 test/lint/build 命令并记录实际输出。
 
-- [ ] **Step 3: Perform an acceptance smoke test with fake OCR**
+- [ ] **步骤 3：使用 fake OCR 执行验收冒烟测试**
 
-Use a generated PNG and fake engine to verify upload validation, parser registry dispatch, preview metadata, segmentation, and existing segment revision payload shape. Verify the original source bytes are unchanged.
+使用生成的 PNG 和 fake engine 验证上传校验、parser registry 分派、预览 metadata、分段和现有分段修订负载形状。确认原始源字节未改变。
 
-- [ ] **Step 4: Run final hygiene checks**
+- [ ] **步骤 4：运行最终整洁性检查**
 
-Run: `git diff --check` and `git status --short`
+运行：`git diff --check` 和 `git status --short`
 
-Expected: no whitespace errors; list all changed files. Do not claim a Git commit because `.git/index.lock` is not writable in this environment.
+预期：无空白错误，并列出所有变更文件。由于当前环境无法写入 `.git/index.lock`，不要声称已创建 Git 提交。

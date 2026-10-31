@@ -26,6 +26,10 @@ class DocumentValidationError(ValueError):
     code = "INVALID_DOCUMENT"
 
 
+class UploadCompensationCleanupPending(RuntimeError):
+    """文档已软删除，但对象清理失败，需要投递后台清理任务。"""
+
+
 @dataclass(frozen=True)
 class DocumentUploadItem:
     id: str
@@ -191,6 +195,18 @@ class DocumentService:
         if record is None:
             raise DocumentNotFoundError(document_id)
         return record
+
+    async def compensate_upload(self, dataset_id: str, document_id: str) -> None:
+        """撤销本次摄取中新建的文档，并删除其精确源对象。"""
+        record = await self.repository.soft_delete(dataset_id, document_id)
+        if record is None:
+            return
+        object_key = (record.data_source_info or {}).get("object_key")
+        if object_key:
+            try:
+                await self.storage.remove_object(object_key)
+            except Exception as exc:
+                raise UploadCompensationCleanupPending(document_id) from exc
 
     async def list_segments(self, dataset_id: str, document_id: str):
         await self.get_document(dataset_id, document_id)

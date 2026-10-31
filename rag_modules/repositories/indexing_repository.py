@@ -105,9 +105,11 @@ class IndexingRepository:
             document.indexing_status = {
                 "download": "downloading", "parse": "parsing", "split": "splitting",
                 "stage": "indexing", "embed-or-keywords": "embedding",
-                "vector-upsert": "indexing", "validate": "indexing",
+                "vector-upsert": "indexing", "graph-extract": "indexing",
+                "validate": "indexing",
             }.get(stage or "", document.indexing_status)
             document.updated_at = now
+        await self._refresh_job_summary(row.job_id, commit=False)
         await self.session.commit()
 
     async def cancellation_requested(self, job_document_id: str) -> bool:
@@ -207,6 +209,9 @@ class IndexingRepository:
         await self.session.commit()
 
     async def refresh_job_summary(self, job_id: str) -> None:
+        await self._refresh_job_summary(job_id, commit=True)
+
+    async def _refresh_job_summary(self, job_id: str, *, commit: bool) -> None:
         job = await self.session.get(IndexingJobRecord, job_id)
         if job is None:
             return
@@ -235,7 +240,8 @@ class IndexingRepository:
             job.cancelled_at = job.cancelled_at or utcnow()
         job.current_stage = next((row.current_stage for row in rows if row.status == "running"), job.current_stage)
         job.updated_at = utcnow()
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
 
     async def list_jobs(self, dataset_id: str, *, offset: int = 0, limit: int = 50):
         from sqlalchemy import func

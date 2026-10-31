@@ -74,3 +74,40 @@ async def test_cancel_job_document_with_revision_succeeds_without_error_referenc
         assert doc.indexing_status == "cancelled"
         assert rev.status == "cancelled"
         assert rev.error is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_refreshes_job_summary_and_graph_stage_progress():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    dataset_id = uuid4().hex
+    doc_id = uuid4().hex
+    job_id = uuid4().hex
+    job_doc_id = uuid4().hex
+
+    async with session_factory() as session:
+        session.add_all([
+            DatasetRecord(id=dataset_id, name="Test DS", provider="test", permission="only_me", indexing_technique="economy", created_by="u1"),
+            DocumentRecord(id=doc_id, dataset_id=dataset_id, name="doc.txt", data_source_type="upload", created_from="console", created_by="u1", indexing_status="waiting"),
+            IndexingJobRecord(id=job_id, dataset_id=dataset_id, job_type="initial_index", scope="selected_documents", status="pending", indexing_technique="economy", segmentation_mode="general", process_rule={}, retrieval_config={}, created_by="u1"),
+            IndexingJobDocumentRecord(id=job_doc_id, job_id=job_id, document_id=doc_id, status="running", worker_id="worker-1"),
+        ])
+        await session.commit()
+
+        await IndexingRepository(session).heartbeat(
+            job_doc_id, worker_id="worker-1", stage="graph-extract", progress=94,
+            processed_segments=1, total_segments=2,
+        )
+        job = await session.get(IndexingJobRecord, job_id)
+        job_doc = await session.get(IndexingJobDocumentRecord, job_doc_id)
+
+        assert job.status == "running"
+        assert job.progress == 94
+        assert job.current_stage == "graph-extract"
+        assert job_doc.total_segments == 2
+        assert job_doc.processed_segments == 1
+
+    await engine.dispose()

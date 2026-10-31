@@ -8,7 +8,8 @@ const statusLabels = {
 };
 const stageLabels = {
   downloading: "读取文件", parsing: "解析文档", splitting: "生成分段",
-  embedding: "生成向量", indexing: "写入索引", completed: "已完成",
+  embedding: "生成向量", indexing: "写入索引", "graph-extract": "抽取图谱",
+  completed: "已完成",
 };
 
 export default function IndexingJobProgress({ datasetId, jobId, documents = [], onFinished }) {
@@ -79,7 +80,7 @@ export default function IndexingJobProgress({ datasetId, jobId, documents = [], 
       {(job.error || job.error_code) && <div className="notice danger" role="alert">{job.error || job.error_code}</div>}
       <div className="job-document-list">{job.documents?.map(item => <div className="job-document" key={item.id}>
         <span>{names.get(item.document_id) || item.document_id}</span>
-        <span>{stageLabels[item.current_stage] || statusLabels[item.status] || item.status} · {item.progress}%</span>
+        <span>{stageLabels[item.current_stage] || statusLabels[item.status] || item.status} · {item.progress}% · {item.processed_segments}/{item.total_segments} 段</span>
         {(item.error || item.error_code) && <small>{item.error || item.error_code}</small>}
       </div>)}</div>
       <div className="job-progress-actions">

@@ -1,16 +1,16 @@
-# 知识库设置与完整导入导出 Implementation Plan
+# 知识库设置与完整导入导出实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans (recommended). Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向代理工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans。各步骤使用 checkbox（`- [ ]`）语法跟踪进度。
 
-**Goal:** 为知识库提供设置修改、检索参数保存、全量重建，以及包含文档元数据和原始文件的完整 ZIP 导入导出。
+**目标：** 为知识库提供设置修改、检索参数保存、全量重建，以及包含文档元数据和原始文件的完整 ZIP 导入导出。
 
-**Architecture:** 在现有 `DatasetRecord` 和索引任务体系上增加知识库设置服务/API；新增独立 archive 服务负责 ZIP 生成、校验、对象存储搬运和导入事务；React 在文档页增加设置面板，复用现有 request、publisher 和文档刷新机制。
+**架构：** 在现有 `DatasetRecord` 和索引任务体系上增加知识库设置服务/API；新增独立 archive 服务负责 ZIP 生成、校验、对象存储搬运和导入事务；React 在文档页增加设置面板，复用现有 request、publisher 和文档刷新机制。
 
-**Tech Stack:** FastAPI、Pydantic、SQLAlchemy async、Alembic、MinIO ObjectStorage、Celery publisher、React/Vite、pytest、Playwright。
+**技术栈：** FastAPI、Pydantic、SQLAlchemy async、Alembic、MinIO ObjectStorage、Celery publisher、React/Vite、pytest、Playwright。
 
-**Spec:** `docs/superpowers/specs/2026-10-05-knowledge-base-settings-transfer-design.md`
+**规格：** `docs/superpowers/specs/2026-10-05-knowledge-base-settings-transfer-design.md`
 
-## Global Constraints
+## 全局约束
 
 - 导入默认只新建知识库，不覆盖或删除已有知识库。
 - ZIP 不得包含向量、密钥、Celery 内部任务 ID 或对象存储地址。
@@ -21,115 +21,115 @@
 
 ---
 
-### Task 1: Settings DTO, repository and service
+### 任务 1：设置 DTO、repository 和 service
 
-**Files:**
-- Create: `rag_modules/api/dto/knowledge_base/settings.py`
-- Modify: `rag_modules/api/dto/knowledge_base/knowledgeBase.py`
-- Modify: `rag_modules/repositories/knowledge_base_repository.py`
-- Modify: `rag_modules/services/knowledge_base_service.py`
-- Test: `tests/unit/services/test_knowledge_base_settings.py`
+**文件：**
+- 创建: `rag_modules/api/dto/knowledge_base/settings.py`
+- 修改: `rag_modules/api/dto/knowledge_base/knowledgeBase.py`
+- 修改: `rag_modules/repositories/knowledge_base_repository.py`
+- 修改: `rag_modules/services/knowledge_base_service.py`
+- 测试: `tests/unit/services/test_knowledge_base_settings.py`
 
-**Interfaces:**
-- `KnowledgeBaseSettingsResponse` contains `dataset`, `indexing`, `retrieval`, `needs_rebuild`.
-- `KnowledgeBaseSettingsUpdate` accepts basic fields plus an allow-listed retrieval configuration.
-- `KnowledgeBaseService.get_settings(dataset_id)` and `update_settings(dataset_id, payload, actor_id)`.
+**接口：**
+- `KnowledgeBaseSettingsResponse` 包含 `dataset`、`indexing`、`retrieval`、`needs_rebuild`。
+- `KnowledgeBaseSettingsUpdate` 接收基本字段和允许列表中的检索配置。
+- `KnowledgeBaseService.get_settings(dataset_id)` 和 `update_settings(dataset_id, payload, actor_id)`。
 
-- [ ] Write tests for defaults from NULL config, successful update, weight validation, and `needs_rebuild` when indexing settings change.
-- [ ] Run `pytest tests/unit/services/test_knowledge_base_settings.py -q` and verify it fails because DTO/service methods are absent.
-- [ ] Implement allow-listed DTOs, repository `update_settings`, default retrieval values, and change detection.
-- [ ] Run the focused tests and existing dataset API tests.
-- [ ] Commit `feat: add knowledge base settings service`.
+- [ ] 为 NULL 配置的默认值、成功更新、权重校验，以及索引设置变化时的 `needs_rebuild` 编写测试。
+- [ ] 运行 `pytest tests/unit/services/test_knowledge_base_settings.py -q`，确认因 DTO/service 方法缺失而失败。
+- [ ] 实现允许列表 DTO、repository `update_settings`、默认检索值和变更检测。
+- [ ] 运行针对性测试和现有 dataset API 测试。
+- [ ] 提交 `feat: add knowledge base settings service`。
 
-### Task 2: Settings, rebuild and retrieval API
+### 任务 2：设置、重建和检索 API
 
-**Files:**
-- Create: `rag_modules/api/knowledge_base_settings_api.py`
-- Modify: `main.py`
-- Modify: `rag_modules/tasks/publisher.py`
-- Modify: `rag_modules/repositories/indexing_repository.py`
-- Test: `tests/api/test_knowledge_base_settings_api.py`
+**文件：**
+- 创建: `rag_modules/api/knowledge_base_settings_api.py`
+- 修改: `main.py`
+- 修改: `rag_modules/tasks/publisher.py`
+- 修改: `rag_modules/repositories/indexing_repository.py`
+- 测试: `tests/api/test_knowledge_base_settings_api.py`
 
-**Interfaces:**
+**接口：**
 - `GET/PATCH /api/knowledge_base/{dataset_id}/settings`.
-- `POST /api/knowledge_base/{dataset_id}/rebuild` returns `{job_id, status}`.
-- `KnowledgeBaseSettingsService` dependency uses current DB session and publisher.
+- `POST /api/knowledge_base/{dataset_id}/rebuild` 返回 `{job_id, status}`。
+- `KnowledgeBaseSettingsService` 依赖当前 DB session 和 publisher。
 
-- [ ] Write API tests for read/write, 404, 422 validation, rebuild task creation and dispatch-pending response.
-- [ ] Run focused API tests and verify missing route failures.
-- [ ] Implement routes, stable 404/422/503 mapping, full dataset rebuild job creation and publisher method.
-- [ ] Run focused and existing indexing API tests.
-- [ ] Commit `feat: expose knowledge base settings and rebuild APIs`.
+- [ ] 为读写、404、422 校验、重建任务创建和等待投递响应编写 API 测试。
+- [ ] 运行针对性 API 测试，确认路由缺失导致失败。
+- [ ] 实现路由、稳定的 404/422/503 映射、知识库全量重建任务创建和 publisher 方法。
+- [ ] 运行针对性测试和现有 indexing API 测试。
+- [ ] 提交 `feat: expose knowledge base settings and rebuild APIs`。
 
-### Task 3: Archive format and streaming export
+### 任务 3：归档格式和流式导出
 
-**Files:**
-- Create: `rag_modules/services/knowledge_base_archive_service.py`
-- Modify: `rag_modules/object_storage/base.py`
-- Modify: `rag_modules/api/knowledge_base_settings_api.py`
-- Test: `tests/unit/services/test_knowledge_base_archive_service.py`
-- Test: `tests/api/test_knowledge_base_transfer_api.py`
+**文件：**
+- 创建: `rag_modules/services/knowledge_base_archive_service.py`
+- 修改: `rag_modules/object_storage/base.py`
+- 修改: `rag_modules/api/knowledge_base_settings_api.py`
+- 测试: `tests/unit/services/test_knowledge_base_archive_service.py`
+- 测试: `tests/api/test_knowledge_base_transfer_api.py`
 
-**Interfaces:**
+**接口：**
 - `KnowledgeBaseArchiveService.export_dataset(dataset_id) -> Path`.
 - `KnowledgeBaseArchiveService.validate_archive(fileobj) -> ArchiveManifest`.
-- `GET /api/knowledge_base/{dataset_id}/export` returns `StreamingResponse` with ZIP content.
+- `GET /api/knowledge_base/{dataset_id}/export` 返回包含 ZIP 内容的 `StreamingResponse`。
 
-- [ ] Write failing tests for manifest contents, safe file paths, SHA-256 entries, and export response headers.
-- [ ] Run focused tests and verify missing service/route failures.
-- [ ] Implement bounded ZIP creation using a temporary seekable file and chunked object storage reads; add repository helpers for dataset/documents.
-- [ ] Run focused archive and API tests.
-- [ ] Commit `feat: export complete knowledge base archives`.
+- [ ] 为 manifest 内容、安全文件路径、SHA-256 条目和导出响应头编写失败测试。
+- [ ] 运行针对性测试，确认 service/路由缺失导致失败。
+- [ ] 使用临时可 seek 文件和分块对象存储读取实现有界 ZIP 创建；为 dataset/documents 添加 repository 辅助方法。
+- [ ] 运行针对性归档和 API 测试。
+- [ ] 提交 `feat: export complete knowledge base archives`。
 
-### Task 4: Secure archive import and rollback
+### 任务 4：安全归档导入与回滚
 
-**Files:**
-- Modify: `rag_modules/services/knowledge_base_archive_service.py`
-- Modify: `rag_modules/api/knowledge_base_settings_api.py`
-- Modify: `rag_modules/repositories/knowledge_base_repository.py`
-- Modify: `rag_modules/repositories/document_repository.py`
-- Test: `tests/unit/services/test_knowledge_base_archive_import.py`
-- Test: `tests/api/test_knowledge_base_transfer_api.py`
+**文件：**
+- 修改: `rag_modules/services/knowledge_base_archive_service.py`
+- 修改: `rag_modules/api/knowledge_base_settings_api.py`
+- 修改: `rag_modules/repositories/knowledge_base_repository.py`
+- 修改: `rag_modules/repositories/document_repository.py`
+- 测试: `tests/unit/services/test_knowledge_base_archive_import.py`
+- 测试: `tests/api/test_knowledge_base_transfer_api.py`
 
-**Interfaces:**
+**接口：**
 - `KnowledgeBaseArchiveService.import_dataset(upload, rebuild: bool) -> ImportResult`.
-- New IDs are generated; original IDs stored in `data_source_info.imported_*`.
+- 生成新的 ID；原始 ID 存入 `data_source_info.imported_*`。
 
-- [ ] Write failing tests for successful import, path traversal, hash mismatch, duplicate member, size limits, and transaction/object cleanup on DB failure.
-- [ ] Run focused tests and verify failure before implementation.
-- [ ] Implement manifest validation, safe extraction, temporary object keys, new dataset/document records, cleanup on exception, and optional rebuild dispatch.
-- [ ] Run focused import tests plus upload/document regression tests.
-- [ ] Commit `feat: import complete knowledge base archives safely`.
+- [ ] 为成功导入、路径穿越、哈希不匹配、重复成员、大小限制，以及数据库失败时事务/对象清理编写失败测试。
+- [ ] 运行针对性测试，在实现前确认失败。
+- [ ] 实现 manifest 校验、安全解压、临时对象键、新 dataset/document 记录、异常清理和可选的重建投递。
+- [ ] 运行针对性导入测试以及上传/文档回归测试。
+- [ ] 提交 `feat: import complete knowledge base archives safely`。
 
-### Task 5: Frontend settings and transfer panel
+### 任务 5：前端设置与传输面板
 
-**Files:**
-- Create: `frontend/src/components/KnowledgeBaseSettings.jsx`
-- Modify: `frontend/src/components/Documents.jsx`
-- Modify: `frontend/src/api.js`
-- Modify: `frontend/src/styles.css`
-- Test: `frontend/tests/knowledge-base-settings.spec.js`
+**文件：**
+- 创建: `frontend/src/components/KnowledgeBaseSettings.jsx`
+- 修改: `frontend/src/components/Documents.jsx`
+- 修改: `frontend/src/api.js`
+- 修改: `frontend/src/styles.css`
+- 测试: `frontend/tests/knowledge-base-settings.spec.js`
 
-**Interfaces:**
-- Panel props: `{ dataset, onClose, onSaved }`.
-- Calls settings GET/PATCH, rebuild POST, export download, and import upload endpoints.
+**接口：**
+- 面板属性：`{ dataset, onClose, onSaved }`。
+- 调用设置 GET/PATCH、重建 POST、导出下载和导入上传接口。
 
-- [ ] Add failing Playwright selectors for settings open, retrieval fields, save, rebuild confirmation, export download and import result.
-- [ ] Run the focused frontend test to establish failure.
-- [ ] Implement accessible panel state, API calls, validation messages, download blob handling, and import result handling.
-- [ ] Run `npm run build` and focused Playwright test where port binding is available.
-- [ ] Commit `feat: add knowledge base settings UI`.
+- [ ] 为打开设置、检索字段、保存、重建确认、导出下载和导入结果添加失败的 Playwright 选择器测试。
+- [ ] 运行针对性前端测试，建立失败基线。
+- [ ] 实现无障碍面板状态、API 调用、校验消息、下载 blob 处理和导入结果处理。
+- [ ] 在端口可绑定时运行 `npm run build` 和针对性 Playwright 测试。
+- [ ] 提交 `feat: add knowledge base settings UI`。
 
-### Task 6: Documentation, retrospective and full verification
+### 任务 6：文档、回顾记录和完整验证
 
-**Files:**
-- Create: `docs/superpowers/retrospectives/2026-10-05-knowledge-base-settings-transfer.md`
-- Modify: `docs/superpowers/specs/2026-10-05-knowledge-base-settings-transfer-design.md`
-- Modify: `docs/superpowers/plans/2026-10-05-knowledge-base-settings-transfer.md`
+**文件：**
+- 创建: `docs/superpowers/retrospectives/2026-10-05-knowledge-base-settings-transfer.md`
+- 修改: `docs/superpowers/specs/2026-10-05-knowledge-base-settings-transfer-design.md`
+- 修改: `docs/superpowers/plans/2026-10-05-knowledge-base-settings-transfer.md`
 
-- [ ] Record actual implementation deviations, test/environment failures, and fixes in the retrospective.
-- [ ] Run `PYTHONPATH=. UV_CACHE_DIR=/tmp/graph-rag-uv-cache uv run --extra test pytest -q`.
-- [ ] Run `npm run build` in `frontend`.
-- [ ] Run `git diff --check` and inspect the final diff for secrets and archive path bugs.
-- [ ] Only report completion after fresh verification output confirms the results.
+- [ ] 在回顾记录中记录实际实现偏差、测试/环境失败和修复措施。
+- [ ] 运行 `PYTHONPATH=. UV_CACHE_DIR=/tmp/graph-rag-uv-cache uv run --extra test pytest -q`。
+- [ ] 在 `frontend` 中运行 `npm run build`。
+- [ ] 运行 `git diff --check`，检查最终 diff 中是否存在密钥和归档路径问题。
+- [ ] 只有最新验证输出确认结果后才能报告完成。
 

@@ -1,308 +1,202 @@
-# Parsing and Preview Safety Hardening Design
+# 解析与预览安全加固设计
 
-**Date:** 2026-09-03
+**日期：** 2026-09-03
 
-**Status:** Approved remediation design for the residual findings after the
-Parsing, Segmentation, and Preview phase review.
+**状态：** 解析、分段和预览阶段评审后遗留问题的已批准整改设计。
 
-**Parent specification:**
+**上级规格：**
 `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
 
-## 1. Goal
+## 1. 目标
 
-Close the five load-bearing parser and segmentation findings that remain after
-commit `8fb64f4`, without changing the approved product workflow or introducing
-new persistence, Embedding, or vector-store behavior.
+解决提交 `8fb64f4` 后仍然存在的五项关键解析器和分段问题，不改变已批准的产品工作流，也不引入新的持久化、Embedding 或向量存储行为。
 
-The resulting parser/segmenter must remain shared by preview and the future
-indexing Worker. A request deadline may stop waiting for synchronous work, but
-every abandoned worker must also have a finite, input-derived work bound.
+最终的 parser/segmenter 必须继续由预览和未来的索引 Worker 共用。请求截止时间可以停止等待同步工作，但所有被放弃的 worker 也必须有有限且由输入规模推导的工作上限。
 
-## 2. Scope
+## 2. 范围
 
-This remediation covers only:
+本次整改仅涵盖：
 
-1. XLSX worksheet-part discovery, sparse-cell and merged-range resource bounds.
-2. Aggregation and bounding of formula-cache warnings.
-3. Segmentation CPU-work prediction and accounting for extreme overlap.
-4. Fidelity-preserving, nonblank full-document delimiter handling.
-5. YAML nesting preflight and stable normalization of recursion failures.
+1. 发现 XLSX 工作表部件，并限制稀疏单元格与合并区域的资源消耗。
+2. 聚合并限制公式缓存警告数量。
+3. 预测分段 CPU 工作量，并统计极端重叠造成的额外工作。
+4. 以保留原文的方式处理全文分隔符，同时确保输出非空。
+5. 预检 YAML 嵌套深度，并稳定处理递归失败。
 
-It does not add OCR, `.doc`, formula evaluation, new file formats, new API
-routes, persistence, Embedding, Milvus, Celery, or frontend behavior.
+本次不增加 OCR、`.doc`、公式求值、新文件格式、新 API 路由、持久化、Embedding、Milvus、Celery 或前端行为。
 
-## 3. Considered Approaches
+## 3. 备选方案
 
-### 3.1 Recommended: strengthen the existing boundaries
+### 3.1 推荐方案：强化现有边界
 
-- Resolve worksheet parts from OOXML workbook relationships rather than ZIP
-  filename patterns.
-- Stream-preflight actual worksheet XML and reject excessive nodes, physical
-  cells, coordinates, or merged-range area before OpenPyXL materializes cells.
-- Retain OpenPyXL for value/type/date semantics after the preflight.
-- Reject segmentation configurations whose projected minimum work exceeds a
-  fixed budget, and also account for actual boundary-scan characters.
-- Attach real delimiters to neighboring nonblank sources instead of publishing
-  delimiter-only segments.
-- Scan YAML events before object construction and fall back to bounded raw
-  metadata on excessive nesting or parser recursion.
+- 从 OOXML 工作簿关系解析工作表部件，而不是根据 ZIP 文件名模式推断。
+- 流式预检实际工作表 XML，在 OpenPyXL 实例化单元格前拒绝节点、物理单元格、坐标或合并区域面积超限的文件。
+- 预检后继续使用 OpenPyXL 处理值、类型和日期语义。
+- 当分段配置的预计最低工作量超过固定预算时拒绝请求，并统计实际边界扫描字符数。
+- 将真实分隔符附加到相邻的非空源内容，而不是发布只含分隔符的分段。
+- 在构造 YAML 对象前扫描事件；遇到嵌套过深或解析器递归时退回有界的原始元数据。
 
-This preserves the current interfaces and limits change to the reviewed risk
-surfaces.
+此方案保留当前接口，并将改动限制在已评审的风险范围内。
 
-### 3.2 Reject advanced spreadsheet structures
+### 3.2 拒绝复杂电子表格结构
 
-Reject every workbook containing merged cells, formulas, or unusual worksheet
-relationship targets. This is simpler, but rejects ordinary business files and
-does not meet the existing formula-cache behavior.
+拒绝包含合并单元格、公式或特殊工作表关系目标的所有工作簿。该方案更简单，但会拒绝常见业务文件，也不符合现有公式缓存行为。
 
-### 3.3 Replace OpenPyXL with a custom OOXML value parser
+### 3.3 使用自定义 OOXML 值解析器替代 OpenPyXL
 
-Parse workbook relationships, shared strings, styles, dates, formulas and cells
-directly. This offers the strongest control but duplicates mature spreadsheet
-semantics, substantially expands this remediation, and carries higher data-loss
-risk. It is not justified for the five residual findings.
+直接解析工作簿关系、共享字符串、样式、日期、公式和单元格。该方案控制力最强，但会重复实现成熟的电子表格语义，大幅扩大整改范围，并带来更高的数据丢失风险；针对五项遗留问题并不值得采用。
 
-## 4. XLSX Resource Boundary
+## 4. XLSX 资源边界
 
-### 4.1 Relationship-driven worksheet discovery
+### 4.1 基于关系发现工作表
 
-The parser must not infer worksheets by matching ZIP member names such as
-`xl/worksheets/*.xml`.
+解析器不得通过匹配 `xl/worksheets/*.xml` 等 ZIP 成员名称来推断工作表。
 
-It must:
+必须执行以下操作：
 
-1. Read `xl/workbook.xml` and `xl/_rels/workbook.xml.rels` using entity-disabled,
-   no-network XML parsing.
-2. Resolve each workbook sheet relationship whose type is the OOXML worksheet
-   relationship type.
-3. Normalize each relationship target as a POSIX package path relative to the
-   workbook part.
-4. Reject absolute paths, URL targets, `TargetMode="External"`, `..` traversal,
-   missing parts, duplicate resolved parts and non-worksheet relationship types.
-5. Use the resolved part list for every worksheet preflight. ZIP member lookup
-   must use the exact relationship target; filename case cannot bypass the
-   preflight.
-6. Return immutable preflight records in workbook sheet order. Each record
-   contains the sheet title, exact package part and the bounded set of physical
-   cell coordinates discovered in that part. After OpenPyXL loads the file, its
-   sheet titles and order must match these records before any values are read.
+1. 使用禁用实体解析且禁止联网的 XML 解析方式读取 `xl/workbook.xml` 和 `xl/_rels/workbook.xml.rels`。
+2. 解析每个类型为 OOXML worksheet 关系类型的工作表关系。
+3. 将每个关系目标规范化为相对于工作簿部件的 POSIX 包路径。
+4. 拒绝绝对路径、URL 目标、`TargetMode="External"`、`..` 路径穿越、缺失部件、重复解析出的部件以及非工作表关系类型。
+5. 对所有工作表预检使用解析后的部件列表。ZIP 成员查找必须使用精确关系目标；文件名大小写不能绕过预检。
+6. 按工作簿工作表顺序返回不可变预检记录。每条记录包含工作表标题、精确包部件路径，以及从该部件发现的有界物理单元格坐标集合。OpenPyXL 加载文件后，读取任何值之前，其工作表标题和顺序必须与这些记录一致。
 
-OpenPyXL must not be invoked until all resolved worksheet parts pass preflight.
+所有已解析的工作表部件通过预检前，不得调用 OpenPyXL。
 
-### 4.2 Streaming XML budget
+### 4.2 流式 XML 预算
 
-Across all resolved worksheet parts, enforce configurable positive limits for:
+对所有已解析的工作表部件施加可配置的正数限制：
 
 - parsed XML end events;
-- physical `<c>` cell elements;
-- non-empty row and column coordinates;
-- total declared merged-cell area;
-- the area of each individual merged range.
+- `<c>` 物理单元格元素数量；
+- 非空行、列坐标的范围；
+- 声明的合并单元格总面积；
+- 每个独立合并区域的面积。
 
-A merged range area is `(max_row - min_row + 1) * (max_col - min_col + 1)`.
-Area calculation must be overflow-safe and must reject malformed, reversed or
-out-of-range references. The check occurs while streaming `<mergeCell ref>`
-elements, before OpenPyXL normal-mode workbooks are created.
+合并范围面积为 `(max_row - min_row + 1) * (max_col - min_col + 1)`。面积计算必须防止溢出，并拒绝格式错误、方向反转或超出范围的引用。检查应在流式读取 `<mergeCell ref>` 元素时进行，并早于创建 OpenPyXL 普通模式工作簿。
 
-The default aggregate merge-area budget must be no greater than the configured
-physical-cell budget. Large, sparse source coordinates remain rejected using
-the existing row/column coordinate limits.
+默认合并面积总预算不得超过配置的物理单元格预算。仍使用现有行/列坐标限制拒绝跨度很大但稀疏的源坐标。
 
-Any budget breach raises a stable `DocumentParseError`; malformed package paths,
-relationships or XML normalize to `XLSX_MALFORMED`. No exception message or ZIP
-member content is returned to clients.
+任何预算超限都引发稳定的 `DocumentParseError`；格式错误的包路径、关系或 XML 统一映射为 `XLSX_MALFORMED`。不得向客户端返回异常消息或 ZIP 成员内容。
 
-### 4.3 Post-preflight value reading
+### 4.3 预检后的值读取
 
-After preflight, the parser may continue using paired formula and `data_only`
-OpenPyXL workbooks with `keep_links=False`. Access to private `_cells` must be
-isolated behind one small adapter function and guarded by a compatibility test;
-the adapter must iterate only coordinates present in the preflight record and
-backed by a physical cell in the formula view. Merged placeholders must never
-be treated as source values. Accessing the cached view must use bounded mapping
-lookup and must not create new cells.
+预检后，解析器可以继续使用成对的公式视图和 `data_only` OpenPyXL 工作簿，并设置 `keep_links=False`。私有 `_cells` 的访问必须封装在一个小型适配函数中，并由兼容性测试保护；适配器只能遍历预检记录中存在、且公式视图中有真实物理单元格的坐标。绝不能将合并占位符视为源值。访问缓存视图时必须使用有界映射查找，不能创建新单元格。
 
-Formula execution remains forbidden. A cached value is preferred; otherwise
-the formula text is retained.
+仍禁止执行公式。优先使用缓存值；否则保留公式文本。
 
-## 5. Warning Aggregation and Preview Bound
+## 5. Warning 聚合与预览上限
 
-The parser must not emit one warning object per formula.
+解析器不得为每个公式单独创建一个 warning 对象。
 
-For each worksheet, missing formula caches are aggregated into one
-`FORMULA_CACHE_UNAVAILABLE` warning containing:
+每个工作表中缺失的公式缓存聚合为一个 `FORMULA_CACHE_UNAVAILABLE` warning，包含：
 
 - `sheet`;
 - `count`;
-- up to five deterministic cell-coordinate samples in source order.
+- 按源顺序排列的最多五个确定性单元格坐标样例。
 
-All parser warnings additionally pass through a document-wide warning
-collector with a hard maximum number of warning objects. When distinct warnings
-exceed the cap, append or update one stable `WARNINGS_TRUNCATED` summary with the
-omitted count. The collector itself must not retain every omitted warning.
+所有解析器 warning 还必须通过文档级 warning collector，并为 warning 对象数设置硬上限。不同 warning 超过上限时，追加或更新一个稳定的 `WARNINGS_TRUNCATED` 摘要，并记录省略数量。collector 本身不得保留所有被省略的 warning。
 
-Preview serialization applies its own response-level warning cap across all
-documents. `PreviewResponse` reports only the bounded list and includes a stable
-summary warning when additional parser or segmenter warnings were omitted.
-Warnings never contain cell contents, formulas, file bodies, credentials or
-backend exception messages.
+预览序列化要对所有文档应用独立的响应级 warning 上限。`PreviewResponse` 只返回有界列表；省略额外解析器或分段器 warning 时，附带稳定的摘要 warning。Warning 不得包含单元格内容、公式、文件正文、凭据或后端异常消息。
 
-## 6. Segmentation Work Budget
+## 6. 分段工作预算
 
-### 6.1 Preflight projection
+### 6.1 预检工作量估算
 
-Before splitting a source of length `L`, maximum chunk length `M`, and overlap
-`O`, compute `hard_advance = M - O` and a minimum accepted advancement
-`A = max(1, ceil(hard_advance / 2))`. Configuration validation already requires
-`M > O`.
+分割长度为 `L`、最大块长度为 `M`、重叠长度为 `O` 的源文本前，计算 `hard_advance = M - O` 和最小可接受推进量 `A = max(1, ceil(hard_advance / 2))`。配置校验已要求 `M > O`。
 
-A preferred boundary is used only if the next start produced by that boundary
-advances by at least `A`; otherwise the splitter uses the hard maximum. This
-preserves late natural boundaries while preventing a sequence of early
-delimiters from reducing progress to one character unless the configured hard
-advance itself is one or two characters.
+只有当首选边界产生的下一个起点至少推进 `A` 时才使用该边界；否则分割器使用硬性最大长度。这既保留靠后的自然边界，也能防止连续的早期分隔符将推进量降到一个字符，除非配置的硬性推进量本身只有一到两个字符。
 
-The resulting worst-case number of iterations is:
+由此得到的最坏迭代次数为：
 
 ```text
 1                              if L <= M
 1 + ceil((L - M) / A)          otherwise
 ```
 
-Reject before entering the loop when the projected iterations exceed the
-remaining segment/work budget. Parent-child mode includes parent records and
-all projected child ranges in the same request-wide budget.
+预计迭代次数超过剩余分段/工作预算时，必须在进入循环前拒绝请求。父子模式要在同一个请求级预算中计入父记录和所有预计的子范围。
 
-Projection must use integer arithmetic and must not allocate ranges or source
-substrings.
+估算必须使用整数运算，不得分配范围列表或源文本子串。
 
-### 6.2 Boundary-scan accounting
+### 6.2 边界扫描统计
 
-Projection by segment count alone is insufficient because every preferred
-boundary search may inspect up to `M` characters. Maintain a cumulative
-`boundary_scan_characters` counter, charged by the actual search window length
-before `_boundary_end()` runs. Reject with
-`SEGMENTATION_LIMIT_EXCEEDED` before the configured scan budget is crossed.
+仅按分段数量估算并不足够，因为每次首选边界搜索都可能检查最多 `M` 个字符。维护累计的 `boundary_scan_characters` 计数器，并在运行 `_boundary_end()` 前按实际搜索窗口长度计费。超过配置扫描预算前，以 `SEGMENTATION_LIMIT_EXCEEDED` 拒绝请求。
 
-Avoid copying the full search window. Boundary lookup must use `str.rfind`
-start/end arguments against the original string. Custom separators longer than
-the window remain valid and simply yield no boundary.
+避免复制完整搜索窗口。边界查找必须对原始字符串使用 `str.rfind` 的 start/end 参数。长于窗口的自定义分隔符仍然有效，只是不会匹配出边界。
 
-The defaults must ensure the maximum accepted request finishes in a bounded
-amount of synchronous work even after an HTTP caller stops waiting. The same
-limits apply when Segmenter is called directly by the future Worker.
+默认值必须确保最大可接受请求即使在 HTTP 调用方停止等待后，也能在有界的同步工作量内完成。未来 Worker 直接调用 Segmenter 时也适用相同限制。
 
-## 7. Nonblank and Fidelity-preserving Delimiters
+## 7. 非空且保留原貌的分隔符
 
-Public general, parent and child segments must continue satisfying
+公开的普通、父级和子级分段必须继续满足
 `content.strip() != ""`.
 
-Real `"\n\n"` boundaries between prose, code and table sources must be retained
-when a neighboring nonblank parent has capacity:
+相邻的非空父块有容量时，必须保留散文、代码和表格源之间真实的 `"\n\n"` 边界：
 
-- Prefer appending the delimiter to the preceding nonblank source if doing so
-  stays within the parent maximum.
-- Otherwise prefix it to the following nonblank source if that stays within the
-  maximum.
-- If neither non-atomic side can contain the delimiter, split/attach delimiter
-  characters only as part of a chunk that also contains nonblank source text.
-- Never modify or split an otherwise fitting code/table atomic source solely to
-  retain a delimiter.
-- Only when the configured maximum makes any nonblank delimiter-bearing chunk
-  impossible without violating the fitting-atomic rule may the synthetic
-  delimiter be omitted, accompanied by a stable fidelity warning.
+- 若附加后不超过父块上限，优先将分隔符追加到前一个非空源内容。
+- 否则，若不超过上限，则将分隔符加到后一个源内容前面。
+- 如果任一非原子侧都无法容纳分隔符，只能将分隔符字符附加/拆分到同时包含非空源文本的块中。
+- 绝不可仅为保留分隔符而修改或拆分原本可放入上限内的代码/表格原子源内容。
+- 只有在不违反原子内容规则的前提下，配置上限使任何包含分隔符的非空块都无法生成时，才允许省略合成分隔符，并附带稳定的保真度 warning。
 
-For ordinary limits, concatenating parent contents must reproduce the original
-combined source exactly. Code and table blocks that already fit the maximum
-remain atomic. Parent IDs, child links, source order and contiguous public
-positions remain deterministic.
+在常规限制下，拼接父块内容必须精确还原原始合并源文本。已在最大长度内的代码和表格块保持原子性。父 ID、子链接、源顺序和连续的公开位置必须保持确定性。
 
-## 8. YAML Pre-construction Boundary
+## 8. YAML 构造前边界
 
-Before calling `yaml.load`, scan YAML events with the safe parser and track
-collection nesting depth. Reject structural construction when:
+调用 `yaml.load` 前，使用安全解析器扫描 YAML 事件并跟踪集合嵌套深度。出现下列情况时拒绝结构化构造：
 
 - depth exceeds 20;
-- event count exceeds the existing node budget;
-- any alias or anchor appears;
-- scanning raises a YAML parser/scanner error or `RecursionError`.
+- 事件数量超过现有节点预算；
+- 出现任意别名或锚点；
+- 扫描触发 YAML 解析器/扫描器错误或 `RecursionError`。
 
-Only input passing the event preflight may reach `_BoundedSafeLoader` and the
-existing JSON-compatible normalizer. `yaml.load`, loader construction and
-normalization must all catch `RecursionError` and fall back to at most 65,536
-characters of `front_matter_raw`.
+只有通过事件预检的输入才能进入 `_BoundedSafeLoader` 和现有 JSON 兼容规范化器。`yaml.load`、loader 构造和规范化过程都必须捕获 `RecursionError`，并退回最多 65,536 个字符的 `front_matter_raw`。
 
-The fallback body remains parseable Markdown. Cyclic/shared graphs, Python
-objects, non-string mapping keys, duplicate keys, non-finite floats and
-unbounded scalars never enter document metadata.
+回退后的正文仍应可作为 Markdown 解析。循环/共享图、Python 对象、非字符串映射键、重复键、非有限浮点数和无界标量都不得进入文档元数据。
 
-## 9. Error Semantics
+## 9. 错误语义
 
-- Security/resource-limit rejections use stable, safe `DocumentParseError` or
-  `SegmentationConfigError` codes.
-- Preview maps segmentation limit failures to the existing stable 422 error
-  envelope with `code`, `message`, sanitized `detail`, `request_id` and matching
-  `X-Request-ID`.
-- Parser corruption and malformed package errors do not expose exception text.
-- HTTP timeouts remain defense in depth; correctness does not depend on killing
-  a Python worker thread.
+- 安全/资源限制拒绝使用稳定且安全的 `DocumentParseError` 或 `SegmentationConfigError` 错误码。
+- 预览将分段限制失败映射为现有稳定的 422 错误封装，包含 `code`、`message`、脱敏后的 `detail`、`request_id` 和匹配的 `X-Request-ID`。
+- 解析器损坏和包格式错误不得暴露异常文本。
+- HTTP 超时仍作为纵深防御；正确性不能依赖终止 Python worker 线程。
 
-## 10. Testing Strategy
+## 10. 测试策略
 
-Every fix follows RED-GREEN TDD against commit `8fb64f4`.
+每项修复都以提交 `8fb64f4` 为基准遵循 RED-GREEN TDD。
 
 ### 10.1 XLSX
 
-- A workbook relationship targeting a case-varied worksheet part is still
-  preflighted and cannot bypass the physical-cell budget.
-- Traversal, absolute, external, duplicate and missing relationship targets are
-  rejected without invoking OpenPyXL.
-- One physical cell plus a large merged range is rejected before `_cells`
-  expansion.
-- Normal merged cells, cached formulas, missing-cache aggregation, hidden/empty
-  sheets, sparse rows and real row numbers remain correct.
-- Thousands of missing formula caches yield one bounded aggregate warning, not
-  thousands of warning objects.
+- 指向大小写不同工作表部件的工作簿关系仍会经过预检，不能绕过物理单元格预算。
+- 路径穿越、绝对、外部、重复和缺失关系目标都会在不调用 OpenPyXL 的情况下被拒绝。
+- 一个物理单元格加一个大型合并区域的文件，会在 `_cells` 扩展前被拒绝。
+- 普通合并单元格、缓存公式、缺失缓存聚合、隐藏/空工作表、稀疏行和真实行号仍保持正确。
+- 数千个缺失公式缓存只产生一个有界聚合 warning，而不是数千个 warning 对象。
 
-### 10.2 Segmentation
+### 10.2 分段
 
-- Extreme `M=1_000_000, O=999_999` is rejected by preflight without calling
-  `_boundary_end()` repeatedly.
-- Early preferred delimiters that would advance less than `A` fall back to the
-  hard maximum; ordinary late Chinese/English/custom boundaries still win.
-- Cumulative boundary-scan accounting rejects work before its cap.
-- Normal Chinese/English boundaries, custom separators, overlap reconstruction,
-  hard splitting and parent-child links remain unchanged.
-- Ordinary prose/code/prose and prose/table/prose parent concatenation preserves
-  `"\n\n"` exactly while every public segment stays nonblank.
-- Pathological one-character limits return bounded output plus a fidelity
-  warning rather than a blank segment.
+- 极端配置 `M=1_000_000, O=999_999` 会在预检时拒绝，不会反复调用 `_boundary_end()`。
+- 会回退到硬性最大长度，使过早的首选分隔符推进量不少于 `A`；常规靠后的中英文/自定义边界仍优先使用。
+- 累计边界扫描统计会在超过上限前拒绝工作。
+- 常规中英文边界、自定义分隔符、重叠重建、硬切分和父子链接保持不变。
+- 普通文本/代码/普通文本以及文本/表格/文本的父块拼接会精确保留 `"\n\n"`，且每个公开分段都非空。
+- 病态的单字符限制会返回有界输出和保真度 warning，而不是空分段。
 
-### 10.3 Markdown and preview
+### 10.3 Markdown 和预览
 
-- Deep block and flow YAML fails safely without `RecursionError` escaping.
-- Existing nested/list/scalar front matter remains JSON-compatible.
-- Multi-document preview warnings remain within the response cap and report a
-  deterministic omitted count.
-- Full parsing, segmentation, preview, object-storage and repository regression
-  suites pass, followed by the complete backend suite, compile check and
-  `git diff --check`.
+- 深层块状和流式 YAML 会安全失败，不会泄漏 `RecursionError`。
+- 现有嵌套/列表/标量 front matter 仍保持 JSON 兼容。
+- 多文档预览 warning 保持在响应上限内，并报告确定性的省略数量。
+- 完整解析、分段、预览、对象存储和 repository 回归套件通过，随后完整后端套件、编译检查和 `git diff --check` 也通过。
 
-## 11. Acceptance Criteria
+## 11. 验收标准
 
-The remediation is complete only when:
+仅满足以下条件时整改才算完成：
 
-1. All five scoped review findings have a failing regression test against
-   `8fb64f4` and a passing result after implementation.
-2. No worksheet part or merged range can bypass pre-materialization limits.
-3. No accepted segmentation request can exceed either the projected iteration
-   or boundary-scan budget.
-4. Ordinary full-document parent reconstruction remains exact and all public
-   chunks are nonblank.
-5. Deep YAML and warning fan-out cannot create an unhandled exception or
-   unbounded response.
-6. A fresh independent task review and final whole-remediation review report no
-   Critical or Important issue.
-7. The full backend test suite, compile check and whitespace check pass on the
-   final commit.
+1. 针对 `8fb64f4` 的五项范围内评审问题都有失败的回归测试，且实现后测试通过。
+2. 没有工作表部件或合并区域能绕过实例化前的限制。
+3. 任何已接受的分段请求都不会超过预计迭代或边界扫描预算。
+4. 常规完整文档父块重建保持精确，所有公开块均非空。
+5. 深层 YAML 和 warning 扇出不会导致未处理异常或无界响应。
+6. 新一轮独立任务审查和最终整体整改审查均未报告 Critical 或 Important 问题。
+7. 最终提交上的完整后端测试套件、编译检查和空白检查均通过。

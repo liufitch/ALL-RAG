@@ -1,16 +1,16 @@
-# Persistent Celery Indexing Orchestration Implementation Plan
+# 持久化 Celery 索引编排实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向智能体工作者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项执行本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** 用 PostgreSQL 持久化状态、RabbitMQ 可靠投递和 Celery Worker 把单文档索引原语编排成可恢复、可取消、可重试、可安全切换版本的完整任务。
+**目标：** 用 PostgreSQL 持久化状态、RabbitMQ 可靠投递和 Celery Worker 把单文档索引原语编排成可恢复、可取消、可重试、可安全切换版本的完整任务。
 
-**Architecture:** API 事务创建 job 后投递只含 ID 的消息；Worker 通过条件更新和租约领取。单文档完成后用 PostgreSQL 锁汇总，完整构建只有全部成功才激活，追加文档按文档激活。Celery Beat 补投 pending、恢复过期租约并执行幂等清理。
+**架构：** API 事务创建 job 后投递只含 ID 的消息；Worker 通过条件更新和租约领取。单文档完成后用 PostgreSQL 锁汇总，完整构建只有全部成功才激活，追加文档按文档激活。Celery Beat 补投 pending、恢复过期租约并执行幂等清理。
 
-**Tech Stack:** Celery 5、RabbitMQ、FastAPI、SQLAlchemy async、PostgreSQL、MinIO、Milvus、pytest。
+**技术栈：** Celery 5、RabbitMQ、FastAPI、SQLAlchemy async、PostgreSQL、MinIO、Milvus、pytest。
 
-**Spec:** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
+**规格：** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
 
-## Global Constraints
+## 全局约束
 
 - Celery 消息体只能包含 `job_id`、`job_document_id`、`index_id`、`document_id` 等标识符。
 - PostgreSQL 是任务状态、进度、错误和完成结果的唯一事实来源。
@@ -23,41 +23,41 @@
 
 ---
 
-## File Structure
+## 文件结构
 
-- Create: `rag_modules/api/dto/indexing_job.py` — 创建、详情、列表、重试和取消 DTO。
-- Create: `rag_modules/repositories/indexing_repository.py` — job/index/job-document 锁和状态更新。
-- Create: `rag_modules/services/indexing_job_service.py` — 配置 hash、任务分类和 API 事务。
-- Create: `rag_modules/api/indexing_job_api.py` — job routes。
-- Modify: `main.py` — 注册 job router。
-- Create: `rag_modules/tasks/publisher.py` — RabbitMQ publish boundary。
-- Create: `rag_modules/tasks/runtime.py` — Celery task-scoped async runtime。
-- Create: `rag_modules/tasks/indexing_tasks.py` — dispatch/document/finalize tasks。
-- Create: `rag_modules/tasks/maintenance_tasks.py` — pending/stale/retry/cleanup tasks。
-- Modify: `rag_modules/tasks/celery_app.py` — routes、Beat schedule、task discovery。
-- Create: `rag_modules/indexing/target_coordinator.py` — dimension/collection 并发协调。
-- Create: `rag_modules/indexing/progress.py` — PostgreSQL progress reporter/cancel check。
-- Modify: `rag_modules/services/document_service.py` — 删除/重建协作。
-- Modify: `rag_modules/services/knowledge_base_service.py` — 异步资源清理语义。
-- Modify: `rag_modules/api/file_api.py` — 文档删除。
-- Modify: `rag_modules/api/knowledge_base_api.py` — dataset 删除发布清理。
-- Modify: `docker-compose.yml` — API/Worker/Beat profile 和环境变量。
-- Test: `tests/unit/services/test_indexing_job_service.py`。
-- Test: `tests/api/test_indexing_job_api.py`。
-- Test: `tests/unit/tasks/test_indexing_tasks.py`。
-- Test: `tests/unit/tasks/test_recovery_tasks.py`。
-- Test: `tests/unit/tasks/test_cleanup_tasks.py`。
-- Test: `tests/integration/test_celery_rabbitmq.py`。
-- Test: `tests/integration/test_index_version_switch.py`。
+- 创建：`rag_modules/api/dto/indexing_job.py` — 创建、详情、列表、重试和取消 DTO。
+- 创建: `rag_modules/repositories/indexing_repository.py` — job/index/job-document 锁和状态更新。
+- 创建: `rag_modules/services/indexing_job_service.py` — 配置 hash、任务分类和 API 事务。
+- 创建: `rag_modules/api/indexing_job_api.py` — job routes。
+- 修改：`main.py` — 注册 job router。
+- 创建: `rag_modules/tasks/publisher.py` — RabbitMQ publish boundary。
+- 创建: `rag_modules/tasks/runtime.py` — Celery task-scoped async runtime。
+- 创建: `rag_modules/tasks/indexing_tasks.py` — dispatch/document/finalize tasks。
+- 创建: `rag_modules/tasks/maintenance_tasks.py` — pending/stale/retry/cleanup tasks。
+- 修改: `rag_modules/tasks/celery_app.py` — routes、Beat schedule、task discovery。
+- 创建: `rag_modules/indexing/target_coordinator.py` — dimension/collection 并发协调。
+- 创建: `rag_modules/indexing/progress.py` — PostgreSQL progress reporter/cancel check。
+- 修改: `rag_modules/services/document_service.py` — 删除/重建协作。
+- 修改: `rag_modules/services/knowledge_base_service.py` — 异步资源清理语义。
+- 修改: `rag_modules/api/file_api.py` — 文档删除。
+- 修改: `rag_modules/api/knowledge_base_api.py` — dataset 删除发布清理。
+- 修改：`docker-compose.yml` — API/Worker/Beat profile 和环境变量。
+- 测试: `tests/unit/services/test_indexing_job_service.py`。
+- 测试: `tests/api/test_indexing_job_api.py`。
+- 测试: `tests/unit/tasks/test_indexing_tasks.py`。
+- 测试: `tests/unit/tasks/test_recovery_tasks.py`。
+- 测试: `tests/unit/tasks/test_cleanup_tasks.py`。
+- 测试: `tests/integration/test_celery_rabbitmq.py`。
+- 测试: `tests/integration/test_index_version_switch.py`。
 
-### Task 1: Persistent Job Creation and Classification
+### 任务 1：持久化任务创建与分类
 
-**Interfaces:**
-- Produces: `IndexingJobService.create_job(dataset_id, request, actor_id) -> IndexingJobResponse`。
-- Produces: `canonical_config_hash(indexing_technique, model, segmentation, retrieval) -> str`。
-- Consumes: active `dataset_indexes`, selected documents, safe embedding catalog.
+**接口：**
+- 产出: `IndexingJobService.create_job(dataset_id, request, actor_id) -> IndexingJobResponse`。
+- 产出: `canonical_config_hash(indexing_technique, model, segmentation, retrieval) -> str`。
+- 依赖: active `dataset_indexes`, selected documents, safe embedding catalog.
 
-- [ ] **Step 1: Write failing classification tests**
+- [ ] **步骤 1：编写失败的分类测试**
 
 ```python
 # tests/unit/services/test_indexing_job_service.py
@@ -103,15 +103,15 @@ async def test_parent_child_economy_is_rejected_before_transaction():
     assert repo.commits == 0
 ```
 
-- [ ] **Step 2: Run and observe missing service**
+- [ ] **步骤 2：运行并观察服务缺失**
 
-Run: `python -m pytest tests/unit/services/test_indexing_job_service.py -v`
+运行: `python -m pytest tests/unit/services/test_indexing_job_service.py -v`
 
-Expected: FAIL on missing repository/service.
+预期：因 repository/service 缺失而失败。
 
-- [ ] **Step 3: Implement canonical hash and one-transaction creation**
+- [ ] **步骤 3：实现规范哈希和单事务创建**
 
-Canonicalize config with sorted-key compact JSON and SHA-256. Job type rules:
+使用排序键的紧凑 JSON 和 SHA-256 规范化配置。任务类型规则：
 
 ```python
 if active_index is None:
@@ -124,29 +124,29 @@ else:
     job_type, scope = "reindex_documents", "selected_documents"
 ```
 
-If classification selects `reindex_dataset` and `confirm_full_reindex` is false, raise `FULL_REINDEX_CONFIRMATION_REQUIRED` with the full document count before creating any records. After an explicitly confirmed request, create a `building` `DatasetIndexRecord` and deterministic collection name for high quality. For add/reindex documents, target the active index. Create all job-document rows, save immutable process/retrieval snapshots, update dataset's selected config, and commit once. Do not publish from inside this transaction.
+如果分类结果为 `reindex_dataset` 且 `confirm_full_reindex` 为 false，则在创建任何记录前，携带完整文档数抛出 `FULL_REINDEX_CONFIRMATION_REQUIRED`。请求得到明确确认后，为高质量模式创建状态为 `building` 的 `DatasetIndexRecord` 和确定性的 collection 名称。新增/重建文档时，以活动索引为目标。创建所有 job-document 行，保存不可变的处理/检索配置快照，更新 dataset 当前选中的配置，并一次性提交。不得在该事务内发布任务。
 
-- [ ] **Step 4: Run classification tests**
+- [ ] **步骤 4：运行分类测试**
 
-Run: `python -m pytest tests/unit/services/test_indexing_job_service.py -v`
+运行: `python -m pytest tests/unit/services/test_indexing_job_service.py -v`
 
-Expected: PASS for initial, add, partial reindex, model/segmentation/technique full rebuild, invalid model, deleted document and parent-child/economy.
+预期：初始索引、追加、部分重索引、模型/分段/技术全量重建、无效模型、已删除文档和父子/经济模式测试均通过。
 
-- [ ] **Step 5: Commit job domain service**
+- [ ] **步骤 5：提交任务领域服务**
 
 ```bash
 git add rag_modules/repositories/indexing_repository.py rag_modules/services/indexing_job_service.py tests/unit/services/test_indexing_job_service.py
 git commit -m "feat: create persistent indexing jobs"
 ```
 
-### Task 2: Job API and Post-Commit Publisher
+### 任务 2：任务 API 与提交后发布器
 
-**Interfaces:**
-- Produces: create/list/detail/retry/cancel routes from the approved spec.
-- Produces: `TaskPublisher.dispatch_job(job_id: str) -> None`.
-- Publish failure leaves job `pending` and returns the persisted job with `dispatch_pending=true`.
+**接口：**
+- 产出: create/list/detail/retry/cancel routes from the approved spec.
+- 产出: `TaskPublisher.dispatch_job(job_id: str) -> None`.
+- 发布失败时将任务保留为 `pending`，并返回已持久化且 `dispatch_pending=true` 的任务。
 
-- [ ] **Step 1: Write failing API and publish-order tests**
+- [ ] **步骤 1：编写失败的 API 和发布顺序测试**
 
 ```python
 # tests/api/test_indexing_job_api.py
@@ -168,37 +168,37 @@ def test_publish_failure_keeps_queryable_pending_job(client, failing_publisher):
     assert detail.status_code == 200
 ```
 
-- [ ] **Step 2: Run and verify route 404**
+- [ ] **步骤 2：运行并验证路由 404**
 
-Run: `python -m pytest tests/api/test_indexing_job_api.py -v`
+运行: `python -m pytest tests/api/test_indexing_job_api.py -v`
 
-Expected: FAIL with missing route/publisher.
+预期：因缺少路由/发布器而失败。
 
-- [ ] **Step 3: Implement API, safe errors, and publisher boundary**
+- [ ] **步骤 3：实现 API、安全错误和发布器边界**
 
-`TaskPublisher` calls Celery `send_task("rag_modules.tasks.indexing_tasks.dispatch_indexing_job", kwargs={"job_id": job_id}, queue="indexing")`. Route catches broker exceptions only after job creation, logs request/job IDs without credentials, and leaves pending state for Beat. Detail/list responses are built from PostgreSQL records, including document progress and warnings, never from `AsyncResult`.
+`TaskPublisher` 调用 Celery `send_task("rag_modules.tasks.indexing_tasks.dispatch_indexing_job", kwargs={"job_id": job_id}, queue="indexing")`。路由仅在任务创建后捕获 broker 异常；日志记录 request/job ID，但不记录凭据，并保留 pending 状态供 Beat 后续处理。详情/列表响应由 PostgreSQL 记录构建，包含文档进度和 warning，绝不读取 `AsyncResult`。
 
-- [ ] **Step 4: Run API tests**
+- [ ] **步骤 4：运行 API 测试**
 
-Run: `python -m pytest tests/api/test_indexing_job_api.py tests/api/test_dataset_api.py -v`
+运行: `python -m pytest tests/api/test_indexing_job_api.py tests/api/test_dataset_api.py -v`
 
-Expected: PASS for 202, list/detail ownership, missing job 404, publish failure and response secret scan.
+预期：202、列表/详情归属、任务不存在 404、发布失败和响应密钥扫描测试均通过。
 
-- [ ] **Step 5: Commit job API**
+- [ ] **步骤 5：提交任务 API**
 
 ```bash
 git add rag_modules/api/dto/indexing_job.py rag_modules/api/indexing_job_api.py rag_modules/tasks/publisher.py main.py tests/api/test_indexing_job_api.py
 git commit -m "feat: expose persistent indexing job api"
 ```
 
-### Task 3: Claiming, Dispatch, and Task Runtime
+### 任务 3：领取、分发与任务运行时
 
-**Interfaces:**
-- Produces: `claim_job(job_id, worker_id, lease_seconds) -> bool`。
-- Produces: `claim_job_document(job_document_id, worker_id, lease_seconds) -> ClaimResult`。
-- Produces Celery tasks `dispatch_indexing_job(job_id)` and `index_document(job_document_id)`。
+**接口：**
+- 产出: `claim_job(job_id, worker_id, lease_seconds) -> bool`。
+- 产出: `claim_job_document(job_document_id, worker_id, lease_seconds) -> ClaimResult`。
+- 产出 Celery 任务 `dispatch_indexing_job(job_id)` 和 `index_document(job_document_id)`。
 
-- [ ] **Step 1: Write failing duplicate-delivery tests**
+- [ ] **步骤 1：编写失败的重复投递测试**
 
 ```python
 # tests/unit/tasks/test_indexing_tasks.py
@@ -216,15 +216,15 @@ def test_duplicate_document_message_respects_active_lease(celery_tasks, repo, en
     assert engine.calls == []
 ```
 
-- [ ] **Step 2: Run and observe missing tasks**
+- [ ] **步骤 2：运行并观察任务缺失**
 
-Run: `python -m pytest tests/unit/tasks/test_indexing_tasks.py -v`
+运行: `python -m pytest tests/unit/tasks/test_indexing_tasks.py -v`
 
-Expected: FAIL on missing task modules.
+预期：因任务模块缺失而失败。
 
-- [ ] **Step 3: Implement atomic claims and task-scoped async runtime**
+- [ ] **步骤 3：实现原子领取和任务范围的异步运行时**
 
-Use conditional SQL updates equivalent to:
+使用等价于以下语句的条件 SQL 更新：
 
 ```sql
 UPDATE indexing_job_documents
@@ -235,31 +235,31 @@ WHERE id=:id
 RETURNING *;
 ```
 
-Also allow reclaim when status is running and lease is expired. Use a deterministic Celery task ID derived from `job_document_id`. Publish, then persist `celery_task_id`; a crash between those actions may produce a duplicate message, which is intentionally safe because the document claim is authoritative. Dispatcher and Beat may republish queued rows whose task ID/heartbeat proves no active delivery. Never mark a row permanently undispatchable before RabbitMQ confirms publish.
+当状态为 running 且租约过期时，也允许重新领取。根据 `job_document_id` 生成确定性的 Celery task ID。先发布，再持久化 `celery_task_id`；这两步之间崩溃可能产生重复消息，但这是安全的，因为文档领取状态才是权威。若 task ID/heartbeat 表明没有活动投递，Dispatcher 和 Beat 可以重新发布 queued 行。RabbitMQ 确认发布前，绝不要将行永久标记为不可分发。
 
-In `tasks/runtime.py`, create a task-scoped async engine with `NullPool`, run the coroutine with `asyncio.run`, and dispose the engine in `finally`; never reuse the FastAPI global pooled async engine across Celery-created event loops.
+在 `tasks/runtime.py` 中使用 `NullPool` 创建任务范围的异步引擎，以 `asyncio.run` 运行协程，并在 `finally` 中释放引擎；绝不要在 Celery 创建的 event loop 之间复用 FastAPI 全局池化异步引擎。
 
-- [ ] **Step 4: Run task claim tests**
+- [ ] **步骤 4：运行任务领取测试**
 
-Run: `python -m pytest tests/unit/tasks/test_indexing_tasks.py -v`
+运行: `python -m pytest tests/unit/tasks/test_indexing_tasks.py -v`
 
-Expected: PASS for duplicate dispatch, valid lease, expired lease, completed no-op and deleted/cancelled no-op.
+预期：重复分发、有效租约、过期租约、已完成 no-op 和已删除/已取消 no-op 测试均通过。
 
-- [ ] **Step 5: Commit task runtime and claims**
+- [ ] **步骤 5：提交任务运行时与领取逻辑**
 
 ```bash
 git add rag_modules/tasks/runtime.py rag_modules/tasks/indexing_tasks.py rag_modules/repositories/indexing_repository.py tests/unit/tasks/test_indexing_tasks.py
 git commit -m "feat: claim and dispatch indexing tasks safely"
 ```
 
-### Task 4: Dimension Coordination and Document Execution
+### 任务 4：维度协调与文档执行
 
-**Interfaces:**
-- Produces: `IndexTargetCoordinator.resolve(index_id, discovered_dimension) -> VectorTarget` implementing the phase 4 `VectorTargetResolver` protocol。
-- Produces: `DatabaseProgressReporter` implementing phase 4 reporter protocol.
-- Consumes: `DocumentIndexingEngine.run`.
+**接口：**
+- 产出: `IndexTargetCoordinator.resolve(index_id, discovered_dimension) -> VectorTarget` implementing the phase 4 `VectorTargetResolver` protocol。
+- 提供：实现阶段 4 reporter 协议的 `DatabaseProgressReporter`。
+- 使用：`DocumentIndexingEngine.run`。
 
-- [ ] **Step 1: Write failing concurrent dimension/final state tests**
+- [ ] **步骤 1：编写失败的并发维度/最终状态测试**
 
 ```python
 # tests/unit/tasks/test_document_execution.py
@@ -287,39 +287,39 @@ def test_document_task_records_safe_failure_and_retry_time(task, repo, retryable
     assert "api_key" not in (row.error or "").lower()
 ```
 
-- [ ] **Step 2: Run and verify missing coordinator/progress**
+- [ ] **步骤 2：运行并验证协调器/进度功能缺失**
 
-Run: `python -m pytest tests/unit/tasks/test_document_execution.py -v`
+运行: `python -m pytest tests/unit/tasks/test_document_execution.py -v`
 
-Expected: FAIL on imports.
+预期：导入失败。
 
-- [ ] **Step 3: Implement dimension lock and engine invocation**
+- [ ] **步骤 3：实现维度锁和引擎调用**
 
-Under a PostgreSQL row lock, set `embedding_dimension` only when null; otherwise compare. Store collection name before releasing the lock. Call idempotent `ensure_collection` after commit; concurrent callers may both reach it, so catch already-exists, then validate schema. Persist heartbeats and weighted progress. On successful `add_documents`/`reindex_documents`, atomically activate new segments and retire old document segments; on full build leave staging for finalization.
+在 PostgreSQL 行锁下，仅当 `embedding_dimension` 为 null 时设置它；否则进行比较。释放锁前保存 collection 名称。提交后调用幂等的 `ensure_collection`；并发调用方可能都会执行到这里，因此捕获 already-exists 后再校验 schema。持久化 heartbeat 和加权进度。`add_documents`/`reindex_documents` 成功后，原子激活新分段并将旧文档分段退役；全量构建则保留暂存状态供最终化处理。
 
-Map retryable errors to `retry_wait` with delays 30s, 120s, 600s up to `max_attempts`; map terminal errors to `failed` with safe error code/message. Every exit releases/expires the lease and invokes the finalization check.
+将可重试错误映射为 `retry_wait`，延迟依次为 30s、120s、600s，最多达到 `max_attempts`；将终止错误映射为 `failed`，并记录安全的错误代码/消息。每个退出路径都会释放/使租约过期，并调用最终化检查。
 
-- [ ] **Step 4: Run document execution tests**
+- [ ] **步骤 4：运行文档执行测试**
 
-Run: `python -m pytest tests/unit/tasks/test_document_execution.py tests/unit/indexing/test_document_engine.py -v`
+运行: `python -m pytest tests/unit/tasks/test_document_execution.py tests/unit/indexing/test_document_engine.py -v`
 
-Expected: PASS for dimension race, progress, retry delays, cancellation, success activation and terminal failure.
+预期：维度竞争、进度、重试延迟、取消、成功激活和终止失败测试均通过。
 
-- [ ] **Step 5: Commit document execution**
+- [ ] **步骤 5：提交文档执行逻辑**
 
 ```bash
 git add rag_modules/indexing/target_coordinator.py rag_modules/indexing/progress.py rag_modules/tasks/indexing_tasks.py tests/unit/tasks/test_document_execution.py
 git commit -m "feat: execute durable document indexing tasks"
 ```
 
-### Task 5: Finalization and Safe Index Version Switching
+### 任务 5：最终化与安全索引版本切换
 
-**Interfaces:**
-- Produces: `finalize_indexing_job(job_id)` exactly once per terminal set.
-- Full builds switch `building -> active` only when all job documents completed.
-- Add/reindex document jobs summarize independent outcomes.
+**接口：**
+- 产出: `finalize_indexing_job(job_id)` exactly once per terminal set.
+- 全量构建只有在所有 job document 均完成后，才将索引从 `building` 切换为 `active`。
+- 新增/重建文档任务分别汇总各文档的独立结果。
 
-- [ ] **Step 1: Write failing version-switch tests**
+- [ ] **步骤 1：编写失败的版本切换测试**
 
 ```python
 # tests/integration/test_index_version_switch.py
@@ -342,39 +342,39 @@ async def test_successful_full_rebuild_switches_once(db):
     assert await count_active_indexes(db, new.dataset_id) == 1
 ```
 
-- [ ] **Step 2: Run and observe missing finalizer**
+- [ ] **步骤 2：运行并观察最终化器缺失**
 
-Run: `RUN_INTEGRATION=1 python -m pytest tests/integration/test_index_version_switch.py -v`
+运行: `RUN_INTEGRATION=1 python -m pytest tests/integration/test_index_version_switch.py -v`
 
-Expected: FAIL on missing finalization implementation.
+预期：因缺少最终化实现而失败。
 
-- [ ] **Step 3: Implement row-locked finalization**
+- [ ] **步骤 3：实现行锁定最终化**
 
-Lock the job and all job-document statuses. Return while any document is non-terminal. For initial/reindex dataset, any failed/cancelled document marks new index failed and job failed/partial without touching old active. When all completed, validate expected segment/vector counts, retire old active, activate new, activate staging segments and complete job in one PostgreSQL transaction. Catch the partial unique active-index constraint as an idempotent re-read, never by dropping the constraint.
+锁定任务及所有 job-document 状态。只要仍有文档处于非终态就返回。对于初始/重索引 Dataset，任何失败/取消文档都会将新索引标记为 failed，并将任务标记为 failed/partial，同时不触碰旧活动索引。全部完成后，在一个 PostgreSQL 事务中校验预期分段/vector 计数，退役旧活动索引、激活新索引、激活暂存分段并完成任务。将部分唯一活动索引约束冲突作为幂等重读处理，绝不要删除约束。
 
-For add/reindex document jobs, derive `completed`, `partial_success`, `failed` or `cancelled` from document rows and do not change dataset index version.
+对于 add/reindex document 任务，根据文档行推导 `completed`、`partial_success`、`failed` 或 `cancelled`，不要改变 Dataset 索引版本。
 
-- [ ] **Step 4: Run version tests**
+- [ ] **步骤 4：运行版本测试**
 
-Run: `RUN_INTEGRATION=1 python -m pytest tests/integration/test_index_version_switch.py -v`
+运行: `RUN_INTEGRATION=1 python -m pytest tests/integration/test_index_version_switch.py -v`
 
-Expected: PASS under concurrent finalize calls and failed/successful rebuilds.
+预期：并发最终化调用以及失败/成功重建测试均通过。
 
-- [ ] **Step 5: Commit finalization**
+- [ ] **步骤 5：提交最终化逻辑**
 
 ```bash
 git add rag_modules/tasks/indexing_tasks.py rag_modules/repositories/indexing_repository.py tests/integration/test_index_version_switch.py
 git commit -m "feat: switch complete index versions atomically"
 ```
 
-### Task 6: Retry, Cancel, Recovery, and Beat
+### 任务 6：重试、取消、恢复与 Beat
 
-**Interfaces:**
-- Produces retry/cancel service methods and routes.
-- Produces Beat tasks `dispatch_pending_jobs()` and `recover_stale_jobs()`.
-- Retry creates a new job with `retry_of_job_id` and only failed documents by default.
+**接口：**
+- 提供重试/取消服务方法和路由。
+- 提供 Beat 任务 `dispatch_pending_jobs()` 和 `recover_stale_jobs()`。
+- 重试默认使用 `retry_of_job_id` 创建新任务，并仅包含失败文档。
 
-- [ ] **Step 1: Write failing recovery tests**
+- [ ] **步骤 1：编写失败的恢复测试**
 
 ```python
 # tests/unit/tasks/test_recovery_tasks.py
@@ -405,38 +405,38 @@ async def test_retry_failed_full_build_reuses_target_and_successful_staging(serv
     assert [item.document_id for item in repo.job_documents_for(retry.id)] == ["doc-2"]
 ```
 
-- [ ] **Step 2: Run and observe failures**
+- [ ] **步骤 2：运行并观察失败结果**
 
-Run: `python -m pytest tests/unit/tasks/test_recovery_tasks.py tests/api/test_indexing_job_api.py -v`
+运行: `python -m pytest tests/unit/tasks/test_recovery_tasks.py tests/api/test_indexing_job_api.py -v`
 
-Expected: FAIL for missing recovery/cancel/retry behavior.
+预期：因缺少恢复/取消/重试行为而失败。
 
-- [ ] **Step 3: Implement Beat schedules and cooperative control**
+- [ ] **步骤 3：实现 Beat 调度和协作式控制**
 
-Schedule pending dispatch every 30 seconds and stale recovery every 60 seconds. Select bounded batches with `FOR UPDATE SKIP LOCKED`. Pending dispatch does not mark queued until publish succeeds or dispatcher claims. Recovery checks attempts and either schedules retry or marks terminal failed. Cancel pending/queued immediately; running sets `cancel_requested_at`, and reporters check it between all approved boundaries.
+每 30 秒调度 pending 分发，每 60 秒执行过期恢复。使用 `FOR UPDATE SKIP LOCKED` 选择有界批次。Pending 分发只有在发布成功或被 dispatcher 领取后才标记 queued。恢复逻辑检查尝试次数，然后安排重试或标记终止失败。pending/queued 立即取消；running 设置 `cancel_requested_at`，reporter 在所有批准的边界之间检查它。
 
-Retry copies the immutable snapshot into a new job and sets `retry_of_job_id`. For failed `initial_index`/`reindex_dataset`, the retry reuses the original `target_index_id`, changes that failed target back to `building`, and includes only failed documents; finalization validates complete target coverage using successful staging segments from the original job plus the retry job before activation. For add/reindex-document jobs, retry targets the current active index and includes only failed documents.
+重试时将不可变快照复制到新任务，并设置 `retry_of_job_id`。对于失败的 `initial_index`/`reindex_dataset`，重试复用原 `target_index_id`，将失败目标恢复为 `building`，且只包含失败文档；激活前，finalization 使用原任务和重试任务中的成功 staging 分段验证目标索引覆盖完整。对于新增/重建文档任务，重试以当前活动索引为目标，且只包含失败文档。
 
-- [ ] **Step 4: Run recovery/API tests**
+- [ ] **步骤 4：运行恢复/API 测试**
 
-Run: `python -m pytest tests/unit/tasks/test_recovery_tasks.py tests/api/test_indexing_job_api.py -v`
+运行: `python -m pytest tests/unit/tasks/test_recovery_tasks.py tests/api/test_indexing_job_api.py -v`
 
-Expected: PASS for pending republish, lease expiry, max attempts, cancellation and failed-only retry.
+预期：pending 重新发布、租约过期、最大尝试次数、取消和仅失败文档重试测试均通过。
 
-- [ ] **Step 5: Commit recovery controls**
+- [ ] **步骤 5：提交恢复控制**
 
 ```bash
 git add rag_modules/tasks/maintenance_tasks.py rag_modules/tasks/celery_app.py rag_modules/services/indexing_job_service.py rag_modules/api/indexing_job_api.py tests/unit/tasks/test_recovery_tasks.py tests/api/test_indexing_job_api.py
 git commit -m "feat: recover cancel and retry indexing jobs"
 ```
 
-### Task 7: Document and Dataset Cleanup
+### 任务 7：文档与 Dataset 清理
 
-**Interfaces:**
-- Produces: `cleanup_document_vectors(document_id)` and `cleanup_dataset_resources(dataset_id)` on maintenance queue.
-- Delete endpoints return immediately after soft-delete and publish.
+**接口：**
+- 在 maintenance queue 上提供 `cleanup_document_vectors(document_id)` 和 `cleanup_dataset_resources(dataset_id)`。
+- Delete endpoint 在软删除并发布任务后立即返回。
 
-- [ ] **Step 1: Write failing cleanup tests**
+- [ ] **步骤 1：编写失败的清理测试**
 
 ```python
 # tests/unit/tasks/test_cleanup_tasks.py
@@ -453,38 +453,38 @@ def test_dataset_cleanup_drops_all_index_collections_and_objects(cleanup, deps):
     assert set(deps.object_storage.removed) == set(deps.dataset_object_keys)
 ```
 
-- [ ] **Step 2: Run and verify cleanup tasks missing**
+- [ ] **步骤 2：运行并验证清理任务缺失**
 
-Run: `python -m pytest tests/unit/tasks/test_cleanup_tasks.py -v`
+运行: `python -m pytest tests/unit/tasks/test_cleanup_tasks.py -v`
 
-Expected: FAIL on missing tasks.
+预期：因缺少任务而失败。
 
-- [ ] **Step 3: Implement soft-delete and inferable cleanup state**
+- [ ] **步骤 3：实现软删除与可推断的清理状态**
 
-Dataset/document delete transaction sets `deleted_at`, soft-deletes active segments and sets cancellation flags. After commit, publish maintenance task. Cleanup reads all index versions, not only active. On successful document object removal, assign a new JSON value with `data_source_info.cleanup_status="purged"` and remove the object key value while retaining name/hash audit fields. Dataset index rows transition `deleting -> deleted_at`. Missing object/vector/collection is success; transient errors retry.
+Dataset/document 删除事务设置 `deleted_at`、软删除活动分段并设置取消标志。提交后发布 maintenance task。清理时读取所有索引版本，而不只是活动版本。成功删除文档对象后，赋予 `data_source_info.cleanup_status="purged"` 一个新的 JSON 值，并移除 object key 值，同时保留名称/哈希审计字段。Dataset index 行状态从 `deleting` 转为 `deleted_at`。对象/vector/collection 缺失视为成功；暂时性错误则重试。
 
-Beat also scans deleted rows whose cleanup status is not purged, covering publish failures. A separate retention scan marks retired collections eligible only after the configured 24-hour default window, then drops them idempotently; explicit dataset deletion may bypass the rollback window and clean immediately.
+Beat 还会扫描清理状态尚未 purged 的已删除行，以覆盖发布失败。独立的保留期扫描只在默认配置的 24 小时窗口结束后将退役 collection 标记为可清理，随后幂等地删除；显式 Dataset 删除可跳过回滚窗口并立即清理。
 
-- [ ] **Step 4: Run cleanup and delete API tests**
+- [ ] **步骤 4：运行清理和删除 API 测试**
 
-Run: `python -m pytest tests/unit/tasks/test_cleanup_tasks.py tests/api/test_document_api.py tests/api/test_dataset_api.py -v`
+运行: `python -m pytest tests/unit/tasks/test_cleanup_tasks.py tests/api/test_document_api.py tests/api/test_dataset_api.py -v`
 
-Expected: PASS for repeat cleanup, missing resources, active tasks, all index versions and publisher failure recovery.
+预期：重复清理、资源缺失、活动任务、所有索引版本和发布器失败恢复测试均通过。
 
-- [ ] **Step 5: Commit cleanup semantics**
+- [ ] **步骤 5：提交清理语义**
 
 ```bash
 git add rag_modules/tasks/maintenance_tasks.py rag_modules/services/document_service.py rag_modules/services/knowledge_base_service.py rag_modules/api/file_api.py rag_modules/api/knowledge_base_api.py tests/unit/tasks/test_cleanup_tasks.py tests/api/test_document_api.py tests/api/test_dataset_api.py
 git commit -m "feat: clean deleted dataset resources asynchronously"
 ```
 
-### Task 8: RabbitMQ/Celery Integration and Compose App Profile
+### 任务 8：RabbitMQ/Celery 集成与 Compose 应用 Profile
 
-**Interfaces:**
-- Verifies durable publish, Worker execution and redelivery using real RabbitMQ/PostgreSQL.
-- Compose profile produces `api`, `celery-worker`, `celery-beat` with shared service configuration, not shared files.
+**接口：**
+- 使用真实 RabbitMQ/PostgreSQL 验证持久化发布、Worker 执行和消息重投。
+- Compose profile 提供 `api`、`celery-worker`、`celery-beat`，共享服务配置而不是共享文件。
 
-- [ ] **Step 1: Write integration smoke and redelivery tests**
+- [ ] **步骤 1：编写集成冒烟和消息重投测试**
 
 ```python
 # tests/integration/test_celery_rabbitmq.py
@@ -505,15 +505,15 @@ def test_duplicate_message_does_not_duplicate_segments(real_job_factory, wait_fo
     assert count_distinct_segment_ids(job.id) == count_segments(job.id)
 ```
 
-- [ ] **Step 2: Run with profile down and verify explicit failure/skip**
+- [ ] **步骤 2：关闭 profile 运行，并验证明确的失败/跳过结果**
 
-Run: `RUN_INTEGRATION=1 python -m pytest tests/integration/test_celery_rabbitmq.py -v`
+运行: `RUN_INTEGRATION=1 python -m pytest tests/integration/test_celery_rabbitmq.py -v`
 
-Expected: FAIL clearly when RabbitMQ/Worker is unavailable; no false PASS.
+预期：RabbitMQ/Worker 不可用时明确失败；不得错误地报告通过。
 
-- [ ] **Step 3: Add API/Worker/Beat Compose services**
+- [ ] **步骤 3：添加 API/Worker/Beat Compose 服务**
 
-Use the same application image and environment, `depends_on` health conditions for PostgreSQL/MinIO/RabbitMQ/Milvus, and commands:
+使用相同的应用镜像和环境，设置 PostgreSQL/MinIO/RabbitMQ/Milvus 的 `depends_on` 健康条件，并使用以下命令：
 
 ```yaml
 command: celery -A rag_modules.tasks.celery_app:celery_app worker -Q indexing,maintenance --loglevel=INFO
@@ -525,29 +525,29 @@ and:
 command: celery -A rag_modules.tasks.celery_app:celery_app beat --loglevel=INFO
 ```
 
-Do not mount `data/uploads`. Add a persistent RabbitMQ volume and application credentials via environment interpolation rather than new hard-coded production secrets.
+不要挂载 `data/uploads`。添加持久化 RabbitMQ volume，并通过环境变量插值提供应用凭据，避免新增硬编码生产密钥。
 
-- [ ] **Step 4: Run real integration**
+- [ ] **步骤 4：运行真实集成测试**
 
-Run:
+运行:
 
 ```bash
 docker compose --profile app up -d --build postgres minio etcd standalone rabbitmq api celery-worker celery-beat
 RUN_INTEGRATION=1 python -m pytest tests/integration/test_celery_rabbitmq.py tests/integration/test_index_version_switch.py -v
 ```
 
-Expected: PASS for normal and duplicate delivery; RabbitMQ queue is durable and PostgreSQL reaches terminal state.
+预期：正常投递和重复投递测试均通过；RabbitMQ 队列持久化，PostgreSQL 状态达到终态。
 
-- [ ] **Step 5: Commit orchestration integration**
+- [ ] **步骤 5：提交编排集成**
 
 ```bash
 git add docker-compose.yml tests/integration/test_celery_rabbitmq.py tests/conftest.py
 git commit -m "test: verify rabbitmq celery indexing flow"
 ```
 
-## Phase Verification
+## 阶段验证
 
-Run:
+运行:
 
 ```bash
 python -m pytest tests/unit/tasks tests/unit/services/test_indexing_job_service.py tests/api/test_indexing_job_api.py -v
@@ -556,4 +556,4 @@ docker compose config
 git diff --check
 ```
 
-Expected: PostgreSQL tracks every state transition, RabbitMQ duplicate delivery is harmless, pending/expired tasks recover, and failed full rebuilds keep the old active index.
+预期：PostgreSQL 跟踪每次状态转换，RabbitMQ 重复投递无害，pending/过期任务能够恢复，且全量重建失败时保留旧活动索引。

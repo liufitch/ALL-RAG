@@ -320,10 +320,12 @@ class RecordingProgress:
         self.cancel_after_stage = cancel_after_stage
         self.cancel_after_batch = cancel_after_batch
         self.updates: list[tuple[str, int, int]] = []
+        self.totals: list[int | None] = []
         self.checks = 0
 
-    async def update(self, stage, progress, processed_segments):
+    async def update(self, stage, progress, processed_segments, total_segments=None):
         self.updates.append((stage, progress, processed_segments))
+        self.totals.append(total_segments)
 
     async def check_cancelled(self):
         self.checks += 1
@@ -1189,6 +1191,19 @@ async def test_progress_is_safe_deterministic_monotonic_and_follows_exact_stage_
     )
     assert "secret" not in repr(progress.updates)
     assert "secret" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_long_vector_index_progress_tracks_completed_segments_not_fixed_stage_weight():
+    engine, _ = make_engine(blocks=source_blocks(20))
+    progress = RecordingProgress()
+
+    await engine.run(high_quality_command(batch_size=2), progress)
+
+    vector_updates = [item for item in progress.updates if item[0] == "vector-upsert"]
+    assert vector_updates[0] == ("vector-upsert", 22, 2)
+    assert vector_updates[-1] == ("vector-upsert", 90, 20)
+    assert progress.totals[-1] == 20
 
 
 @pytest.mark.asyncio

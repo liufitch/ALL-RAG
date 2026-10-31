@@ -33,8 +33,8 @@
 
 1. PostgreSQL 保存连接器游标、源文档状态、变更事件、revision、任务和当前生效版本，是唯一业务事实来源。
 2. 监听负责低延迟，增量轮询和完整对账负责最终一致性；RabbitMQ 不能让低频轮询变成秒级发现。
-3. 更新采用 create-before-destroy：新 revision 完整构建并校验后再切换，随后异步删除旧向量。
-4. 删除采用 hide-before-delete：先撤销 PostgreSQL 可见性，再异步清理 Milvus 和 MinIO。
+3. 更新采用“先创建后销毁”（create-before-destroy）：新 revision 完整构建并校验后再切换，随后异步删除旧向量。
+4. 删除采用“先隐藏后删除”（hide-before-delete）：先撤销 PostgreSQL 可见性，再异步清理 Milvus 和 MinIO。
 5. 接受 Webhook、轮询、RabbitMQ 和 Celery 的重复投递，通过唯一键、条件更新、稳定 ID、Milvus upsert 和幂等清理得到正确最终结果。
 
 ## 3. 总体架构
@@ -85,11 +85,11 @@ connector_id + source_document_key
 
 | 数据源 | 推荐标识 |
 |---|---|
-| MinIO、S3、OSS | provider object ID；无稳定 ID 时使用规范化 object key |
+| MinIO、S3、OSS | 提供方对象 ID；无稳定 ID 时使用规范化 object key |
 | 数据库 | schema + table + primary key |
-| 网页 | canonical URL 或 CMS page ID |
+| 网页 | 规范 URL 或 CMS page ID |
 | Git | repository ID + path；有 rename 事件时保留映射 |
-| Notion、Confluence | provider page/content ID |
+| Notion、Confluence | 提供方页面/内容 ID |
 | 本地上传 | Graph-RAG `document_id` |
 
 稳定源 ID 未变化而展示名称变化时只更新元数据，不重新生成向量。
@@ -193,9 +193,9 @@ error, created_by, created_at, activated_at, retired_at, deleted_at
 
 `documents` 增加 `active_revision_id`、`desired_revision_id`；`document_segments` 增加 `document_revision_id`、`dataset_index_id`、`content_hash` 和 `source_locator`。
 
-### 6.5 Transactional Outbox
+### 6.5 事务式 Outbox
 
-Connector 在同一个 PostgreSQL 事务中写入 `source_events` 和 outbox。Dispatcher 投递 RabbitMQ 后标记 published，定时任务补发超时 pending outbox。这样消除数据库已提交但消息未发出的双写空窗；重复投递由消费端幂等处理。
+Connector 在同一个 PostgreSQL 事务中写入 `source_events` 和 outbox。Dispatcher 投递 RabbitMQ 后标记为 published，定时任务补发超时的 pending outbox。这样消除数据库已提交但消息未发出的双写空窗；重复投递由消费端幂等处理。
 
 ## 7. 标准事件与变更发现
 
@@ -216,11 +216,11 @@ Connector 在同一个 PostgreSQL 事务中写入 `source_events` 和 outbox。D
 
 消息只携带引用和小型元数据，不携带文件正文、大段文本、凭据或向量。
 
-支持时优先使用 Webhook、数据库 CDC、MinIO/S3 notification、Git webhook 或第三方事件订阅。监听入口完成签名、重放窗口、大小和幂等校验后立即返回，正文同步必须异步执行。
+支持时优先使用 Webhook、数据库 CDC、MinIO/S3 通知、Git webhook 或第三方事件订阅。监听入口完成签名、重放窗口、大小和幂等校验后立即返回，正文同步必须异步执行。
 
-增量轮询使用 provider cursor、change token 或稳定分页游标；只有批次全部落库后推进游标。同一 connector 通过 PostgreSQL lease 防止轮询重叠。
+增量轮询使用提供方 cursor、change token 或稳定分页游标；只有批次全部落库后推进游标。同一 connector 通过 PostgreSQL lease 防止轮询重叠。
 
-周期性完整对账比较 provider 权威快照和 `source_documents`，补发漏掉的 UPSERT/DELETE，不绕过统一事件管道。
+周期性完整对账比较提供方权威快照和 `source_documents`，补发漏掉的 UPSERT/DELETE，不绕过统一事件管道。
 
 普通轮询的一次缺失不能直接判定删除。只有权威 DELETE 事件，或者成功、完整的权威快照连续缺失/超过宽限期，才能确认删除：
 
@@ -236,7 +236,7 @@ Connector 在同一个 PostgreSQL 事务中写入 `source_events` 和 outbox。D
 新增流程：
 
 ```text
-claim event
+认领 event
   → 获取元数据与不可变内容快照
   → 计算 source_content_hash
   → 创建 documents/source_documents/document_revision

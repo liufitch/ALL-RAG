@@ -1,16 +1,16 @@
-# Dataset Indexing Foundation and Schema Implementation Plan
+# Dataset 索引基础与 Schema 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向智能体工作者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项执行本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** 建立完整索引所需的依赖、嵌套配置、Alembic 数据模型、空知识库 API 以及 RabbitMQ/Celery 基础运行环境。
+**目标：** 建立完整索引所需的依赖、嵌套配置、Alembic 数据模型、空知识库 API 以及 RabbitMQ/Celery 基础运行环境。
 
-**Architecture:** 保留现有 SQLAlchemy async session 和 `datasets`、`documents`、`document_segments` 表，使用 Alembic 增量增加任务与索引版本。配置仍由 Pydantic Settings 统一装载，所有敏感值只存在服务端。
+**架构：** 保留现有 SQLAlchemy async session 和 `datasets`、`documents`、`document_segments` 表，使用 Alembic 增量增加任务与索引版本。配置仍由 Pydantic Settings 统一装载，所有敏感值只存在服务端。
 
-**Tech Stack:** Python 3.11、FastAPI、Pydantic Settings、SQLAlchemy 2、Alembic、PostgreSQL、Celery 5、RabbitMQ 4、pytest。
+**技术栈：** Python 3.11、FastAPI、Pydantic Settings、SQLAlchemy 2、Alembic、PostgreSQL、Celery 5、RabbitMQ 4、pytest。
 
-**Spec:** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
+**规格：** `docs/superpowers/specs/2026-08-31-dify-style-dataset-indexing-design.md`
 
-## Global Constraints
+## 全局约束
 
 - 不创建 `knowledge_bases` 表；知识库 ORM 固定使用 `datasets`。
 - 迁移不得删除或重建现有三张业务表。
@@ -18,46 +18,46 @@
 - RabbitMQ 是唯一 Celery broker；不配置 Redis。
 - 模型密钥、对象存储密钥和 broker 密码不得出现在选项 API。
 - 空知识库创建不得连接 Milvus、MinIO、RabbitMQ 或 Embedding 服务。
-- 精确暂存本计划文件，避免提交当前工作区的既有无关改动。
+- 仅暂存本计划所列文件，避免提交当前工作区已有的无关改动。
 
 ---
 
-## File Structure
+## 文件结构
 
-- Modify: `pyproject.toml` — 后端运行和测试依赖。
-- Create: `.gitignore` — 在任何依赖安装前排除 secret、cache、node_modules、dist、runtime data 和 Compose volumes。
-- Create: `tests/conftest.py` — FastAPI client、依赖覆盖和 integration marker 基础 fixture。
-- Modify: `rag_modules/config/settings.py` — Embedding、MinIO、上传、预览、Celery 配置模型。
-- Modify: `rag_modules/config/config_dev.yaml` — 非敏感开发默认值。
-- Create: `alembic.ini` — Alembic CLI 配置。
-- Create: `migrations/env.py` — async SQLAlchemy 迁移环境。
-- Create: `migrations/script.py.mako` — 迁移模板。
-- Create: `migrations/versions/20260831_01_indexing_schema.py` — 增量 schema。
-- Modify: `rag_modules/db/models.py` — `DatasetIndexRecord`、`IndexingJobRecord`、`IndexingJobDocumentRecord` 和 segment 扩展字段。
-- Create: `rag_modules/api/dto/indexing_options.py` — 前端公开选项 DTO。
-- Create: `rag_modules/api/indexing_options_api.py` — `GET /api/indexing/options`。
-- Modify: `rag_modules/api/dto/knowledge_base/knowledgeBaseCreate.py` — 空知识库创建请求。
-- Modify: `rag_modules/api/dto/knowledge_base/knowledgeBase.py` — 不暴露 vector store 的知识库响应。
-- Modify: `rag_modules/services/knowledge_base_service.py` — 移除创建阶段的 Milvus provision。
-- Modify: `rag_modules/repositories/knowledge_base_repository.py` — 详情查询和过滤。
-- Modify: `rag_modules/api/knowledge_base_api.py` — 创建 201、详情、筛选参数。
-- Modify: `main.py` — 注册选项路由并移除运行中的旧 JSON 常量依赖。
-- Create: `rag_modules/tasks/celery_app.py` — RabbitMQ Celery app 和队列声明。
-- Modify: `docker-compose.yml` — RabbitMQ 服务与持久卷。
-- Test: `tests/unit/config/test_settings.py`。
-- Test: `tests/unit/db/test_indexing_models.py`。
-- Test: `tests/api/test_indexing_options.py`。
-- Test: `tests/api/test_dataset_api.py`。
-- Test: `tests/unit/tasks/test_celery_config.py`。
+- 修改：`pyproject.toml` — 后端运行和测试依赖。
+- 创建：`.gitignore` — 在任何依赖安装前排除 secret、cache、node_modules、dist、runtime data 和 Compose volumes。
+- 创建：`tests/conftest.py` — FastAPI client、依赖覆盖和 integration marker 基础 fixture。
+- 修改：`rag_modules/config/settings.py` — Embedding、MinIO、上传、预览、Celery 配置模型。
+- 修改：`rag_modules/config/config_dev.yaml` — 非敏感开发默认值。
+- 创建：`alembic.ini` — Alembic CLI 配置。
+- 创建：`migrations/env.py` — async SQLAlchemy 迁移环境。
+- 创建：`migrations/script.py.mako` — 迁移模板。
+- 创建：`migrations/versions/20260831_01_indexing_schema.py` — 增量 schema。
+- 修改：`rag_modules/db/models.py` — `DatasetIndexRecord`、`IndexingJobRecord`、`IndexingJobDocumentRecord` 和 segment 扩展字段。
+- 创建：`rag_modules/api/dto/indexing_options.py` — 前端公开选项 DTO。
+- 创建：`rag_modules/api/indexing_options_api.py` — `GET /api/indexing/options`。
+- 修改：`rag_modules/api/dto/knowledge_base/knowledgeBaseCreate.py` — 空知识库创建请求。
+- 修改：`rag_modules/api/dto/knowledge_base/knowledgeBase.py` — 不暴露 vector store 的知识库响应。
+- 修改：`rag_modules/services/knowledge_base_service.py` — 移除创建阶段的 Milvus provision。
+- 修改：`rag_modules/repositories/knowledge_base_repository.py` — 详情查询和过滤。
+- 修改：`rag_modules/api/knowledge_base_api.py` — 创建 201、详情、筛选参数。
+- 修改：`main.py` — 注册选项路由并移除运行中的旧 JSON 常量依赖。
+- 创建：`rag_modules/tasks/celery_app.py` — RabbitMQ Celery app 和队列声明。
+- 修改：`docker-compose.yml` — RabbitMQ 服务与持久卷。
+- 测试：`tests/unit/config/test_settings.py`。
+- 测试：`tests/unit/db/test_indexing_models.py`。
+- 测试：`tests/api/test_indexing_options.py`。
+- 测试：`tests/api/test_dataset_api.py`。
+- 测试：`tests/unit/tasks/test_celery_config.py`。
 
-### Task 1: Runtime Dependencies and Nested Settings
+### 任务 1：运行时依赖与嵌套设置
 
-**Interfaces:**
-- Produces: `settings.embedding`, `settings.object_storage`, `settings.broker`, `settings.upload`, `settings.parser`, `settings.preview`, `settings.indexing`。
-- Produces: `EmbeddingSettings.get_model(model_id: str) -> EmbeddingModelDefinition`。
-- Consumes: 当前 `SettingsConfigDict(env_nested_delimiter="__")`。
+**接口：**
+- 产出: `settings.embedding`, `settings.object_storage`, `settings.broker`, `settings.upload`, `settings.parser`, `settings.preview`, `settings.indexing`。
+- 产出: `EmbeddingSettings.get_model(model_id: str) -> EmbeddingModelDefinition`。
+- 依赖: 当前 `SettingsConfigDict(env_nested_delimiter="__")`。
 
-- [ ] **Step 1: Write failing settings tests**
+- [ ] **步骤 1：编写失败的设置测试**
 
 ```python
 # tests/unit/config/test_settings.py
@@ -88,15 +88,15 @@ def test_default_embedding_model_must_be_enabled(monkeypatch):
         Settings(_env_file=None)
 ```
 
-- [ ] **Step 2: Run tests and confirm missing configuration models**
+- [ ] **步骤 2：运行测试并确认配置模型缺失**
 
-Run: `python -m pytest tests/unit/config/test_settings.py -v`
+运行：`python -m pytest tests/unit/config/test_settings.py -v`
 
-Expected: FAIL because `Settings` has no `embedding` field or `EmbeddingSettings.get_model`.
+预期：失败，因为 `Settings` 没有 `embedding` 字段或 `EmbeddingSettings.get_model`。
 
-- [ ] **Step 3: Add dependencies and focused settings models**
+- [ ] **步骤 3：添加依赖与专用设置模型**
 
-Add runtime dependencies to `pyproject.toml`:
+将运行时依赖添加到 `pyproject.toml`：
 
 ```toml
 "alembic>=1.16,<2",
@@ -113,7 +113,7 @@ Add runtime dependencies to `pyproject.toml`:
 "jieba>=0.42,<1",
 ```
 
-Add test extras:
+添加测试额外依赖：
 
 ```toml
 [project.optional-dependencies]
@@ -124,7 +124,7 @@ test = [
 ]
 ```
 
-Implement these exact settings types in `rag_modules/config/settings.py`:
+在 `rag_modules/config/settings.py` 中实现以下确切的设置类型：
 
 ```python
 class EmbeddingModelDefinition(BaseModel):
@@ -161,31 +161,31 @@ class EmbeddingSettings(BaseModel):
         raise ValueError(f"unknown or disabled embedding model: {model_id}")
 ```
 
-Also add `ObjectStorageSettings`, `BrokerSettings`, `UploadSettings`, `ParserSettings`, `PreviewSettings`, and `IndexingSettings` with the exact defaults approved in the spec. Use `SecretStr` for credentials. Add them as top-level `Settings` fields so the nested names are `OBJECT_STORAGE__...`, `BROKER__...`, and so on.
+另外添加规格中批准的确切默认值对应的 `ObjectStorageSettings`、`BrokerSettings`、`UploadSettings`、`ParserSettings`、`PreviewSettings` 和 `IndexingSettings`。凭据使用 `SecretStr`。将它们添加为顶层 `Settings` 字段，使嵌套名称采用 `OBJECT_STORAGE__...`、`BROKER__...` 等形式。
 
-Before installing dependencies, create `.gitignore` with `.env`, `.idea/`, `__pycache__/`, `.pytest_cache/`, `frontend/node_modules/`, `frontend/dist/`, `data/`, and `volumes/`. Create `tests/conftest.py` with a `TestClient(app)` fixture that resets `app.dependency_overrides` after each test and registers `integration`/`e2e` markers; individual API tests override their service dependencies so unit API tests do not require a live PostgreSQL connection.
+安装依赖前，创建 `.gitignore`，排除 `.env`、`.idea/`、`__pycache__/`、`.pytest_cache/`、`frontend/node_modules/`、`frontend/dist/`、`data/` 和 `volumes/`。创建 `tests/conftest.py`，提供每次测试后重置 `app.dependency_overrides` 的 `TestClient(app)` fixture，并注册 `integration`/`e2e` 标记；单个 API 测试覆盖其服务依赖，使单元 API 测试不需要活动的 PostgreSQL 连接。
 
-- [ ] **Step 4: Run settings tests**
+- [ ] **步骤 4：运行设置测试**
 
-Run: `python -m pytest tests/unit/config/test_settings.py -v`
+运行: `python -m pytest tests/unit/config/test_settings.py -v`
 
-Expected: PASS; repr output does not reveal the secret.
+预期：通过；`repr` 输出不会泄露密钥。
 
-- [ ] **Step 5: Commit the settings boundary**
+- [ ] **步骤 5：提交设置边界**
 
 ```bash
 git add .gitignore pyproject.toml rag_modules/config/settings.py rag_modules/config/config_dev.yaml tests/conftest.py tests/unit/config/test_settings.py
 git commit -m "feat: add indexing service settings"
 ```
 
-### Task 2: Alembic Migration and ORM Records
+### 任务 2：Alembic 迁移与 ORM 记录
 
-**Interfaces:**
-- Produces: `DatasetIndexRecord`, `IndexingJobRecord`, `IndexingJobDocumentRecord`.
-- Produces: segment fields `dataset_index_id`, `indexing_job_id`, `source_metadata`, `content_hash`.
-- Consumes: `Base.metadata` and async database URI.
+**接口：**
+- 产出: `DatasetIndexRecord`, `IndexingJobRecord`, `IndexingJobDocumentRecord`.
+- 产出: segment fields `dataset_index_id`, `indexing_job_id`, `source_metadata`, `content_hash`.
+- 依赖: `Base.metadata` and async database URI.
 
-- [ ] **Step 1: Write failing ORM contract tests**
+- [ ] **步骤 1：编写失败的 ORM 契约测试**
 
 ```python
 # tests/unit/db/test_indexing_models.py
@@ -210,17 +210,17 @@ def test_job_document_identity_is_unique():
     assert "uq_indexing_job_document" in names
 ```
 
-- [ ] **Step 2: Run the ORM tests and observe import failure**
+- [ ] **步骤 2：运行 ORM 测试并观察导入失败**
 
-Run: `python -m pytest tests/unit/db/test_indexing_models.py -v`
+运行: `python -m pytest tests/unit/db/test_indexing_models.py -v`
 
-Expected: FAIL because the three records do not exist.
+预期：失败，因为三个记录尚不存在。
 
-- [ ] **Step 3: Add models and an incremental migration**
+- [ ] **步骤 3：添加模型与增量迁移**
 
-Implement the fields and status strings from spec sections 6 and 7. Add these document-worker fields to `IndexingJobDocumentRecord`: `available_at`, `heartbeat_at`, `lease_expires_at`, `worker_id`, `celery_task_id`, and `warnings`. Parallel Celery document tasks require their own lease and dispatch state rather than sharing the job-level lease. Use PostgreSQL JSONB variants for new JSON fields while retaining a generic JSON fallback for model-level compatibility.
+实现规格第 6、7 节中的字段和状态字符串。向 `IndexingJobDocumentRecord` 添加以下文档 Worker 字段：`available_at`、`heartbeat_at`、`lease_expires_at`、`worker_id`、`celery_task_id` 和 `warnings`。并行 Celery 文档任务需要独立的租约和分发状态，不能共享任务级租约。新 JSON 字段使用 PostgreSQL JSONB 变体，同时保留通用 JSON 回退以兼容模型层。
 
-Create an async Alembic environment with:
+使用以下内容创建异步 Alembic 环境：
 
 ```python
 # migrations/env.py
@@ -232,21 +232,21 @@ config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_uri)
 target_metadata = Base.metadata
 ```
 
-The migration must perform operations in this order to avoid the `indexing_jobs`/`dataset_indexes` circular reference:
+迁移必须按以下顺序执行操作，以避免 `indexing_jobs`/`dataset_indexes` 循环引用：
 
-1. Create `indexing_jobs` without the `target_index_id` foreign key.
-2. Create `dataset_indexes` with `created_by_job_id` foreign key.
-3. Add the named `fk_indexing_jobs_target_index` constraint.
-4. Create `indexing_job_documents`.
-5. Add four segment columns and named foreign keys.
-6. Add partial unique index `uq_dataset_indexes_one_active`.
-7. Add active segment and keyword GIN indexes.
+1. 创建不带 `target_index_id` 外键的 `indexing_jobs`。
+2. 创建带 `created_by_job_id` 外键的 `dataset_indexes`。
+3. 添加命名约束 `fk_indexing_jobs_target_index`。
+4. 创建 `indexing_job_documents`。
+5. 添加四个分段列和命名外键。
+6. 添加部分唯一索引 `uq_dataset_indexes_one_active`。
+7. 添加活动分段和关键词 GIN 索引。
 
-Downgrade must reverse only these additions; it must not drop existing business tables.
+降级只能撤销上述新增内容；不得删除现有业务表。
 
-- [ ] **Step 4: Verify ORM and migration both directions on PostgreSQL**
+- [ ] **步骤 4：在 PostgreSQL 上验证 ORM 与迁移的正反向流程**
 
-Run:
+运行:
 
 ```bash
 docker compose up -d postgres
@@ -256,23 +256,23 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-Expected: all commands exit 0; `datasets`, `documents`, and `document_segments` survive downgrade.
+预期：所有命令退出码为 0；降级后 `datasets`、`documents` 和 `document_segments` 仍然存在。
 
-- [ ] **Step 5: Commit schema foundation**
+- [ ] **步骤 5：提交 Schema 基础**
 
 ```bash
 git add alembic.ini migrations rag_modules/db/models.py rag_modules/db/__init__.py tests/unit/db/test_indexing_models.py
 git commit -m "feat: add persistent indexing schema"
 ```
 
-### Task 3: Public Indexing Options
+### 任务 3：公开索引选项
 
-**Interfaces:**
-- Produces: `GET /api/indexing/options`.
-- Consumes: `settings.embedding.models`, upload/parser/preview defaults.
-- Response never includes `base_url` or `api_key`.
+**接口：**
+- 产出: `GET /api/indexing/options`.
+- 依赖: `settings.embedding.models`, upload/parser/preview defaults.
+- 响应绝不包含 `base_url` 或 `api_key`。
 
-- [ ] **Step 1: Write the failing API security contract**
+- [ ] **步骤 1：编写失败的 API 安全契约**
 
 ```python
 # tests/api/test_indexing_options.py
@@ -289,15 +289,15 @@ def test_indexing_options_expose_enabled_models_without_secrets(client):
     assert "milvus" not in serialized
 ```
 
-- [ ] **Step 2: Run and verify 404**
+- [ ] **步骤 2：运行并验证 404**
 
-Run: `python -m pytest tests/api/test_indexing_options.py -v`
+运行: `python -m pytest tests/api/test_indexing_options.py -v`
 
-Expected: FAIL with HTTP 404.
+预期：以 HTTP 404 失败。
 
-- [ ] **Step 3: Implement DTO and route**
+- [ ] **步骤 3：实现 DTO 和路由**
 
-Create DTOs with public model shape:
+按公开模型形状创建 DTO：
 
 ```python
 class PublicEmbeddingModel(BaseModel):
@@ -316,29 +316,29 @@ class IndexingOptionsResponse(BaseModel):
     limits: PublicIndexingLimits
 ```
 
-Build the response only from whitelisted fields and register the router directly on `app` without an extra `/api/v1` prefix.
+响应只能由白名单字段构建，并将路由器直接注册到 `app`，不要额外添加 `/api/v1` 前缀。
 
-- [ ] **Step 4: Run API and OpenAPI tests**
+- [ ] **步骤 4：运行 API 和 OpenAPI 测试**
 
-Run: `python -m pytest tests/api/test_indexing_options.py tests/test_api_routes.py -v`
+运行: `python -m pytest tests/api/test_indexing_options.py tests/test_api_routes.py -v`
 
-Expected: PASS and `/api/indexing/options` appears once in OpenAPI.
+预期：通过，且 `/api/indexing/options` 在 OpenAPI 中只出现一次。
 
-- [ ] **Step 5: Commit options API**
+- [ ] **步骤 5：提交选项 API**
 
 ```bash
 git add rag_modules/api/dto/indexing_options.py rag_modules/api/indexing_options_api.py main.py tests/api/test_indexing_options.py
 git commit -m "feat: expose safe indexing options"
 ```
 
-### Task 4: Empty Dataset Creation and Detail API
+### 任务 4：空 Dataset 创建与详情 API
 
-**Interfaces:**
-- Produces: `KnowledgeBaseCreate(name, description, permission)`.
-- Produces: `POST /api/knowledge_base -> 201` and `GET /api/knowledge_base/{dataset_id}`.
-- Consumes: `KnowledgeBaseRepository`; must not consume `VectorStoreProvider`.
+**接口：**
+- 产出: `KnowledgeBaseCreate(name, description, permission)`.
+- 产出: `POST /api/knowledge_base -> 201` and `GET /api/knowledge_base/{dataset_id}`.
+- 依赖: `KnowledgeBaseRepository`; must not consume `VectorStoreProvider`.
 
-- [ ] **Step 1: Write failing service/API tests**
+- [ ] **步骤 1：编写失败的服务/API 测试**
 
 ```python
 # tests/api/test_dataset_api.py
@@ -368,15 +368,15 @@ async def test_create_service_never_provisions_milvus(repository, monkeypatch):
     assert created.indexing_status == "not_started"
 ```
 
-- [ ] **Step 2: Run and confirm old DTO/collection behavior fails**
+- [ ] **步骤 2：运行并确认旧 DTO/collection 行为失败**
 
-Run: `python -m pytest tests/api/test_dataset_api.py -v`
+运行: `python -m pytest tests/api/test_dataset_api.py -v`
 
-Expected: FAIL because the old request requires vector/retrieval fields or the service provisions Milvus.
+预期：失败，因为旧请求要求 vector/retrieval 字段，或服务会创建 Milvus 资源。
 
-- [ ] **Step 3: Implement the minimal empty-dataset contract**
+- [ ] **步骤 3：实现最小空 Dataset 契约**
 
-Replace the create DTO with:
+将创建 DTO 替换为：
 
 ```python
 class KnowledgeBaseCreate(BaseModel):
@@ -385,31 +385,31 @@ class KnowledgeBaseCreate(BaseModel):
     permission: Literal["only_me", "all_team_members"] = "only_me"
 ```
 
-Create `DatasetRecord` with `provider="vendor"`, `indexing_technique="high_quality"`, no embedding model, no retrieval configuration, and `partial_user_config={"process_rule": None}`. Remove `_normalize_vector_store`, default dimension maps, and every create-time provider call. Add repository `get_active(dataset_id)` and return 404 for a missing or soft-deleted dataset.
+创建 `DatasetRecord` 时设置 `provider="vendor"`、`indexing_technique="high_quality"`，不设置 embedding model 和检索配置，并将 `partial_user_config={"process_rule": None}`。删除 `_normalize_vector_store`、默认维度映射以及所有创建时的 provider 调用。增加 repository 方法 `get_active(dataset_id)`；数据集不存在或已软删除时返回 404。
 
-Keep list compatibility with `status`, `visibility`, `q`, `page`, and `page_size`; unknown filter values return 422 rather than being silently ignored.
+保持列表接口对 `status`、`visibility`、`q`、`page` 和 `page_size` 的兼容；未知过滤值应返回 422，不得静默忽略。
 
-- [ ] **Step 4: Run dataset regression tests**
+- [ ] **步骤 4：运行 Dataset 回归测试**
 
-Run: `python -m pytest tests/api/test_dataset_api.py tests/test_api_routes.py -v`
+运行: `python -m pytest tests/api/test_dataset_api.py tests/test_api_routes.py -v`
 
-Expected: PASS; no Milvus connection is attempted.
+预期：通过；不会尝试连接 Milvus。
 
-- [ ] **Step 5: Commit empty dataset behavior**
+- [ ] **步骤 5：提交空 Dataset 行为**
 
 ```bash
 git add rag_modules/api/dto/knowledge_base/knowledgeBaseCreate.py rag_modules/api/dto/knowledge_base/knowledgeBase.py rag_modules/api/knowledge_base_api.py rag_modules/services/knowledge_base_service.py rag_modules/repositories/knowledge_base_repository.py tests/api/test_dataset_api.py tests/test_api_routes.py
 git commit -m "feat: create empty datasets before documents"
 ```
 
-### Task 5: RabbitMQ and Celery Bootstrap
+### 任务 5：RabbitMQ 与 Celery 启动
 
-**Interfaces:**
-- Produces: `celery_app: Celery` with `indexing` and `maintenance` queues.
-- Consumes: `settings.broker.url`.
-- Compose produces healthy `rabbitmq` on 5672 and management UI on 15672.
+**接口：**
+- 产出: `celery_app: Celery`，包含 `indexing` 和 `maintenance` 队列。
+- 依赖: `settings.broker.url`.
+- Compose 应确保 `rabbitmq` 在 5672 端口健康运行，管理界面使用 15672 端口。
 
-- [ ] **Step 1: Write failing Celery configuration test**
+- [ ] **步骤 1：编写失败的 Celery 配置测试**
 
 ```python
 # tests/unit/tasks/test_celery_config.py
@@ -426,15 +426,15 @@ def test_celery_uses_rabbitmq_with_late_ack_and_no_result_backend():
     assert {queue.name for queue in celery_app.conf.task_queues} == {"indexing", "maintenance"}
 ```
 
-- [ ] **Step 2: Run and verify module import failure**
+- [ ] **步骤 2：运行并验证模块导入失败**
 
-Run: `python -m pytest tests/unit/tasks/test_celery_config.py -v`
+运行: `python -m pytest tests/unit/tasks/test_celery_config.py -v`
 
-Expected: FAIL because `rag_modules.tasks.celery_app` does not exist.
+预期：失败，因为 `rag_modules.tasks.celery_app` 不存在。
 
-- [ ] **Step 3: Add RabbitMQ Compose service and Celery app**
+- [ ] **步骤 3：添加 RabbitMQ Compose 服务与 Celery app**
 
-Create `celery_app` with `kombu.Queue` declarations and JSON-only serialization:
+使用 `kombu.Queue` 声明和仅 JSON 序列化创建 `celery_app`：
 
 ```python
 celery_app = Celery("graph_rag", broker=settings.broker.url)
@@ -451,7 +451,7 @@ celery_app.conf.update(
 )
 ```
 
-Use `rabbitmq:4-management`, an explicit application user/vhost, a named data volume, and the non-deprecated readiness command:
+使用 `rabbitmq:4-management`、明确的应用用户/vhost、命名数据卷以及未弃用的就绪检查命令：
 
 ```yaml
 healthcheck:
@@ -461,9 +461,9 @@ healthcheck:
   retries: 10
 ```
 
-- [ ] **Step 4: Verify configuration and broker readiness**
+- [ ] **步骤 4：验证配置与 broker 就绪状态**
 
-Run:
+运行:
 
 ```bash
 python -m pytest tests/unit/tasks/test_celery_config.py -v
@@ -472,18 +472,18 @@ docker compose up -d rabbitmq
 docker compose exec rabbitmq rabbitmq-diagnostics -q check_running
 ```
 
-Expected: all commands pass and Compose contains no Redis service.
+预期：所有命令通过，且 Compose 不包含 Redis 服务。
 
-- [ ] **Step 5: Commit broker foundation**
+- [ ] **步骤 5：提交 broker 基础**
 
 ```bash
 git add docker-compose.yml rag_modules/tasks/__init__.py rag_modules/tasks/celery_app.py tests/unit/tasks/test_celery_config.py
 git commit -m "feat: add rabbitmq celery foundation"
 ```
 
-## Phase Verification
+## 阶段验证
 
-Run:
+运行:
 
 ```bash
 python -m pytest tests/unit/config tests/unit/db tests/unit/tasks tests/api tests/test_api_routes.py -v
@@ -492,4 +492,4 @@ docker compose config
 git diff --check
 ```
 
-Expected: all tests pass, Alembic reports head, Compose has RabbitMQ and no Redis, and empty dataset creation performs no external service calls.
+预期：所有测试通过，Alembic 报告 head，Compose 含 RabbitMQ 且不含 Redis，并且空 Dataset 创建不会调用外部服务。

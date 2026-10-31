@@ -12,14 +12,16 @@ class GraphIndexer:
         self.store = store
         self.extractor = extractor
 
-    async def index(self, command, records) -> None:
+    async def index(self, command, records, progress) -> None:
         from .factory import get_graph_store
 
         try:
             if not self.extractor.model.strip():
                 raise ValueError("graph extraction model is not configured")
             store = self.store or await asyncio.to_thread(get_graph_store)
-            for record in records:
+            total = len(records)
+            for index, record in enumerate(records, start=1):
+                await progress.check_cancelled()
                 extraction = await self.extractor.extract(
                     record.content[:settings.graph.extraction_max_characters]
                 )
@@ -28,6 +30,13 @@ class GraphIndexer:
                     record.dataset_id, record.dataset_index_id, record.document_id,
                     record.id, extraction,
                 )
+                await progress.update(
+                    "graph-extract",
+                    90 + (8 * index // max(1, total)),
+                    index,
+                    total,
+                )
+                await progress.check_cancelled()
         finally:
             await self.extractor.aclose()
 

@@ -19,6 +19,7 @@ IndexingStage: TypeAlias = Literal[
     "stage",
     "embed-or-keywords",
     "vector-upsert",
+    "graph-extract",
     "validate",
 ]
 IndexingWarning: TypeAlias = tuple[Literal["parse", "split"], str]
@@ -150,7 +151,8 @@ class IndexSegmentRepository(Protocol):
 
 class ProgressReporter(Protocol):
     def update(
-        self, stage: IndexingStage, progress: int, processed_segments: int
+        self, stage: IndexingStage, progress: int, processed_segments: int,
+        total_segments: int | None = None,
     ) -> Awaitable[None] | None: ...
 
     def check_cancelled(self) -> Awaitable[None] | None: ...

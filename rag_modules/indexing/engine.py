@@ -120,7 +120,7 @@ class DocumentIndexingEngine:
                         filename=command.filename,
                     ),
                 )
-            await self._update(progress, "parse", 15, processed_segments)
+            await self._update(progress, "parse", 10, processed_segments)
             if not parsed.blocks:
                 raise DocumentIndexingError(
                     "NO_EXTRACTABLE_TEXT",
@@ -132,7 +132,7 @@ class DocumentIndexingEngine:
             segmented = await self._run_sync(
                 self._segmenter.segment, parsed, command.segmentation_config
             )
-            await self._update(progress, "split", 30, processed_segments)
+            await self._update(progress, "split", 12, processed_segments)
             segments = segmented.segments
             warnings = self._safe_warnings(parsed.warnings, "parse")
             warnings += self._safe_warnings(segmented.warnings, "split")
@@ -160,8 +160,9 @@ class DocumentIndexingEngine:
         records = await self._segment_repository.stage(
             command.staging, segments
         )
-        await self._update(progress, "stage", 45, processed_segments)
+        await self._update(progress, "stage", 15, processed_segments)
         indexable = self._validated_indexable_records(command.staging, records)
+        total_indexable = len(indexable)
 
         if command.staging.indexing_technique == "economy":
             processed_segments = await self._extract_and_persist_keywords(
@@ -169,7 +170,7 @@ class DocumentIndexingEngine:
             )
             await self._check_cancelled(progress)
             await self._update(
-                progress, "vector-upsert", 95, processed_segments
+                progress, "vector-upsert", 85, processed_segments, total_indexable
             )
             vector_count = 0
         else:
@@ -189,8 +190,8 @@ class DocumentIndexingEngine:
             )
         if self._graph_indexer is not None:
             await self._check_cancelled(progress)
-            await self._graph_indexer.index(command, indexable)
-        await self._update(progress, "validate", 100, processed_segments)
+            await self._graph_indexer.index(command, indexable, progress)
+        await self._update(progress, "validate", 100, processed_segments, total_indexable)
         return IndexDocumentResult(
             total_segments=len(records),
             total_indexable_segments=len(indexable),
@@ -207,7 +208,7 @@ class DocumentIndexingEngine:
         updates: dict[str, tuple[str, ...]] = {}
         batches = tuple(self._batches(records, self._effective_batch_size(command)))
         if not batches:
-            await self._update(progress, "embed-or-keywords", 70, 0)
+            await self._update(progress, "embed-or-keywords", 15, 0, len(records))
         for batch_index, batch in enumerate(batches, start=1):
             await self._check_cancelled(progress)
             extracted = await self._run_sync(
@@ -218,8 +219,9 @@ class DocumentIndexingEngine:
             await self._update(
                 progress,
                 "embed-or-keywords",
-                self._batch_progress(45, 70, batch_index, len(batches)),
+                self._batch_progress(15, 90, completed, len(records)),
                 completed,
+                len(records),
             )
             await self._check_cancelled(progress)
         if updates:
@@ -276,9 +278,9 @@ class DocumentIndexingEngine:
         completed_count = len(records) - len(waiting_records)
         if not waiting_records:
             await self._update(
-                progress, "embed-or-keywords", 70, completed_count
+                progress, "embed-or-keywords", 15, completed_count, len(records)
             )
-            await self._update(progress, "vector-upsert", 95, completed_count)
+            await self._update(progress, "vector-upsert", 85, completed_count, len(records))
             return completed_count, completed_count
 
         batch_size = self._effective_batch_size(command)
@@ -317,7 +319,7 @@ class DocumentIndexingEngine:
 
             if batch_index == 1:
                 await self._update(
-                    progress, "embed-or-keywords", 70, processed_segments
+                    progress, "embed-or-keywords", 15, processed_segments, len(records)
                 )
             await self._check_cancelled(progress)
 
@@ -360,8 +362,9 @@ class DocumentIndexingEngine:
             await self._update(
                 progress,
                 "vector-upsert",
-                self._batch_progress(70, 95, batch_index, total_batches),
+                self._batch_progress(15, 90, processed_segments, len(records)),
                 processed_segments,
+                len(records),
             )
         return vector_count, processed_segments
 
@@ -582,10 +585,11 @@ class DocumentIndexingEngine:
 
     @staticmethod
     async def _update(
-        progress: ProgressReporter, stage: str, percentage: int, processed: int
+        progress: ProgressReporter, stage: str, percentage: int, processed: int,
+        total: int | None = None,
     ) -> None:
         await DocumentIndexingEngine._maybe_await(
-            progress.update(stage, percentage, processed)
+            progress.update(stage, percentage, processed, total)
         )
 
     @staticmethod

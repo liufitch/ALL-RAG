@@ -1,107 +1,107 @@
-# Indexing Workflow and E2E Implementation Plan
+# 索引工作流与 E2E 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **面向代理工作者：** 必需子技能：使用 superpowers:executing-plans 按任务逐步实施本计划。
 
-**Goal:** Complete cancellable indexing job APIs, unify ingestion with durable indexing, add broker-outbox recovery, and verify the full PostgreSQL/MinIO/RabbitMQ/Celery/Milvus path.
+**目标：** 完成可取消的索引任务 API，将摄取与持久化索引统一，增加 broker-outbox 恢复机制，并验证完整的 PostgreSQL/MinIO/RabbitMQ/Celery/Milvus 链路。
 
-**Architecture:** PostgreSQL remains the source of truth for jobs and dispatch state. API requests create short-lived database transactions and publish only durable identifiers. Celery workers claim job documents with leases; a periodic dispatcher retries pending publications. Unified ingestion reuses existing upload validation, ProcessRule, indexing repository, and task runner components.
+**架构：** PostgreSQL 继续作为任务和投递状态的事实来源。API 请求创建短事务，只发布持久化标识符。Celery worker 通过租约领取任务文档；周期性 dispatcher 重试待发布消息。统一摄取复用现有上传校验、ProcessRule、索引 repository 和 task runner 组件。
 
-**Tech Stack:** FastAPI, SQLAlchemy async, Alembic, Celery/RabbitMQ, MinIO, Milvus, pytest, Docker Compose.
+**技术栈：** FastAPI、SQLAlchemy async、Alembic、Celery/RabbitMQ、MinIO、Milvus、pytest、Docker Compose。
 
-**Spec:** User-approved design in the preceding conversation.
+**设计：** 前序对话中经用户确认的设计。
 
-## Global Constraints
+## 全局约束
 
-- RabbitMQ messages contain identifiers only, never file bytes, credentials, or full document content.
-- PostgreSQL is authoritative for task state; Celery result backend remains disabled.
-- Every new behavior gets a failing test before production code.
-- Existing `/documents` and `/documents/upload` compatibility routes remain functional.
-- Errors exposed through APIs and persisted in jobs are safe and credential-free.
+- RabbitMQ 消息只包含标识符，不包含文件字节、凭据或完整文档内容。
+- PostgreSQL 是任务状态的权威来源；Celery result backend 保持禁用。
+- 每项新行为都先编写失败测试，再实现生产代码。
+- 现有 `/documents` 和 `/documents/upload` 兼容路由继续可用。
+- API 对外返回并持久化到任务中的错误信息必须安全且不含凭据。
 
-### Task 1: Fix cancellation state transition
+### 任务 1：修复取消状态转换
 
-**Files:**
-- Modify: `rag_modules/repositories/indexing_repository.py`
-- Test: `tests/unit/repositories/test_indexing_repository.py` (create if absent)
+**文件：**
+- 修改: `rag_modules/repositories/indexing_repository.py`
+- 测试: `tests/unit/repositories/test_indexing_repository.py` (create if absent)
 
-- [ ] Add a test that cancels a running job document with an attached revision and asserts no exception, `cancelled` states, and an empty revision error.
-- [ ] Run the focused test and verify it fails with the current undefined `error` reference.
-- [ ] Replace the undefined reference with deterministic cancellation handling.
-- [ ] Run the focused test and the repository test suite.
+- [ ] 添加测试：取消带有修订的运行中任务文档，断言不抛异常、状态为 `cancelled` 且修订错误为空。
+- [ ] 运行针对性测试，确认当前未定义的 `error` 引用会导致失败。
+- [ ] 用确定性的取消处理替换未定义引用。
+- [ ] 运行针对性测试和 repository 测试套件。
 
-### Task 2: Add durable job DTOs and repository operations
+### 任务 2：添加持久化任务 DTO 和 repository 操作
 
-**Files:**
-- Modify: `rag_modules/api/dto/` and `rag_modules/repositories/indexing_repository.py`
-- Test: `tests/unit/repositories/test_indexing_repository.py`
+**文件：**
+- 修改: `rag_modules/api/dto/` and `rag_modules/repositories/indexing_repository.py`
+- 测试: `tests/unit/repositories/test_indexing_repository.py`
 
-- [ ] Add response/request schemas for job summaries, job-document progress, retry, and cancel operations.
-- [ ] Add repository methods to list jobs by dataset, load a job with child rows, request cancellation, and make failed documents retryable.
-- [ ] Add tests for dataset scoping, retry eligibility, cancellation idempotency, and terminal job protection.
-- [ ] Run focused tests and then all unit tests.
+- [ ] 添加任务摘要、任务文档进度、重试和取消操作的请求/响应模式。
+- [ ] 添加按 dataset 列出任务、加载带子行任务、请求取消以及使失败文档可重试的 repository 方法。
+- [ ] 添加 dataset 隔离、重试资格、取消幂等性和终态任务保护测试。
+- [ ] 运行针对性测试，然后运行全部单元测试。
 
-### Task 3: Implement indexing job API routes
+### 任务 3：实现索引任务 API 路由
 
-**Files:**
-- Create: `rag_modules/api/indexing_jobs_api.py`
-- Modify: `main.py`
-- Test: `tests/api/test_indexing_jobs_api.py`
+**文件：**
+- 创建: `rag_modules/api/indexing_jobs_api.py`
+- 修改: `main.py`
+- 测试: `tests/api/test_indexing_jobs_api.py`
 
-- [ ] Write failing API tests for create/list/detail/retry/cancel, including 404 cross-dataset access and 409 terminal-state conflicts.
-- [ ] Implement `POST /api/knowledge_base/{dataset_id}/indexing/jobs` using the existing ProcessRule/index repository transaction path.
-- [ ] Implement paginated list and detailed progress responses.
-- [ ] Implement retry publication and cancellation request endpoints.
-- [ ] Register the router and run API tests plus the existing API regression suite.
+- [ ] 为创建/列表/详情/重试/取消编写失败的 API 测试，包括跨 dataset 访问 404 和终态冲突 409。
+- [ ] 使用现有 ProcessRule/index repository 事务路径实现 `POST /api/knowledge_base/{dataset_id}/indexing/jobs`。
+- [ ] 实现分页列表和详细进度响应。
+- [ ] 实现重试投递和取消请求接口。
+- [ ] 注册路由，运行 API 测试和现有 API 回归套件。
 
-### Task 4: Implement unified ingestion transaction
+### 任务 4：实现统一摄取事务
 
-**Files:**
-- Create or modify: `rag_modules/api/ingest_api.py`, `rag_modules/services/document_service.py`, `rag_modules/services/process_rule_service.py`, `rag_modules/repositories/process_rule_repository.py`
-- Modify: `rag_modules/db/models.py` only if transaction metadata is missing
-- Test: `tests/api/test_ingest_api.py`, `tests/unit/services/test_ingest_service.py`
+**文件：**
+- 创建或修改: `rag_modules/api/ingest_api.py`, `rag_modules/services/document_service.py`, `rag_modules/services/process_rule_service.py`, `rag_modules/repositories/process_rule_repository.py`
+- 修改: `rag_modules/db/models.py` only if transaction metadata is missing
+- 测试: `tests/api/test_ingest_api.py`, `tests/unit/services/test_ingest_service.py`
 
-- [ ] Write failing tests for accepted/rejected mixed batches, all-invalid batches, duplicate idempotent submission, object cleanup on DB failure, and pending dispatch on broker failure.
-- [ ] Implement one service boundary that validates all files and configuration before persistence.
-- [ ] Upload accepted files with pre-generated document IDs and retain exact object keys for compensation.
-- [ ] Create ProcessRule, DatasetIndex, IndexingJob, and IndexingJobDocument rows in one PostgreSQL transaction.
-- [ ] Publish only after commit; return accepted documents, rejected files, job ID, and dispatch status.
-- [ ] Preserve existing upload endpoints and move the frontend flow to the unified endpoint only after compatibility tests pass.
+- [ ] 为混合批次的接受/拒绝、全部无效批次、重复幂等提交、数据库失败时的对象清理和 broker 失败时的待投递编写失败测试。
+- [ ] 实现一个 service 边界，在持久化前校验所有文件和配置。
+- [ ] 使用预生成的文档 ID 上传接受的文件，并保留精确对象键用于补偿。
+- [ ] 在一个 PostgreSQL 事务中创建 ProcessRule、DatasetIndex、IndexingJob 和 IndexingJobDocument 行。
+- [ ] 仅在提交后发布；返回接受的文档、被拒文件、任务 ID 和投递状态。
+- [ ] 保留现有上传接口，兼容性测试通过后再将前端流程迁移到统一接口。
 
-### Task 5: Add dispatch outbox and pending recovery
+### 任务 5：添加投递 outbox 和待处理恢复
 
-**Files:**
-- Modify: `rag_modules/db/models.py`
-- Create: Alembic migration under `migrations/versions/`
-- Modify: `rag_modules/repositories/indexing_repository.py`, `rag_modules/tasks/publisher.py`, `rag_modules/tasks/maintenance_tasks.py`, `rag_modules/tasks/celery_app.py`
-- Test: `tests/unit/tasks/test_dispatch_recovery.py`, `tests/api/test_ingest_api.py`
+**文件：**
+- 修改: `rag_modules/db/models.py`
+- 创建: Alembic migration under `migrations/versions/`
+- 修改: `rag_modules/repositories/indexing_repository.py`, `rag_modules/tasks/publisher.py`, `rag_modules/tasks/maintenance_tasks.py`, `rag_modules/tasks/celery_app.py`
+- 测试: `tests/unit/tasks/test_dispatch_recovery.py`, `tests/api/test_ingest_api.py`
 
-- [ ] Add dispatch metadata to job-document rows or a dedicated outbox table: state, attempts, next attempt, last error code, and last attempt timestamp.
-- [ ] Write failing tests for broker failure, retry backoff, duplicate dispatcher runs, and successful transition to queued.
-- [ ] Implement transactional creation of dispatch records with job documents.
-- [ ] Implement a Celery Beat maintenance task that claims due pending records and publishes identifiers.
-- [ ] Make publication idempotent and ensure a duplicate message cannot duplicate segments.
-- [ ] Run migration tests and all task/API tests.
+- [ ] 在任务文档行或独立 outbox 表中添加投递元数据：状态、尝试次数、下次尝试时间、最近错误代码和最近尝试时间戳。
+- [ ] 为 broker 失败、重试退避、dispatcher 重复运行和成功转换为 queued 编写失败测试。
+- [ ] 实现与任务文档一起创建投递记录的事务。
+- [ ] 实现 Celery Beat 维护任务，领取到期的待处理记录并发布标识符。
+- [ ] 使发布幂等，确保重复消息不会产生重复分段。
+- [ ] 运行迁移测试和全部任务/API 测试。
 
-### Task 6: Add real infrastructure E2E harness
+### 任务 6：添加真实基础设施 E2E 测试框架
 
-**Files:**
-- Modify: `docker-compose.yml`
-- Create: `tests/e2e/conftest.py`, `tests/e2e/test_indexing_pipeline.py`, `tests/e2e/embedding_stub.py`
-- Modify: `.env.example`, `README.md`
+**文件：**
+- 修改: `docker-compose.yml`
+- 创建: `tests/e2e/conftest.py`, `tests/e2e/test_indexing_pipeline.py`, `tests/e2e/embedding_stub.py`
+- 修改: `.env.example`, `README.md`
 
-- [ ] Add health-gated services for PostgreSQL, MinIO, RabbitMQ, Milvus, embedding stub, worker, and beat.
-- [ ] Write a smoke test that creates a dataset, uploads a document, waits for completion, and verifies MinIO, PostgreSQL segments, active DatasetIndex, and Milvus count.
-- [ ] Add economy-index, cancellation, retry, duplicate-delivery, and broker-recovery scenarios.
-- [ ] Add worker-restart and old-active-index preservation scenarios where the compose environment supports them.
-- [ ] Run the E2E suite with Docker and document exact startup and teardown commands.
+- [ ] 为 PostgreSQL、MinIO、RabbitMQ、Milvus、embedding stub、worker 和 beat 添加健康检查门控服务。
+- [ ] 编写冒烟测试：创建 dataset、上传文档、等待完成，并验证 MinIO、PostgreSQL 分段、active DatasetIndex 和 Milvus 数量。
+- [ ] 添加经济索引、取消、重试、重复投递和 broker 恢复场景。
+- [ ] 在 compose 环境支持时添加 worker 重启和旧 active 索引保留场景。
+- [ ] 使用 Docker 运行 E2E 套件，并记录准确的启动和清理命令。
 
-### Task 7: Full verification and documentation
+### 任务 7：完整验证和文档
 
-**Files:**
-- Modify: `docs/pending-features.md`, `docs/architecture.md`, `README.md`
+**文件：**
+- 修改: `docs/pending-features.md`, `docs/architecture.md`, `README.md`
 
-- [ ] Run backend unit/API tests, migration tests, frontend build, and infrastructure E2E.
-- [ ] Fix regressions found by the complete suite.
-- [ ] Update feature status and operational instructions with only verified claims.
-- [ ] Record known limitations such as unavailable Docker daemon or optional Milvus mode.
+- [ ] 运行后端单元/API 测试、迁移测试、前端构建和基础设施 E2E。
+- [ ] 修复完整套件发现的回归。
+- [ ] 仅根据已验证事实更新功能状态和运维说明。
+- [ ] 记录 Docker daemon 不可用或可选 Milvus 模式等已知限制。
 

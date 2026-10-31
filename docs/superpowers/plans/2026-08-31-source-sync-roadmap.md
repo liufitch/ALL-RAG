@@ -1,16 +1,16 @@
-# Source Change Synchronization Implementation Roadmap
+# Source Change Synchronization 实施路线图
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向代理式执行者：** 必须使用子技能：建议使用 superpowers:subagent-driven-development 或 superpowers:executing-plans，按任务逐项实施本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** 在完整知识库索引能力之上，分四个可独立验收阶段交付不可变文档 revision、通用数据源连接器、可靠变更事件、轮询/对账、Webhook 监听和秒级任务启动。
+**目标：** 在完整知识库索引能力之上，分四个可独立验收阶段交付不可变文档 revision、通用数据源连接器、可靠变更事件、轮询/对账、Webhook 监听和秒级任务启动。
 
-**Architecture:** PostgreSQL 保存 source、event、revision、outbox 和任务事实；RabbitMQ/Celery 执行至少一次的异步处理；MinIO 保存不可变源快照；Milvus 保存高质量向量。更新先构建并校验新 revision，再切换 PostgreSQL 可见性并异步清理旧资源。
+**架构：** PostgreSQL 保存 source、event、revision、outbox 和任务事实；RabbitMQ/Celery 执行至少一次的异步处理；MinIO 保存不可变源快照；Milvus 保存高质量向量。更新先构建并校验新 revision，再切换 PostgreSQL 可见性并异步清理旧资源。
 
-**Tech Stack:** Python 3.11、FastAPI、Pydantic Settings、SQLAlchemy async、Alembic、PostgreSQL、Celery 5、RabbitMQ、MinIO、OpenAI-compatible Embedding、PyMilvus 2.5、pytest。
+**技术栈：** Python 3.11、FastAPI、Pydantic Settings、SQLAlchemy async、Alembic、PostgreSQL、Celery 5、RabbitMQ、MinIO、OpenAI-compatible Embedding、PyMilvus 2.5、pytest。
 
-**Spec:** `docs/superpowers/specs/2026-08-31-source-change-sync-design.md`
+**规格：** `docs/superpowers/specs/2026-08-31-source-change-sync-design.md`
 
-## Global Constraints
+## 全局约束
 
 - 必须先完成 `2026-08-31-dataset-indexing-roadmap.md` 的阶段 1–5；端到端阶段依赖其阶段 7。
 - PostgreSQL 是 connector cursor、source event、document revision、任务状态和检索可见性的事实来源。
@@ -27,16 +27,16 @@
 
 ---
 
-## Plan Set and Dependency Order
+## 计划集合与依赖顺序
 
 | 阶段 | 计划 | 独立交付物 | 依赖 |
 |---|---|---|---|
-| 8 | [Revision Safety](./2026-08-31-source-sync-08-revision-safety.md) | revision schema、三类 Hash、不可变 MinIO key、单文档先构建后切换、查询过滤 | 完整索引 1–5 |
-| 9 | [Connector Events and Outbox](./2026-08-31-source-sync-09-connectors-outbox.md) | connector/source/event/outbox schema、adapter 协议、管理 API、可靠 RabbitMQ 投递 | 8 |
-| 10 | [Polling and Reconciliation](./2026-08-31-source-sync-10-polling-reconciliation.md) | cursor 安全推进、轮询 lease、完整对账、删除确认和乱序合并 | 9 |
-| 11 | [Listening and End-to-End](./2026-08-31-source-sync-11-listening-e2e.md) | 签名 Webhook、秒级事件触发、监控、安全测试和真实基础设施验收 | 8–10、完整索引 7 |
+| 8 | [Revision 安全](./2026-08-31-source-sync-08-revision-safety.md) | revision schema、三类 Hash、不可变 MinIO key、单文档先构建后切换、查询过滤 | 完整索引 1–5 |
+| 9 | [Connector Event 与 Outbox](./2026-08-31-source-sync-09-connectors-outbox.md) | connector/source/event/outbox schema、adapter 协议、管理 API、可靠 RabbitMQ 投递 | 8 |
+| 10 | [轮询与对账](./2026-08-31-source-sync-10-polling-reconciliation.md) | cursor 安全推进、轮询 lease、完整对账、删除确认和乱序合并 | 9 |
+| 11 | [监听与端到端](./2026-08-31-source-sync-11-listening-e2e.md) | 签名 Webhook、秒级 event 触发、监控、安全测试和真实基础设施验收 | 8–10、完整索引 7 |
 
-## Delivery Gates
+## 交付门禁
 
 每阶段只有满足以下门禁才能进入下一阶段：
 
@@ -48,7 +48,7 @@
 6. 对外 API 变更后检查 `app.openapi()` 路径、状态码和脱敏响应。
 7. 阶段 11 必须在真实 Compose 基础设施上运行 E2E 和故障恢复矩阵。
 
-## Verification Commands
+## 验证命令
 
 快速回归：
 
@@ -78,27 +78,27 @@ git diff --check
 git status --short
 ```
 
-## Execution Checkpoints
+## 执行检查点
 
 - 阶段 8 后强制让 Embedding 或 Milvus 写入失败，确认旧 revision 仍可查询。
 - 阶段 9 后在 source event 事务提交后阻断 RabbitMQ，确认 outbox 能补发且不重复建 revision。
 - 阶段 10 后模拟分页中断、单次快照缺失、连续缺失和 v2/v3 乱序，逐项检查状态。
 - 阶段 11 后停止监听链路，确认完整对账可补偿；恢复监听后测量 P95 任务启动延迟。
 
-## Spec Coverage
+## 规格覆盖
 
 | 规格章节 | 实施计划 |
 |---|---|
 | 1–3：目标、原则和总体架构 | 本路线图全局约束；8–11 |
-| 4–5：稳定源标识和 Hash | 8 Tasks 1–2；9 Task 2 |
-| 6：数据模型和 Outbox | 8 Task 1；9 Task 1 |
-| 7：标准事件与发现方式 | 9 Tasks 2–3；10 Tasks 1–2；11 Task 1 |
-| 8–9：UPSERT、DELETE | 8 Tasks 2–4；10 Task 3 |
-| 10：并发、乱序和合并 | 8 Task 3；10 Task 3 |
-| 11：RabbitMQ/Celery | 9 Task 3；10 Task 1；11 Task 1 |
-| 12：查询一致性 | 8 Task 4；11 Task 3 |
-| 13：配置变化范围 | 8 Task 3；11 Task 3 |
-| 14：API | 9 Task 2；11 Task 1 |
+| 4–5：稳定源标识和 Hash | 8 计划任务 1–2；9 计划任务 2 |
+| 6：数据模型和 Outbox | 8 计划任务 1；9 计划任务 1 |
+| 7：标准事件与发现方式 | 9 计划任务 2–3；10 计划任务 1–2；11 计划任务 1 |
+| 8–9：UPSERT、DELETE | 8 计划任务 2–4；10 计划任务 3 |
+| 10：并发、乱序和合并 | 8 计划任务 3；10 计划任务 3 |
+| 11：RabbitMQ/Celery | 9 计划任务 3；10 计划任务 1；11 计划任务 1 |
+| 12：查询一致性 | 8 计划任务 4；11 计划任务 3 |
+| 13：配置变化范围 | 8 计划任务 3；11 计划任务 3 |
+| 14：API | 9 计划任务 2；11 计划任务 1 |
 | 15–16：可观测性和安全 | 11 Tasks 1–2 |
-| 17：测试和验收 | 每阶段验证；11 Task 3 |
+| 17：测试和验收 | 每阶段验证；11 计划任务 3 |
 | 18–19：分阶段实施和决策 | 本路线图；8–11 |
