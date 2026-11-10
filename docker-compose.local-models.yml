@@ -30,11 +30,11 @@ services:
       - --hostname
       - 0.0.0.0
       - --max-concurrent-requests
-      - "4"
+      - "64"
       - --max-batch-tokens
       - "4096"
       - --max-batch-requests
-      - "4"
+      - "32"
       - --auto-truncate
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost/health"]
@@ -48,7 +48,8 @@ services:
       EMBEDDING__BASE_URL: http://embedding/v1
       EMBEDDING__DEFAULT_MODEL: bge-large-zh-v1.5
       EMBEDDING__MODELS: >-
-        [{"id":"bge-large-zh-v1.5","model":"bge-large-zh-v1.5","display_name":"BGE Large Chinese v1.5 (local TEI)","dimensions":1024,"batch_size":4,"max_input_characters":500,"request_timeout":60}]
+        [{"id":"bge-large-zh-v1.5","model":"bge-large-zh-v1.5","display_name":"BGE Large Chinese v1.5 (local TEI)","dimensions":1024,"batch_size":16,"max_input_characters":500,"request_timeout":60}]
+      EMBEDDING__MAX_CONCURRENCY: "4"
       # BGE's 512-token context requires smaller chunks than the BGE-M3 defaults.
       INDEXING__GENERAL_MAX_CHUNK_LENGTH: "400"
       INDEXING__GENERAL_OVERLAP: "40"

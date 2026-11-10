@@ -34,6 +34,15 @@ class FakeRepository:
         self.job_documents = []
         self.commits = 0
 
+    async def get_active_dataset(self, dataset_id):
+        return SimpleNamespace(id=dataset_id)
+
+    async def get_active_index(self, dataset_id):
+        return None
+
+    async def get_running_job(self, dataset_id):
+        return next((job for job in self.jobs if job.status == "pending"), None)
+
     async def get_active_documents(self, dataset_id, document_ids):
         return [item for item in self.documents if item.dataset_id == dataset_id and item.id in document_ids and item.deleted_at is None]
 
@@ -80,6 +89,7 @@ async def test_confirm_same_configuration_is_idempotent():
     service = ProcessRuleService(repository)
 
     first = await service.confirm("dataset-1", request(), actor_id="user-1")
+    first.job.status = "completed"
     second = await service.confirm("dataset-1", request(), actor_id="user-1")
 
     assert first.rule.id == second.rule.id
@@ -97,3 +107,17 @@ async def test_economy_confirmation_drops_stale_embedding_selection():
     assert result.job.embedding_model is None
     assert result.job.embedding_model_provider is None
     assert result.job.process_rule["embedding_model"] is None
+
+
+@pytest.mark.asyncio
+async def test_confirmation_does_not_start_another_build_while_initial_index_is_pending():
+    from rag_modules.services.process_rule_service import ProcessRuleConflictError, ProcessRuleService
+
+    repository = FakeRepository()
+    service = ProcessRuleService(repository)
+    await service.confirm("dataset-1", request(), actor_id="user-1")
+
+    with pytest.raises(ProcessRuleConflictError, match="progress"):
+        await service.confirm("dataset-1", request(), actor_id="user-1")
+
+    assert len(repository.jobs) == 1

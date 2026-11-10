@@ -7,7 +7,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from rag_modules.db.base import Base
-from rag_modules.db.models import DatasetIndexRecord, DocumentRecord, DocumentSegmentRecord
+from rag_modules.db.models import DatasetIndexRecord, DatasetRecord, DocumentRecord, DocumentSegmentRecord
 from rag_modules.repositories.document_repository import DocumentRepository
 
 
@@ -24,6 +24,11 @@ async def session(tmp_path):
         await connection.run_sync(active_index.drop)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as db_session:
+        db_session.add(DatasetRecord(
+            id="dataset-1", name="Dataset", provider="vendor", permission="only_me",
+            indexing_technique="economy", created_by="user-1",
+        ))
+        await db_session.commit()
         yield db_session
     await engine.dispose()
 

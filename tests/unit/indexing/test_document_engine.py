@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from rag_modules.embeddings import EmbeddingBatch
-from rag_modules.db.models import DocumentSegmentRecord
+from rag_modules.db.models import DocumentSegmentRecord, IndexingJobDocumentRecord
 from rag_modules.indexing.engine import DocumentIndexingEngine, DocumentIndexingError
 from rag_modules.indexing.keywords import KeywordExtractor
 from rag_modules.indexing.models import (
@@ -594,7 +594,7 @@ async def test_economy_persists_bounded_keywords_and_forbids_embedding_resolver_
     assert result.total_indexable_segments == 3
     assert all(record.keywords for record in deps.repository.records)
     assert all(len(record.keywords or []) <= 15 for record in deps.repository.records)
-    assert len(deps.repository.keyword_flushes) == 1
+    assert all(len(batch) <= 2 for batch in deps.repository.keyword_flushes)
     assert not deps.embedding.calls
     assert not deps.resolver.calls
     assert not deps.vector_store.entities
@@ -616,6 +616,7 @@ async def test_economy_engine_with_real_repository_omits_overlong_keyword(tmp_pa
     )
     async with database_engine.begin() as connection:
         await connection.run_sync(DocumentSegmentRecord.__table__.create)
+        await connection.run_sync(IndexingJobDocumentRecord.__table__.create)
     factory = async_sessionmaker(database_engine, expire_on_commit=False)
 
     try:
@@ -1128,15 +1129,15 @@ async def test_high_quality_releases_each_vector_batch_before_embedding_the_next
 
 
 @pytest.mark.asyncio
-async def test_economy_checks_cancellation_after_final_progress_before_keyword_mutation():
+async def test_economy_cancellation_preserves_acknowledged_keyword_checkpoints():
     engine, deps = make_engine(forbidden_high_quality=True)
     progress = RecordingProgress(cancel_after_batch=("embed-or-keywords", 2))
 
     with pytest.raises(asyncio.CancelledError):
         await engine.run(economy_command(), progress)
 
-    assert deps.repository.keyword_flushes == []
-    assert all(record.keywords is None for record in deps.repository.records)
+    assert deps.repository.keyword_flushes
+    assert all(record.keywords is not None for record in deps.repository.records)
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,8 @@ class IndexDocumentCommand:
     keyword_limit: int = 15
     revision_segments: tuple[PreviewSegment, ...] | None = None
     segment_namespace: str | None = None
+    embedding_concurrency: int = 1
+    heartbeat_interval_seconds: float = 10
 
 
 @dataclass(frozen=True, slots=True)

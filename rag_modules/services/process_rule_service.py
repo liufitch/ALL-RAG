@@ -6,10 +6,15 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from rag_modules.db.models import DatasetIndexRecord, IndexingJobDocumentRecord, IndexingJobRecord, ProcessRuleRecord
+from rag_modules.services.document_service import DatasetNotFoundError
 
 
 class ProcessRuleValidationError(ValueError):
     code = "INVALID_PROCESS_RULE"
+
+
+class ProcessRuleConflictError(ProcessRuleValidationError):
+    code = "INDEX_CONFIGURATION_CONFLICT"
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,10 @@ class ProcessRuleService:
         self.repository = repository
 
     async def confirm(self, dataset_id: str, request, actor_id: str) -> ProcessRuleConfirmation:
+        if await self.repository.get_active_dataset(dataset_id) is None:
+            raise DatasetNotFoundError(dataset_id)
+        if await self.repository.get_running_job(dataset_id) is not None:
+            raise ProcessRuleConflictError("An indexing job is already in progress; wait for it to finish before configuring another job.")
         documents = await self.repository.get_active_documents(dataset_id, list(request.document_ids))
         if len(documents) != len(request.document_ids):
             raise ProcessRuleValidationError("One or more documents do not belong to this dataset.")
@@ -42,6 +51,17 @@ class ProcessRuleService:
             "segmentation": process_rule["segmentation"],
         }
         config_hash = hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        active_index = await self.repository.get_active_index(dataset_id)
+        if active_index is not None:
+            active_segmentation = dict((active_index.process_rule or {}).get("segmentation", {}))
+            # Older snapshots may omit the optional separator.
+            active_segmentation.setdefault("separator", None)
+            if (
+                active_index.index_type != request.indexing_technique
+                or active_index.embedding_model != embedding_model
+                or active_segmentation != snapshot["segmentation"]
+            ):
+                raise ProcessRuleConflictError("Index configuration differs from the active index; rebuild the entire knowledge base to change it.")
         existing = await self.repository.find_rule(dataset_id, config_hash)
         rule_is_new = existing is None
         if existing is not None:
@@ -59,12 +79,12 @@ class ProcessRuleService:
                 created_by=actor_id,
             )
         job_id = uuid4().hex
-        index_id = uuid4().hex
+        index_id = active_index.id if active_index is not None else uuid4().hex
         job = IndexingJobRecord(
             id=job_id,
             dataset_id=dataset_id,
             target_index_id=index_id,
-            job_type="initial_index",
+            job_type="reindex_documents" if active_index is not None else "initial_index",
             scope="selected_documents",
             status="pending",
             indexing_technique=request.indexing_technique,
@@ -76,7 +96,7 @@ class ProcessRuleService:
             total_documents=len(documents),
             created_by=actor_id,
         )
-        index = DatasetIndexRecord(
+        index = None if active_index is not None else DatasetIndexRecord(
             id=index_id,
             dataset_id=dataset_id,
             created_by_job_id=job_id,

@@ -90,18 +90,19 @@ class IndexingRepository:
         row.heartbeat_at = now
         row.lease_expires_at = now + timedelta(seconds=lease_seconds)
         row.updated_at = now
-        if stage is not None:
+        advancing = progress is None or int(progress) >= int(row.progress or 0)
+        if stage is not None and advancing:
             row.current_stage = stage
         if progress is not None:
-            row.progress = max(0, min(100, int(progress)))
-        if processed_segments is not None:
+            row.progress = max(int(row.progress or 0), max(0, min(100, int(progress))))
+        if processed_segments is not None and advancing:
             row.processed_segments = max(0, int(processed_segments))
-        if total_segments is not None:
+        if total_segments is not None and advancing:
             row.total_segments = max(0, int(total_segments))
         if embedded_segments is not None:
             row.embedded_segments = max(0, int(embedded_segments))
         document = await self.session.get(DocumentRecord, row.document_id)
-        if document is not None:
+        if document is not None and advancing:
             document.indexing_status = {
                 "download": "downloading", "parse": "parsing", "split": "splitting",
                 "stage": "indexing", "embed-or-keywords": "embedding",
@@ -112,12 +113,20 @@ class IndexingRepository:
         await self._refresh_job_summary(row.job_id, commit=False)
         await self.session.commit()
 
-    async def cancellation_requested(self, job_document_id: str) -> bool:
-        row = await self.session.get(IndexingJobDocumentRecord, job_document_id)
-        if row is None:
+    async def cancellation_requested(self, job_document_id: str, *, worker_id: str | None = None) -> bool:
+        # Project scalar state so the worker's long-lived identity map cannot
+        # hide cancellation, deletion or a lease taken over by another worker.
+        result = await self.session.execute(select(
+            IndexingJobDocumentRecord.status, IndexingJobDocumentRecord.worker_id,
+            IndexingJobRecord.cancel_requested_at, DatasetRecord.deleted_at,
+        ).join(IndexingJobRecord, IndexingJobRecord.id == IndexingJobDocumentRecord.job_id)
+          .join(DatasetRecord, DatasetRecord.id == IndexingJobRecord.dataset_id)
+          .where(IndexingJobDocumentRecord.id == job_document_id))
+        state = result.one_or_none()
+        if state is None:
             return True
-        job = await self.session.get(IndexingJobRecord, row.job_id)
-        return bool(job and job.cancel_requested_at is not None) or row.status == "cancelled"
+        return (state.cancel_requested_at is not None or state.deleted_at is not None
+                or state.status == "cancelled" or (worker_id is not None and state.worker_id != worker_id))
 
     async def complete_job_document(
         self,
@@ -178,6 +187,36 @@ class IndexingRepository:
             revision.status = "cancelled"
             revision.error = None
         await self.session.commit()
+
+    async def yield_job_document(self, job_document_id: str, *, worker_id: str) -> None:
+        # A soft timeout may interrupt a flush. Roll back only uncommitted
+        # work; vector and graph checkpoints already acknowledged are durable.
+        await self.session.rollback()
+        row = await self._owned_running_row(job_document_id, worker_id)
+        if row is None:
+            return
+        now = utcnow()
+        row.status = "pending"
+        row.available_at = now
+        row.attempt = max(0, int(row.attempt or 1) - 1)
+        row.worker_id = None
+        row.lease_expires_at = None
+        row.error_code = None
+        row.error = None
+        row.updated_at = now
+        document = await self.session.get(DocumentRecord, row.document_id)
+        if document is not None:
+            document.indexing_status = "queued"
+            document.updated_at = now
+        await self.session.commit()
+
+    async def save_prepared(self, job_document_id: str, *, worker_id: str, warnings: list[dict]) -> None:
+        row = await self._owned_running_row(job_document_id, worker_id)
+        if row is not None:
+            # Non-null warnings also mark a complete staging checkpoint;
+            # insertions and this marker commit together, even with no warnings.
+            row.warnings = warnings
+            await self.session.commit()
 
     async def fail_job_document(
         self,
@@ -294,6 +333,11 @@ class IndexingRepository:
         if not rows:
             return False, "nothing_to_retry", []
         now = utcnow()
+        if job.job_type in {"initial_index", "reindex_dataset"} and job.target_index_id:
+            target = await self.session.get(DatasetIndexRecord, job.target_index_id, with_for_update=True)
+            if target is not None and target.status == "failed":
+                target.status = "building"
+                target.updated_at = now
         job.status = "pending"
         job.cancel_requested_at = None
         job.error = None
@@ -369,6 +413,17 @@ class IndexingRepository:
                 return True
 
             document_ids = [row.document_id for row in job_documents]
+            if job.status == "completed":
+                # Publication is atomic. A completed segment from this job
+                # proves it already published, even if a later job retired it.
+                published = await self.session.scalar(select(DocumentSegmentRecord.id).where(
+                    DocumentSegmentRecord.dataset_id == job.dataset_id,
+                    DocumentSegmentRecord.dataset_index_id == target.id,
+                    DocumentSegmentRecord.indexing_job_id == job.id,
+                    DocumentSegmentRecord.status == "completed",
+                ).limit(1))
+                if published is not None:
+                    return True
             segments_result = await self.session.execute(
                 select(DocumentSegmentRecord)
                 .where(
@@ -380,8 +435,10 @@ class IndexingRepository:
                 .with_for_update()
             )
             segments = list(segments_result.scalars())
-            staged = [segment for segment in segments if segment.status == "indexing"]
-            if not staged or any(
+            staged = [segment for segment in segments
+                      if segment.status == "indexing" and segment.indexing_job_id == job.id]
+            staged_documents = {segment.document_id for segment in staged}
+            if staged_documents != set(document_ids) or any(
                 not self._segment_ready_for_activation(job, segment) for segment in staged
             ):
                 job.status = "failed"

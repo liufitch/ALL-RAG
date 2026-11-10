@@ -279,7 +279,7 @@ class KnowledgeBaseRepository:
         return job, rows
 
     async def soft_delete(self, dataset_id: str) -> bool:
-        record = await self.session.get(DatasetRecord, dataset_id)
+        record = await self.session.get(DatasetRecord, dataset_id, with_for_update=True)
         if record is None or record.deleted_at is not None:
             return False
         record.deleted_at = datetime.now(timezone.utc)

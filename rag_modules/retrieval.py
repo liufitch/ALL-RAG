@@ -52,8 +52,11 @@ class RetrievalService:
             raise ValueError("query must not be empty")
         if mode not in {"vector", "full_text", "hybrid", "graph"}:
             raise ValueError("unsupported retrieval mode")
-        index_result = await self.session.execute(select(DatasetIndexRecord).where(
+        index_result = await self.session.execute(select(DatasetIndexRecord).join(
+            DatasetRecord, DatasetRecord.id == DatasetIndexRecord.dataset_id,
+        ).where(
             DatasetIndexRecord.dataset_id == dataset_id,
+            DatasetRecord.deleted_at.is_(None),
             DatasetIndexRecord.status == "active",
             DatasetIndexRecord.deleted_at.is_(None),
         ))

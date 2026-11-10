@@ -14,7 +14,7 @@ from rag_modules.services.document_service import (
     DocumentService,
     UploadCompensationCleanupPending,
 )
-from rag_modules.services.process_rule_service import ProcessRuleService
+from rag_modules.services.process_rule_service import ProcessRuleConflictError, ProcessRuleService, ProcessRuleValidationError
 from rag_modules.tasks.publisher import TaskPublisher, get_task_publisher
 
 router = APIRouter(prefix="/api/knowledge_base/{dataset_id}", tags=["Ingestion"])
@@ -75,6 +75,10 @@ async def ingest_documents(
     rule_req = rule_req.model_copy(update={"document_ids": [item.id for item in accepted_items]})
     try:
         confirmation = await rule_service.confirm(dataset_id, rule_req, actor_id="current-user")
+    except (DatasetNotFoundError, ProcessRuleValidationError) as exc:
+        await _compensate_uploads(dataset_id, accepted_items, doc_service, publisher)
+        status = 404 if isinstance(exc, DatasetNotFoundError) else 409 if isinstance(exc, ProcessRuleConflictError) else 422
+        raise HTTPException(status, "knowledge base not found" if status == 404 else str(exc)) from exc
     except Exception:
         await _compensate_uploads(dataset_id, accepted_items, doc_service, publisher)
         raise

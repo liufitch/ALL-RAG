@@ -8,7 +8,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from rag_modules.api.dto.process_rule import ProcessRuleConfirmationRequest, ProcessRuleResponse
 from rag_modules.db.session import get_db_session
 from rag_modules.repositories.process_rule_repository import ProcessRuleRepository
-from rag_modules.services.process_rule_service import ProcessRuleService, ProcessRuleValidationError
+from rag_modules.services.process_rule_service import ProcessRuleConflictError, ProcessRuleService, ProcessRuleValidationError
+from rag_modules.services.document_service import DatasetNotFoundError
 from rag_modules.tasks.publisher import TaskPublisher, get_task_publisher
 
 router = APIRouter(prefix="/api/knowledge_base/{dataset_id}/indexing", tags=["Indexing"])
@@ -27,6 +28,10 @@ async def configure_indexing(
 ) -> ProcessRuleResponse:
     try:
         result = await service.confirm(dataset_id, request, actor_id="current-user")
+    except DatasetNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="knowledge base not found") from exc
+    except ProcessRuleConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProcessRuleValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except SQLAlchemyError as exc:

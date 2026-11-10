@@ -39,6 +39,7 @@ class Neo4jGraphStore:
     def upsert_segment(
         self, dataset_id: str, index_id: str, document_id: str,
         segment_id: str, extraction: GraphExtraction,
+        *, fingerprint: str | None = None,
     ) -> None:
         def entity_id(name: str) -> str:
             return sha256(f"{index_id}\0{name.casefold()}".encode()).hexdigest()
@@ -60,14 +61,15 @@ class Neo4jGraphStore:
             tx.run("MATCH ()-[r:RELATED {segment_id: $segment_id}]->() DELETE r", segment_id=segment_id)
             tx.run(
                 "MERGE (s:SourceSegment {id: $segment_id}) "
-                "SET s.dataset_id = $dataset_id, s.dataset_index_id = $index_id, s.document_id = $document_id "
+                "SET s.dataset_id = $dataset_id, s.dataset_index_id = $index_id, s.document_id = $document_id, "
+                "s.extraction_fingerprint = $fingerprint "
                 "WITH s UNWIND $entities AS item "
                 "MERGE (e:Entity {id: item.id}) "
                 "SET e.name = item.name, e.type = item.type, e.attributes = item.attributes, "
                 "e.dataset_index_id = item.index_id "
                 "MERGE (s)-[:MENTIONS]->(e)",
                 segment_id=segment_id, dataset_id=dataset_id, index_id=index_id,
-                document_id=document_id, entities=entities, relations=relations,
+                document_id=document_id, entities=entities, relations=relations, fingerprint=fingerprint,
             )
             tx.run(
                 "UNWIND $relations AS item "
@@ -83,6 +85,19 @@ class Neo4jGraphStore:
 
         with self.driver.session(database=self.database) as session:
             session.execute_write(write)
+
+    def completed_segments(self, index_id: str, fingerprints: dict[str, str]) -> set[str]:
+        completed = set()
+        items = [{"id": identifier, "fingerprint": fingerprint} for identifier, fingerprint in fingerprints.items()]
+        for offset in range(0, len(items), 500):
+            records, _, _ = self.driver.execute_query(
+                "UNWIND $segments AS item "
+                "MATCH (s:SourceSegment {id: item.id, dataset_index_id: $index_id}) "
+                "WHERE s.extraction_fingerprint = item.fingerprint RETURN s.id AS id",
+                index_id=index_id, segments=items[offset:offset + 500], database_=self.database,
+            )
+            completed.update(str(record["id"]) for record in records)
+        return completed
 
     def search(self, index_id: str, query: str, limit: int) -> list[GraphHit]:
         records, _, _ = self.driver.execute_query(

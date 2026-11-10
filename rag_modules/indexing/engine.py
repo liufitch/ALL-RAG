@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 from collections.abc import Awaitable, Iterable, Sequence
 import inspect
 import math
@@ -34,6 +35,7 @@ from .models import (
     VectorTarget,
     VectorTargetResolver,
 )
+from .concurrency import bounded_map, wait_external, heartbeat, record_checkpoint
 
 _SUPPORTED_EXTENSIONS = frozenset(
     {".txt", ".md", ".pdf", ".docx", ".xls", ".xlsx", ".csv", ".png", ".jpg", ".jpeg"}
@@ -102,65 +104,76 @@ class DocumentIndexingEngine:
     ) -> IndexDocumentResult:
         self._validate_command(command)
         processed_segments = 0
-        if command.revision_segments is not None:
-            segments = command.revision_segments
-            warnings = ()
+        await self._check_cancelled(progress)
+        cached = None
+        if hasattr(self._segment_repository, "load_prepared"):
+            cached = await self._segment_repository.load_prepared(command.staging)
+        if cached is not None:
+            records, warnings = cached
         else:
-            await self._check_cancelled(progress)
-            async with self._object_storage.get_stream(command.object_key) as stream:
-                await self._update(progress, "download", 5, processed_segments)
+            if hasattr(progress, "begin_preparation"):
+                progress.begin_preparation()
+            if command.revision_segments is not None:
+                segments = command.revision_segments
+                warnings = ()
+            else:
+                await self._check_cancelled(progress)
+                async with self._object_storage.get_stream(command.object_key) as stream:
+                    await self._update(progress, "download", 5, processed_segments)
+
+                    await self._check_cancelled(progress)
+                    parsed = await wait_external(self._run_sync(
+                        self._parser_registry.parse,
+                        command.extension,
+                        stream,
+                        ParseContext(
+                            document_id=command.staging.document_id,
+                            filename=command.filename,
+                        ),
+                    ), progress=progress, heartbeat_interval=command.heartbeat_interval_seconds)
+                await self._update(progress, "parse", 10, processed_segments)
+                if not parsed.blocks:
+                    raise DocumentIndexingError(
+                        "NO_EXTRACTABLE_TEXT",
+                        False,
+                        "The document contains no extractable text.",
+                    )
 
                 await self._check_cancelled(progress)
-                parsed = await self._run_sync(
-                    self._parser_registry.parse,
-                    command.extension,
-                    stream,
-                    ParseContext(
-                        document_id=command.staging.document_id,
-                        filename=command.filename,
-                    ),
-                )
-            await self._update(progress, "parse", 10, processed_segments)
-            if not parsed.blocks:
-                raise DocumentIndexingError(
-                    "NO_EXTRACTABLE_TEXT",
-                    False,
-                    "The document contains no extractable text.",
-                )
+                segmented = await wait_external(self._run_sync(
+                    self._segmenter.segment, parsed, command.segmentation_config
+                ), progress=progress, heartbeat_interval=command.heartbeat_interval_seconds)
+                await self._update(progress, "split", 12, processed_segments)
+                segments = segmented.segments
+                warnings = self._safe_warnings(parsed.warnings, "parse")
+                warnings += self._safe_warnings(segmented.warnings, "split")
+                warnings = warnings[:_MAX_WARNINGS]
 
+            if command.segment_namespace:
+                segments = tuple(
+                    PreviewSegment(
+                        local_id=segment.local_id,
+                        parent_local_id=segment.parent_local_id,
+                        position=segment.position,
+                        content=segment.content,
+                        source_metadata={
+                            **segment.source_metadata,
+                            "indexing_namespace": command.segment_namespace,
+                        },
+                        index_type=segment.index_type,
+                        question=segment.question,
+                        answer=segment.answer,
+                        keywords=segment.keywords,
+                    )
+                    for segment in segments
+                )
             await self._check_cancelled(progress)
-            segmented = await self._run_sync(
-                self._segmenter.segment, parsed, command.segmentation_config
+            records = await self._segment_repository.stage(
+                command.staging, segments
             )
-            await self._update(progress, "split", 12, processed_segments)
-            segments = segmented.segments
-            warnings = self._safe_warnings(parsed.warnings, "parse")
-            warnings += self._safe_warnings(segmented.warnings, "split")
-            warnings = warnings[:_MAX_WARNINGS]
-
-        if command.segment_namespace:
-            segments = tuple(
-                PreviewSegment(
-                    local_id=segment.local_id,
-                    parent_local_id=segment.parent_local_id,
-                    position=segment.position,
-                    content=segment.content,
-                    source_metadata={
-                        **segment.source_metadata,
-                        "indexing_namespace": command.segment_namespace,
-                    },
-                    index_type=segment.index_type,
-                    question=segment.question,
-                    answer=segment.answer,
-                    keywords=segment.keywords,
-                )
-                for segment in segments
-            )
-        await self._check_cancelled(progress)
-        records = await self._segment_repository.stage(
-            command.staging, segments
-        )
-        await self._update(progress, "stage", 15, processed_segments)
+            if hasattr(progress, "prepared"):
+                await progress.prepared(warnings)
+            await self._update(progress, "stage", 15, processed_segments)
         indexable = self._validated_indexable_records(command.staging, records)
         total_indexable = len(indexable)
 
@@ -199,37 +212,42 @@ class DocumentIndexingEngine:
             warnings=warnings,
         )
 
+    async def aclose(self) -> None:
+        for resource in (self._embedding, self._graph_indexer):
+            if resource is not None and hasattr(resource, "aclose"):
+                await resource.aclose()
+
     async def _extract_and_persist_keywords(
         self,
         command: IndexDocumentCommand,
         records: Sequence[IndexSegmentRecord],
         progress: ProgressReporter,
     ) -> int:
-        updates: dict[str, tuple[str, ...]] = {}
-        batches = tuple(self._batches(records, self._effective_batch_size(command)))
-        if not batches:
-            await self._update(progress, "embed-or-keywords", 15, 0, len(records))
-        for batch_index, batch in enumerate(batches, start=1):
+        missing = [record for record in records if record.keywords is None]
+        completed = len(records) - len(missing)
+        if not missing:
+            await self._update(progress, "embed-or-keywords", 85, completed, len(records))
+        for batch in self._batches(missing, self._effective_batch_size(command)):
             await self._check_cancelled(progress)
             extracted = await self._run_sync(
                 self._keyword_batch, batch, command.keyword_limit
             )
-            updates.update(extracted)
-            completed = sum(len(item) for item in batches[:batch_index])
-            await self._update(
-                progress,
-                "embed-or-keywords",
-                self._batch_progress(15, 90, completed, len(records)),
-                completed,
-                len(records),
-            )
             await self._check_cancelled(progress)
-        if updates:
             await self._segment_repository.update_keywords(
                 dataset_index_id=command.staging.dataset_index_id,
                 document_id=command.staging.document_id,
-                keywords_by_segment_id=updates,
+                keywords_by_segment_id=extracted,
             )
+            completed += len(batch)
+            await self._update(
+                progress,
+                "embed-or-keywords",
+                self._batch_progress(15, 85, completed, len(records)),
+                completed,
+                len(records),
+            )
+            record_checkpoint(progress)
+            await self._check_cancelled(progress)
         return len(records)
 
     async def _persist_high_quality_keywords(
@@ -240,7 +258,7 @@ class DocumentIndexingEngine:
     ) -> None:
         # Full-text and hybrid retrieval use the same keyword index in both
         # techniques. Preserve explicit revision keywords and cached retries.
-        missing = [record for record in records if not record.keywords]
+        missing = [record for record in records if record.keywords is None]
         for batch in self._batches(missing, self._effective_batch_size(command)):
             await self._check_cancelled(progress)
             updates = await self._run_sync(self._keyword_batch, batch, command.keyword_limit)
@@ -250,6 +268,8 @@ class DocumentIndexingEngine:
                 document_id=command.staging.document_id,
                 keywords_by_segment_id=updates,
             )
+            await heartbeat(progress)
+            record_checkpoint(progress)
 
     def _keyword_batch(
         self, records: Sequence[IndexSegmentRecord], limit: int
@@ -284,88 +304,91 @@ class DocumentIndexingEngine:
             return completed_count, completed_count
 
         batch_size = self._effective_batch_size(command)
-        total_batches = (len(waiting_records) + batch_size - 1) // batch_size
         target = self._command_target(command)
         locked_dimension: int | None = target.dimension if target else None
         vector_count = completed_count
         processed_segments = completed_count
-        for batch_index, batch in enumerate(
-            self._batches(waiting_records, batch_size), start=1
-        ):
-            await self._check_cancelled(progress)
-            result = await self._embedding.embed(
-                command.embedding_model or "", [record.content for record in batch]
-            )
-            self._validate_embedding_batch(result, len(batch))
-            if locked_dimension is None:
-                locked_dimension = result.dimension
-                resolved = await self._vector_target_resolver.resolve(
-                    command.staging.dataset_index_id, locked_dimension
-                )
-                self._validate_target(resolved, "VECTOR_TARGET_INVALID")
-                if resolved.dimension != locked_dimension:
-                    raise DocumentIndexingError(
-                        "VECTOR_TARGET_DIMENSION_MISMATCH",
-                        False,
-                        "Resolved vector target dimension did not match embeddings.",
+        async def embed(batch):
+            return await self._embedding.embed(command.embedding_model or "", [record.content for record in batch])
+
+        requests = bounded_map(
+            embed, self._batches(waiting_records, batch_size),
+            concurrency=command.embedding_concurrency, progress=progress,
+            heartbeat_interval=command.heartbeat_interval_seconds,
+        )
+        async with aclosing(requests):
+            async for batch, result in requests:
+                self._validate_embedding_batch(result, len(batch))
+                if locked_dimension is None:
+                    locked_dimension = result.dimension
+                    resolved = await self._vector_target_resolver.resolve(
+                        command.staging.dataset_index_id, locked_dimension
                     )
-                target = resolved
-            elif result.dimension != locked_dimension:
-                raise DocumentIndexingError(
-                    "EMBEDDING_DIMENSION_MISMATCH",
-                    False,
-                    "Embedding dimension changed while indexing the document.",
-                )
+                    self._validate_target(resolved, "VECTOR_TARGET_INVALID")
+                    if resolved.dimension != locked_dimension:
+                        raise DocumentIndexingError(
+                            "VECTOR_TARGET_DIMENSION_MISMATCH",
+                            False,
+                            "Resolved vector target dimension did not match embeddings.",
+                        )
+                    target = resolved
+                elif result.dimension != locked_dimension:
+                    raise DocumentIndexingError(
+                        "EMBEDDING_DIMENSION_MISMATCH",
+                        False,
+                        "Embedding dimension changed while indexing the document.",
+                    )
 
-            if batch_index == 1:
+                if processed_segments == completed_count:
+                    await self._update(
+                        progress, "embed-or-keywords", 15, processed_segments, len(records)
+                    )
+                await self._check_cancelled(progress)
+
+                entities = tuple(
+                    VectorEntity(
+                        id=record.id,
+                        embedding=vector,
+                        dataset_id=record.dataset_id,
+                        document_id=record.document_id,
+                        dataset_index_id=record.dataset_index_id,
+                        parent_id=record.parent_id,
+                        position=record.position,
+                    )
+                    for record, vector in zip(batch, result.vectors, strict=True)
+                )
+                assert target is not None
+                written, cancellation = await self._run_sync_deferred_cancellation(
+                    self._vector_store.upsert, target.collection_name, entities
+                )
+                if isinstance(written, bool) or not isinstance(written, int) or written != len(batch):
+                    raise DocumentIndexingError(
+                        "VECTOR_WRITE_COUNT_MISMATCH",
+                        True,
+                        "Vector write count did not match the submitted batch.",
+                    )
+                _, cancellation = await self._await_deferred_cancellation(
+                    self._segment_repository.mark_embeddings_completed(
+                        dataset_index_id=command.staging.dataset_index_id,
+                        document_id=command.staging.document_id,
+                        segment_ids=tuple(record.id for record in batch),
+                    ),
+                    cancellation,
+                )
+                vector_count += written
+                processed_segments += len(batch)
+                del entities
+                del result
+                if cancellation is not None:
+                    raise cancellation
                 await self._update(
-                    progress, "embed-or-keywords", 15, processed_segments, len(records)
+                    progress,
+                    "vector-upsert",
+                    self._batch_progress(15, 90, processed_segments, len(records)),
+                    processed_segments,
+                    len(records),
                 )
-            await self._check_cancelled(progress)
-
-            entities = tuple(
-                VectorEntity(
-                    id=record.id,
-                    embedding=vector,
-                    dataset_id=record.dataset_id,
-                    document_id=record.document_id,
-                    dataset_index_id=record.dataset_index_id,
-                    parent_id=record.parent_id,
-                    position=record.position,
-                )
-                for record, vector in zip(batch, result.vectors, strict=True)
-            )
-            assert target is not None
-            written, cancellation = await self._run_sync_deferred_cancellation(
-                self._vector_store.upsert, target.collection_name, entities
-            )
-            if isinstance(written, bool) or not isinstance(written, int) or written != len(batch):
-                raise DocumentIndexingError(
-                    "VECTOR_WRITE_COUNT_MISMATCH",
-                    True,
-                    "Vector write count did not match the submitted batch.",
-                )
-            _, cancellation = await self._await_deferred_cancellation(
-                self._segment_repository.mark_embeddings_completed(
-                    dataset_index_id=command.staging.dataset_index_id,
-                    document_id=command.staging.document_id,
-                    segment_ids=tuple(record.id for record in batch),
-                ),
-                cancellation,
-            )
-            vector_count += written
-            processed_segments += len(batch)
-            del entities
-            del result
-            if cancellation is not None:
-                raise cancellation
-            await self._update(
-                progress,
-                "vector-upsert",
-                self._batch_progress(15, 90, processed_segments, len(records)),
-                processed_segments,
-                len(records),
-            )
+                record_checkpoint(progress)
         return vector_count, processed_segments
 
     @classmethod
@@ -412,6 +435,16 @@ class DocumentIndexingEngine:
             isinstance(command.keyword_limit, bool)
             or not isinstance(command.keyword_limit, int)
             or not 1 <= command.keyword_limit <= _MAX_KEYWORD_LIMIT
+        ):
+            cls._invalid_command()
+
+        if (
+            not cls._positive_int(command.embedding_concurrency)
+            or command.embedding_concurrency > 32
+            or isinstance(command.heartbeat_interval_seconds, bool)
+            or not isinstance(command.heartbeat_interval_seconds, (int, float))
+            or not math.isfinite(command.heartbeat_interval_seconds)
+            or not 0 < command.heartbeat_interval_seconds <= 60
         ):
             cls._invalid_command()
 
@@ -573,6 +606,8 @@ class DocumentIndexingEngine:
 
     @staticmethod
     def _effective_batch_size(command: IndexDocumentCommand) -> int:
+        if command.staging.indexing_technique == "economy":
+            return min(_MAX_ENGINE_STREAM_BATCH_SIZE, command.vector_batch_size)
         return min(
             _MAX_ENGINE_STREAM_BATCH_SIZE,
             command.embedding_batch_size,

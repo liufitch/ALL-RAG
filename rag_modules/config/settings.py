@@ -138,6 +138,7 @@ class EmbeddingSettings(BaseModel):
         ]
     )
     max_retries: int = Field(default=3, ge=0, le=10)
+    max_concurrency: int = Field(default=4, ge=1, le=32)
 
     @model_validator(mode="after")
     def validate_default_model(self):
@@ -162,6 +163,7 @@ class GraphSettings(BaseModel):
     extraction_api_key: SecretStr = SecretStr("")
     extraction_model: str = ""
     extraction_max_characters: int = Field(default=6000, ge=100, le=50000)
+    max_concurrency: int = Field(default=4, ge=1, le=32)
     entity_types: tuple[str, ...] = ("person", "organization", "location", "event", "concept", "product")
     relation_types: tuple[str, ...] = ("属于", "位于", "参与", "合作", "使用", "影响")
 
@@ -262,6 +264,16 @@ class IndexingSettings(BaseModel):
     parent_max_chunk_length: int = Field(default=4096, ge=1)
     child_max_chunk_length: int = Field(default=512, ge=1)
     child_overlap: int = Field(default=50, ge=0)
+    heartbeat_interval_seconds: float = Field(default=10, gt=0, le=60)
+    task_slice_seconds: float = Field(default=900, ge=1)
+    task_soft_time_limit_seconds: int = Field(default=3500, ge=60)
+    task_time_limit_seconds: int = Field(default=3600, ge=120)
+
+    @model_validator(mode="after")
+    def validate_time_limits(self):
+        if not self.task_slice_seconds + self.heartbeat_interval_seconds < self.task_soft_time_limit_seconds < self.task_time_limit_seconds:
+            raise ValueError("task slice plus heartbeat must be below the soft limit, and soft limit below hard limit")
+        return self
 
 
 _yaml_defaults = _load_yaml_defaults()

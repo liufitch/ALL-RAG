@@ -6,12 +6,14 @@ import asyncio
 import inspect
 import logging
 import os
+import time
+from billiard.exceptions import SoftTimeLimitExceeded
 from typing import Any, Callable
 from uuid import uuid4
 
 from .celery_app import celery_app
 from rag_modules.indexing.engine import DocumentIndexingError
-from rag_modules.indexing.progress import DatabaseProgressReporter, IndexingCancelled
+from rag_modules.indexing.progress import DatabaseProgressReporter, IndexingCancelled, IndexingYielded
 from rag_modules.indexing.models import IndexDocumentCommand, SegmentStagingCommand
 from rag_modules.segmentation.models import PreviewSegment
 from rag_modules.indexing.keywords import KeywordExtractor
@@ -39,23 +41,32 @@ class IndexingTaskRunner:
     repository and engine in a worker process.
     """
 
-    def __init__(self, *, repository, engine, command_factory: Callable[[Any], Any], worker_id: str | None = None):
+    def __init__(self, *, repository, engine, command_factory: Callable[[Any], Any], worker_id: str | None = None,
+                 slice_seconds: float | None = None, clock=time.monotonic):
         self.repository = repository
         self.engine = engine
         self.command_factory = command_factory
         self.worker_id = worker_id or f"worker-{os.getpid()}-{uuid4().hex[:8]}"
+        self.slice_seconds = settings.indexing.task_slice_seconds if slice_seconds is None else slice_seconds
+        self.clock = clock
 
     async def run(self, job_document_id: str) -> None:
         row = await self.repository.claim_job_document(
             job_document_id, self.worker_id, lease_seconds=300
         )
         if row is None:
+            if hasattr(self.engine, "aclose"):
+                await self.engine.aclose()
             return
+        job_id = row.job_id
+        attempt = int(row.attempt or 1)
         progress = DatabaseProgressReporter(
             self.repository,
             job_document_id=job_document_id,
             worker_id=self.worker_id,
             lease_seconds=300,
+            deadline=self.clock() + self.slice_seconds,
+            clock=self.clock,
         )
         try:
             command = self.command_factory(row)
@@ -72,6 +83,20 @@ class IndexingTaskRunner:
             )
         except IndexingCancelled:
             await self.repository.cancel_job_document(job_document_id, worker_id=self.worker_id)
+        except IndexingYielded:
+            await self.repository.yield_job_document(job_document_id, worker_id=self.worker_id)
+        except SoftTimeLimitExceeded:
+            if progress.preparation_complete and progress.made_progress:
+                await self.repository.yield_job_document(job_document_id, worker_id=self.worker_id)
+            else:
+                if hasattr(self.repository, "session"):
+                    await self.repository.session.rollback()
+                await self.repository.fail_job_document(
+                    job_document_id, worker_id=self.worker_id,
+                    error_code="INDEXING_PREPARATION_TIMEOUT" if not progress.preparation_complete else "INDEXING_NO_PROGRESS_TIMEOUT",
+                    error="Indexing exceeded the worker time limit without completing a checkpoint.", retryable=True,
+                    retry_delay_seconds=_RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)],
+                )
         except (DocumentIndexingError, EmbeddingError) as exc:
             delay = _RETRY_DELAYS[min(max(int(row.attempt or 1) - 1, 0), len(_RETRY_DELAYS) - 1)]
             await self.repository.fail_job_document(
@@ -97,10 +122,14 @@ class IndexingTaskRunner:
                 retry_delay_seconds=delay,
             )
         finally:
-            await self.repository.refresh_job_summary(row.job_id)
-            finalize = getattr(self.repository, "finalize_indexing_job", None)
-            if finalize is not None:
-                await finalize(row.job_id)
+            try:
+                await self.repository.refresh_job_summary(job_id)
+                finalize = getattr(self.repository, "finalize_indexing_job", None)
+                if finalize is not None:
+                    await finalize(job_id)
+            finally:
+                if hasattr(self.engine, "aclose"):
+                    await self.engine.aclose()
 
 
 @celery_app.task(name="rag_modules.tasks.indexing_tasks.index_document")
@@ -220,6 +249,8 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
             expected_dimension=index.embedding_dimension,
             revision_segments=revision_segments,
             segment_namespace=job.id if job.job_type in {"document_reindex", "reindex_documents"} else None,
+            embedding_concurrency=settings.embedding.max_concurrency,
+            heartbeat_interval_seconds=settings.indexing.heartbeat_interval_seconds,
         )
 
     return IndexingTaskRunner(repository=repository, engine=engine, command_factory=command_factory)

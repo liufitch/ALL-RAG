@@ -25,6 +25,9 @@ async function mockAPI(page, overrides = {}) {
     if (url.pathname.endsWith("/documents")) {
       return route.fulfill({ json: { items: [], total: 0 } });
     }
+    if (url.pathname.endsWith("/settings")) {
+      return route.fulfill({ json: { indexing: { process_rule: null } } });
+    }
     return route.fulfill({ status: 404, json: { detail: "not found" } });
   });
   return calls;
@@ -193,6 +196,58 @@ test("OCR segments can be manually cleaned and saved through the revision API", 
     base_version: 7,
     segments: [{ id: "segment-1", content: "手动清洗后的片段" }],
   });
+});
+
+test("appending documents reuses the saved indexing configuration", async ({ page }) => {
+  let previewConfig;
+  let configured;
+  await mockAPI(page, { handler: async (route, url) => {
+    const path = url.pathname;
+    if (path.endsWith("/documents")) {
+      await route.fulfill({ json: { items: [{ id: "old-doc", dataset_id: "kb-1", name: "old.txt", status: "completed" }], total: 1 } });
+      return true;
+    }
+    if (path.endsWith("/documents/upload")) {
+      await route.fulfill({ status: 201, json: { documents: [{ id: "new-doc", dataset_id: "kb-1", name: "new.txt", status: "waiting", duplicate: false }], rejected: [] } });
+      return true;
+    }
+    if (path.endsWith("/settings")) {
+      await route.fulfill({ json: { indexing: { technique: "economy", embedding_model: null,
+        process_rule: { mode: "general", max_chunk_length: 700, overlap: 70, separator: "\n" } } } });
+      return true;
+    }
+    if (path === "/api/indexing/options") {
+      await route.fulfill({ json: { indexing_techniques: [{ id: "high_quality" }, { id: "economy" }],
+        embedding_models: [{ id: "bge-m3", name: "BGE M3" }],
+        segmentation_modes: [{ id: "general", supported_indexing_techniques: ["high_quality", "economy"] }],
+        defaults: { indexing_technique: "high_quality", embedding_model: "bge-m3",
+          general: { max_chunk_length: 1024, overlap: 100 },
+          parent_child: { parent_mode: "paragraph", parent_max_chunk_length: 4096, child_max_chunk_length: 512, child_overlap: 50 } } } });
+      return true;
+    }
+    if (path.endsWith("/indexing/preview")) {
+      previewConfig = route.request().postDataJSON();
+      await route.fulfill({ json: { chunks: [], total_chunks: 1, truncated: false, warnings: [], documents: [] } });
+      return true;
+    }
+    if (path.endsWith("/indexing/configure")) {
+      configured = route.request().postDataJSON();
+      await route.fulfill({ status: 202, json: { job_id: "append-job", status: "queued" } });
+      return true;
+    }
+    return false;
+  } });
+  await page.goto("/");
+  await page.getByRole("button", { name: "kb-1", exact: true }).click();
+  await page.getByLabel("上传文件", { exact: true }).setInputFiles({ name: "new.txt", mimeType: "text/plain", buffer: Buffer.from("new content") });
+  await expect(page.getByRole("button", { name: "经济", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("最大块长度（字符）", { exact: true })).toHaveValue("700");
+  await page.getByRole("button", { name: "预览块", exact: true }).click();
+  await expect(page.getByRole("button", { name: "确认并开始索引" })).toBeEnabled();
+  expect(previewConfig).toEqual({ document_ids: ["new-doc"], indexing_technique: "economy", embedding_model: null,
+    segmentation: { mode: "general", max_chunk_length: 700, overlap: 70, separator: "\n" } });
+  await page.getByRole("button", { name: "确认并开始索引" }).click();
+  await expect.poll(() => configured).toEqual(previewConfig);
 });
 
 test("parent child configuration previews children under parents and saves full document mode", async ({ page }) => {

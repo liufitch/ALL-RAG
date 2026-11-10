@@ -34,6 +34,11 @@ class DocumentRevisionService:
     async def create_revision_and_job(
         self, dataset_id: str, document_id: str, payload, actor_id: str
     ) -> RevisionJobResult:
+        dataset = await self.session.scalar(select(DatasetRecord).where(
+            DatasetRecord.id == dataset_id, DatasetRecord.deleted_at.is_(None),
+        ).with_for_update())
+        if dataset is None:
+            raise DocumentNotFoundError(dataset_id)
         document = await self.session.scalar(
             select(DocumentRecord).where(
                 DocumentRecord.dataset_id == dataset_id,
@@ -86,9 +91,6 @@ class DocumentRevisionService:
         if existing_job is not None:
             raise RevisionConflictError("This document already has a reindexing task in progress.")
 
-        dataset = await self.session.get(DatasetRecord, dataset_id)
-        if dataset is None or dataset.deleted_at is not None:
-            raise DocumentNotFoundError(dataset_id)
         revision = DocumentRevisionRecord(
             id=uuid4().hex,
             dataset_id=dataset_id,

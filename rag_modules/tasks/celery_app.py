@@ -24,8 +24,8 @@ celery_app.conf.update(
         Queue("maintenance", durable=True),
     ),
     # 任务超时保护，防止索引任务卡死永不释放worker
-    task_time_limit = 3600,
-    task_soft_time_limit = 3500,
+    task_time_limit=settings.indexing.task_time_limit_seconds,
+    task_soft_time_limit=settings.indexing.task_soft_time_limit_seconds,
     # RabbitMQ 4 disables transient pidbox queues; task execution does not require remote control.
     worker_enable_remote_control=False,
     # 任务名称不使用默认的主机名，方便日志追踪

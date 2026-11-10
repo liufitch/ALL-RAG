@@ -183,6 +183,27 @@ async def test_failed_build_marks_target_failed_and_keeps_old_version_active(ind
 
 
 @pytest.mark.asyncio
+async def test_retry_of_failed_full_build_can_publish_after_worker_summary_completes(indexing_database):
+    old_id, target_id, job_id = await _seed_build(indexing_database, document_statuses=("failed",))
+    repository = IndexingRepository(indexing_database)
+    await repository.finalize_indexing_job(job_id)
+    ok, _, _ = await repository.retry_job("dataset-1", job_id)
+    assert ok
+    row = await indexing_database.scalar(select(IndexingJobDocumentRecord).where(IndexingJobDocumentRecord.job_id == job_id))
+    row.status = "completed"
+    indexing_database.add(DocumentSegmentRecord(
+        id="retried-segment", document_id=row.document_id, dataset_id="dataset-1",
+        dataset_index_id=target_id, indexing_job_id=job_id, position=0, content="recovered content",
+        status="indexing", index_type="general", embedding_status="completed",
+    ))
+    await indexing_database.commit()
+    await repository.refresh_job_summary(job_id)
+    await repository.finalize_indexing_job(job_id)
+    assert (await indexing_database.get(DatasetIndexRecord, target_id)).status == "active"
+    assert (await indexing_database.get(DatasetIndexRecord, old_id)).status == "retired"
+
+
+@pytest.mark.asyncio
 async def test_invalid_staged_segments_fail_build_without_touching_old_version(indexing_database):
     old_id, target_id, job_id = await _seed_build(indexing_database, document_statuses=("completed",))
     segment = await indexing_database.scalar(

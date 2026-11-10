@@ -13,6 +13,16 @@ from rag_modules.config.settings import (
 )
 
 
+@pytest.mark.parametrize("changes", [
+    {"task_slice_seconds": 3500}, {"task_soft_time_limit_seconds": 3600},
+    {"task_time_limit_seconds": 3000}, {"heartbeat_interval_seconds": 0},
+])
+def test_task_timing_settings_preserve_room_for_checkpoint_and_cleanup(changes):
+    from rag_modules.config.settings import IndexingSettings
+    with pytest.raises(ValueError):
+        IndexingSettings(**changes)
+
+
 def test_project_env_loads_credentials_with_legacy_fallback_and_environment_priority(tmp_path, monkeypatch):
     import rag_modules.config.settings as source
 

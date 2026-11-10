@@ -19,7 +19,7 @@ from sqlalchemy.exc import (
 )
 
 from rag_modules.common import utcnow
-from rag_modules.db.models import DocumentSegmentRecord
+from rag_modules.db.models import DocumentSegmentRecord, IndexingJobDocumentRecord
 from rag_modules.indexing.ids import (
     normalize_segment_content,
     normalized_source_metadata,
@@ -64,6 +64,26 @@ class SegmentRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def load_prepared(self, command: SegmentStagingCommand):
+        marker = await self.session.scalar(select(IndexingJobDocumentRecord).where(
+            IndexingJobDocumentRecord.job_id == command.indexing_job_id,
+            IndexingJobDocumentRecord.document_id == command.document_id,
+            IndexingJobDocumentRecord.warnings.is_not(None),
+        ))
+        if marker is None or marker.warnings is None:
+            return None
+        result = await self.session.scalars(select(DocumentSegmentRecord).where(
+            DocumentSegmentRecord.dataset_id == command.dataset_id,
+            DocumentSegmentRecord.dataset_index_id == command.dataset_index_id,
+            DocumentSegmentRecord.document_id == command.document_id,
+            DocumentSegmentRecord.indexing_job_id == command.indexing_job_id,
+            DocumentSegmentRecord.status == "indexing", DocumentSegmentRecord.deleted_at.is_(None),
+        ).order_by(DocumentSegmentRecord.position, DocumentSegmentRecord.id))
+        records = list(result)
+        if not records:
+            return None
+        return records, tuple((item["stage"], item["code"]) for item in marker.warnings)
 
     async def stage(
         self,

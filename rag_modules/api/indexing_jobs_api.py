@@ -1,14 +1,16 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from rag_modules.db.session import get_db_session
+from rag_modules.api.dependencies import require_active_dataset
 from rag_modules.repositories.indexing_repository import IndexingRepository
 from rag_modules.api.dto.indexing_jobs import *
 from rag_modules.tasks.publisher import TaskPublisher, get_task_publisher
 from rag_modules.api.dto.process_rule import ProcessRuleConfirmationRequest
 from rag_modules.api.indexing_configuration_api import get_configuration_service
-from rag_modules.services.process_rule_service import ProcessRuleService, ProcessRuleValidationError
+from rag_modules.services.process_rule_service import ProcessRuleConflictError, ProcessRuleService, ProcessRuleValidationError
+from rag_modules.services.document_service import DatasetNotFoundError
 
-router = APIRouter(prefix="/api/knowledge_base/{dataset_id}/indexing/jobs", tags=["Indexing jobs"])
+router = APIRouter(prefix="/api/knowledge_base/{dataset_id}/indexing/jobs", tags=["Indexing jobs"], dependencies=[Depends(require_active_dataset)])
 
 def _response(job, rows):
     return IndexingJobResponse(
@@ -32,9 +34,14 @@ async def create_job(
     dataset_id: str, payload: ProcessRuleConfirmationRequest,
     service: ProcessRuleService = Depends(get_configuration_service),
     publisher: TaskPublisher = Depends(get_task_publisher),
+    db=Depends(get_db_session),
 ):
     try:
         result = await service.confirm(dataset_id, payload, actor_id="current-user")
+    except DatasetNotFoundError as exc:
+        raise HTTPException(404, "knowledge base not found") from exc
+    except ProcessRuleConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ProcessRuleValidationError as exc:
         raise HTTPException(422, str(exc)) from exc
     dispatched, pending = [], []
@@ -43,7 +50,7 @@ async def create_job(
             dispatched.append(publisher.dispatch_job_document(job_document_id=row.id) or row.id)
         except Exception:
             pending.append(row.id)
-    job, rows = await service.repository.get_job(dataset_id, result.job.id)
+    job, rows = await IndexingRepository(db).get_job(dataset_id, result.job.id)
     return IndexingJobActionResponse(job=_response(job, rows), dispatched=dispatched, dispatch_pending=pending)
 
 @router.get("", response_model=IndexingJobListResponse)

@@ -12,8 +12,15 @@ const fallbackOptions = {
   },
 };
 
-function makeConfig(options) {
+function makeConfig(options, indexing) {
   const defaults = options.defaults || fallbackOptions.defaults;
+  if (indexing?.process_rule) {
+    return {
+      indexing_technique: indexing.technique,
+      embedding_model: indexing.embedding_model,
+      segmentation: { separator: null, ...indexing.process_rule },
+    };
+  }
   return {
     indexing_technique: defaults.indexing_technique,
     embedding_model: defaults.embedding_model,
@@ -60,12 +67,15 @@ export default function IndexingPanel({ dataset, documents, onClose, onStarted }
 
   useEffect(() => {
     let current = true;
-    request("/api/indexing/options")
-      .then(payload => { if (current) { setOptions(payload); setConfig(makeConfig(payload)); } })
+    Promise.all([
+      request("/api/indexing/options"),
+      request(`/api/knowledge_base/${encodeURIComponent(dataset.id)}/settings`),
+    ])
+      .then(([payload, saved]) => { if (current) { setOptions(payload); setConfig(makeConfig(payload, saved.indexing)); } })
       .catch(err => { if (current) setError(err.message); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, []);
+  }, [dataset.id]);
 
   function update(next) {
     setConfig(next);

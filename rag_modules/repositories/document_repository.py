@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag_modules.db.models import DatasetIndexRecord, DocumentRecord, DocumentRevisionRecord, DocumentSegmentRecord
+from rag_modules.db.models import DatasetIndexRecord, DatasetRecord, DocumentRecord, DocumentRevisionRecord, DocumentSegmentRecord
 
 
 class DocumentRepository:
@@ -18,10 +18,11 @@ class DocumentRepository:
         self, dataset_id: str, document_id: str
     ) -> DocumentRecord | None:
         result = await self.session.execute(
-            select(DocumentRecord).where(
+            select(DocumentRecord).join(DatasetRecord, DatasetRecord.id == DocumentRecord.dataset_id).where(
                 DocumentRecord.dataset_id == dataset_id,
                 DocumentRecord.id == document_id,
                 DocumentRecord.deleted_at.is_(None),
+                DatasetRecord.deleted_at.is_(None),
             )
         )
         return result.scalar_one_or_none()

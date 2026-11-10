@@ -112,7 +112,7 @@ class _DeleteSessionStub:
         self.dataset = dataset
         self.committed = False
 
-    async def get(self, model, record_id: str):
+    async def get(self, model, record_id: str, *, with_for_update=False):
         if model is DatasetRecord and record_id == self.dataset.id:
             return self.dataset
         return None

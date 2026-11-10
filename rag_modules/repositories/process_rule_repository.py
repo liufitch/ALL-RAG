@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, or_, select
 
 from rag_modules.db.models import (
     DatasetIndexRecord,
     DatasetRecord,
     DocumentRecord,
+    DocumentSegmentRecord,
     IndexingJobDocumentRecord,
     IndexingJobRecord,
     ProcessRuleRecord,
@@ -15,6 +16,38 @@ from rag_modules.db.models import (
 class ProcessRuleRepository:
     def __init__(self, session):
         self.session = session
+
+    async def get_active_dataset(self, dataset_id: str):
+        # Serialize configuration with dataset deletion and other confirmations.
+        return await self.session.scalar(select(DatasetRecord).where(
+            DatasetRecord.id == dataset_id, DatasetRecord.deleted_at.is_(None),
+        ).with_for_update())
+
+    async def get_active_index(self, dataset_id: str):
+        return await self.session.scalar(select(DatasetIndexRecord).where(
+            DatasetIndexRecord.dataset_id == dataset_id,
+            DatasetIndexRecord.status == "active", DatasetIndexRecord.deleted_at.is_(None),
+        ))
+
+    async def get_running_job(self, dataset_id: str):
+        unpublished_segments = exists(select(DocumentSegmentRecord.id).where(
+            DocumentSegmentRecord.indexing_job_id == IndexingJobRecord.id,
+            DocumentSegmentRecord.status == "indexing",
+            DocumentSegmentRecord.deleted_at.is_(None),
+        ))
+        return await self.session.scalar(select(IndexingJobRecord).outerjoin(
+            DatasetIndexRecord, DatasetIndexRecord.id == IndexingJobRecord.target_index_id,
+        ).where(
+            IndexingJobRecord.dataset_id == dataset_id,
+            or_(
+                IndexingJobRecord.status.in_(("pending", "queued", "running", "retry_wait")),
+                # Worker summaries commit before publication, for both full
+                # builds and incremental writes into an already active index.
+                and_(IndexingJobRecord.status == "completed", or_(
+                    DatasetIndexRecord.status == "building", unpublished_segments,
+                )),
+            ),
+        ).limit(1))
 
     async def get_active_documents(self, dataset_id: str, document_ids: list[str]):
         result = await self.session.execute(
@@ -46,8 +79,9 @@ class ProcessRuleRepository:
         job.target_index_id = None
         self.session.add(job)
         await self.session.flush()
-        self.session.add(index)
-        await self.session.flush()
+        if index is not None:
+            self.session.add(index)
+            await self.session.flush()
         job.target_index_id = target_index_id
         dataset = await self.session.get(DatasetRecord, job.dataset_id)
         if dataset is not None:

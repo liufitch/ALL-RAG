@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from rag_modules.api.dependencies import require_active_dataset
 from rag_modules.api.dto.retrieval import RetrievalRequest, RetrievalResponse, RetrievalItemResponse
 from rag_modules.db.session import get_db_session
 from rag_modules.embeddings.openai_compatible import OpenAICompatibleEmbeddingClient
@@ -39,7 +40,7 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
 
-async def get_retrieval_service(db=Depends(get_db_session)):
+async def get_retrieval_service(db=Depends(get_db_session), _dataset=Depends(require_active_dataset)):
     graph_store = await asyncio.to_thread(get_graph_store)
     embedder = OpenAICompatibleEmbeddingClient(settings.embedding)
     service = RetrievalService(
@@ -64,7 +65,9 @@ async def retrieve(
     dataset = await db.scalar(select(DatasetRecord).where(
         DatasetRecord.id == dataset_id, DatasetRecord.deleted_at.is_(None),
     ))
-    saved = dataset.retrieval_model_config if dataset and dataset.retrieval_model_config else {}
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="knowledge base not found")
+    saved = dataset.retrieval_model_config or {}
     try:
         result = await service.retrieve(
             dataset_id,

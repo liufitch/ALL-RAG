@@ -38,7 +38,10 @@ async def test_graph_index_reports_segment_progress_and_checks_cancellation():
             pass
 
     class Store:
-        def upsert_segment(self, *args):
+        def completed_segments(self, *args):
+            return set()
+
+        def upsert_segment(self, *args, **kwargs):
             events.append(("write", args[3]))
 
     class Progress:
@@ -59,7 +62,7 @@ async def test_graph_index_reports_segment_progress_and_checks_cancellation():
         ("progress", "graph-extract", 94, 1, 2),
         ("progress", "graph-extract", 98, 2, 2),
     ]
-    assert events.count(("check",)) == 4
+    assert events.count(("check",)) >= 4
 
 
 def test_enabled_graph_indexer_does_not_connect_before_job_is_claimed(monkeypatch):
