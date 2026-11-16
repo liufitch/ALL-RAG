@@ -55,6 +55,8 @@ alembic upgrade head
 
 本次控制台修复的原因、改动清单、状态规则及验证结果见 [2026-09-05 复盘记录](docs/superpowers/retrospectives/2026-09-05-console-review-fixes.md)。
 
+重排未接入、文档跨存储清理与补偿、人工修订在重建和迁移中丢失等问题的根因、修复及验证边界见 [2026-11-16 问题记录](docs/superpowers/retrospectives/2026-11-16-rerank-cleanup-revision-fixes.md)。
+
 开发模式需要分别启动后端和前端：
 
 ```bash
