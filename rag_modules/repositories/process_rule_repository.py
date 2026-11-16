@@ -71,6 +71,8 @@ class ProcessRuleRepository:
         return result.scalars().first()
 
     async def create_rule_and_job(self, *, rule, job, index, documents, job_documents, rule_is_new=True):
+        from .revision_snapshot import bind_document_revisions
+        await bind_document_revisions(self.session, job.dataset_id, job_documents)
         if rule_is_new:
             self.session.add(rule)
         # The job and index reference each other; insert the job without its

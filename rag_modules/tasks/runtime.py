@@ -14,6 +14,10 @@ from rag_modules.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
+class DocumentCleanupCompensationPending(RuntimeError):
+    """The writer finished but its durable cleanup invalidation needs retry."""
+
+
 def run_indexing_task(job_document_id: str, *, dataset_id: str | None = None, document_id: str | None = None) -> None:
     asyncio.run(_run_indexing_task(job_document_id, dataset_id=dataset_id, document_id=document_id))
 
@@ -28,6 +32,7 @@ async def _run_indexing_task(job_document_id: str, *, dataset_id: str | None = N
         poolclass=NullPool, hide_parameters=True,
     )
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    context_id = job_document_id
     try:
         async with session_factory() as session:
             from .indexing_tasks import build_task_runner
@@ -48,7 +53,30 @@ async def _run_indexing_task(job_document_id: str, *, dataset_id: str | None = N
                     context_id = resolved or job_document_id
                 await runner.run(context_id)
     finally:
-        await engine.dispose()
+        try:
+            # Lease recovery cannot stop an upsert already running remotely.
+            # After the runner has drained its external work, invalidate any
+            # cleanup that may have completed in the meantime. A fresh session
+            # also covers early exits/redelivery for an already-deleted source.
+            from sqlalchemy import select, update
+            from rag_modules.db.models import DocumentRecord, IndexingJobDocumentRecord
+
+            async with session_factory() as cleanup_session:
+                filters = [DocumentRecord.deleted_at.is_not(None)]
+                if dataset_id and document_id:
+                    filters.extend((DocumentRecord.dataset_id == dataset_id, DocumentRecord.id == document_id))
+                else:
+                    filters.append(DocumentRecord.id.in_(select(IndexingJobDocumentRecord.document_id).where(
+                        IndexingJobDocumentRecord.id == context_id,
+                    )))
+                await cleanup_session.execute(update(DocumentRecord).where(*filters).values(
+                    cleanup_completed_at=None, cleanup_last_attempt_at=None,
+                ))
+                await cleanup_session.commit()
+        except Exception:
+            raise DocumentCleanupCompensationPending("Document cleanup compensation must be retried.") from None
+        finally:
+            await engine.dispose()
 
 
 async def _run_finalize_indexing_job(job_id: str) -> None:

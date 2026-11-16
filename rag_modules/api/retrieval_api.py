@@ -15,6 +15,7 @@ from rag_modules.embeddings import EmbeddingError
 from rag_modules.config.settings import settings
 from rag_modules.graph.factory import get_graph_store
 from rag_modules.retrieval import RetrievalService
+from rag_modules.reranking import RerankClient
 from rag_modules.vector_stores.factory import get_vector_store
 from rag_modules.db.models import DatasetRecord
 
@@ -43,16 +44,21 @@ def _sse(event: str, data: dict) -> str:
 async def get_retrieval_service(db=Depends(get_db_session), _dataset=Depends(require_active_dataset)):
     graph_store = await asyncio.to_thread(get_graph_store)
     embedder = OpenAICompatibleEmbeddingClient(settings.embedding)
+    reranker = RerankClient(settings.rerank)
     service = RetrievalService(
         db,
         vector_store=get_vector_store(),
         embedder=embedder,
         graph_store=graph_store,
+        reranker=reranker,
     )
     try:
         yield service
     finally:
-        await embedder.aclose()
+        try:
+            await embedder.aclose()
+        finally:
+            await reranker.aclose()
 
 
 @router.post("/retrieve", response_model=RetrievalResponse)

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag_modules.db.models import (
     DatasetIndexRecord, DatasetRecord, DocumentRecord, DocumentSegmentRecord,
-    IndexingJobDocumentRecord, IndexingJobRecord,
+    IndexingJobDocumentRecord, IndexingJobRecord, DocumentRevisionRecord,
 )
 
 
@@ -189,6 +189,14 @@ class KnowledgeBaseRepository:
         ).order_by(DocumentRecord.position.asc(), DocumentRecord.id.asc()))
         return list(result.scalars())
 
+    async def list_document_revisions(self, dataset_id: str) -> list[DocumentRevisionRecord]:
+        return list(await self.session.scalars(select(DocumentRevisionRecord).join(
+            DocumentRecord, DocumentRecord.id == DocumentRevisionRecord.document_id,
+        ).where(
+            DocumentRevisionRecord.dataset_id == dataset_id,
+            DocumentRecord.dataset_id == dataset_id, DocumentRecord.deleted_at.is_(None),
+        ).order_by(DocumentRevisionRecord.document_id, DocumentRevisionRecord.version)))
+
     async def create_import_records(self, *, dataset_id: str, dataset: dict, retrieval: dict, documents: list[dict], actor_id: str) -> str:
         from uuid import uuid4
         now = datetime.now(timezone.utc)
@@ -212,11 +220,23 @@ class KnowledgeBaseRepository:
                 name=item["name"][:255], created_from="import", created_by=actor_id,
                 created_at=now, indexing_status="waiting", enabled=item["enabled"], archived=item["archived"],
             ))
+        # The revision/document FK is immediate; persist both parents first.
+        await self.session.flush()
+        for item in documents:
+            for revision in item.get("revisions", []):
+                self.session.add(DocumentRevisionRecord(
+                    id=uuid4().hex, dataset_id=dataset_id, document_id=item["id"],
+                    version=revision["version"], segments=revision["segments"],
+                    created_by=revision["created_by"], created_at=revision["created_at"],
+                    status="saved", indexing_job_id=None,
+                ))
         await self.session.commit()
         return dataset_id
 
     async def create_rebuild_job(self, dataset_id: str, actor_id: str) -> tuple[IndexingJobRecord, list[IndexingJobDocumentRecord]] | None:
-        dataset = await self.get_active(dataset_id)
+        dataset = await self.session.scalar(select(DatasetRecord).where(
+            DatasetRecord.id == dataset_id, DatasetRecord.deleted_at.is_(None),
+        ).with_for_update())
         if dataset is None:
             return None
         documents = list((await self.session.execute(select(DocumentRecord).where(
@@ -268,6 +288,8 @@ class KnowledgeBaseRepository:
             config_hash=uuid4().hex,
         )
         rows = [IndexingJobDocumentRecord(id=uuid4().hex, job_id=job_id, document_id=item.id, status="pending") for item in documents]
+        from .revision_snapshot import bind_document_revisions
+        await bind_document_revisions(self.session, dataset_id, rows)
         # Break the job/index foreign-key cycle inside this transaction.
         self.session.add(job)
         await self.session.flush()

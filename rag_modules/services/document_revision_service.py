@@ -57,18 +57,11 @@ class DocumentRevisionService:
         if payload.base_version is not None and payload.base_version != latest_version:
             raise RevisionConflictError("Document revision is stale; reload the segments first.")
 
-        items = [item.model_dump(mode="json") for item in payload.segments]
-        seen_ids = set()
-        for item in items:
-            if not item["content"].strip():
-                raise DocumentValidationError("Segment content must not be blank.")
-            if item["id"] in seen_ids:
-                raise DocumentValidationError("Segment IDs must be unique.")
-            seen_ids.add(item["id"])
-            if item["parent_id"] is not None and item["parent_id"] not in seen_ids:
-                raise DocumentValidationError("A child segment must reference an earlier parent segment.")
-        if any(item["index_type"] == "child" and item["parent_id"] is None for item in items):
-            raise DocumentValidationError("Child segments require a parent segment.")
+        from rag_modules.documents.revisions import validate_revision_segments
+        try:
+            items = validate_revision_segments({"items": [item.model_dump(mode="json") for item in payload.segments]})["items"]
+        except ValueError as exc:
+            raise DocumentValidationError(str(exc)) from exc
 
         active_index = await self.session.scalar(
             select(DatasetIndexRecord).where(
@@ -121,6 +114,7 @@ class DocumentRevisionService:
             id=uuid4().hex,
             job_id=job.id,
             document_id=document_id,
+            revision_id=revision.id,
             status="pending",
         )
         revision.indexing_job_id = job.id

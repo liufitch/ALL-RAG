@@ -60,6 +60,14 @@ class IndexingRepository:
         )
         if not claimable and not expired:
             return None
+        # Serialize the claim with document deletion/cleanup. A runner can have
+        # loaded its context just before the API committed the tombstone.
+        document = (await self.session.execute(select(
+            DocumentRecord.id, DocumentRecord.deleted_at,
+        ).where(DocumentRecord.id == row.document_id).with_for_update())).one_or_none()
+        if document is None or document.deleted_at is not None:
+            await self.session.rollback()
+            return None
         row.status = "running"
         row.attempt = int(row.attempt or 0) + 1
         row.worker_id = worker_id
@@ -118,14 +126,17 @@ class IndexingRepository:
         # hide cancellation, deletion or a lease taken over by another worker.
         result = await self.session.execute(select(
             IndexingJobDocumentRecord.status, IndexingJobDocumentRecord.worker_id,
-            IndexingJobRecord.cancel_requested_at, DatasetRecord.deleted_at,
+            IndexingJobRecord.cancel_requested_at, DatasetRecord.deleted_at.label("dataset_deleted_at"),
+            DocumentRecord.deleted_at.label("document_deleted_at"),
         ).join(IndexingJobRecord, IndexingJobRecord.id == IndexingJobDocumentRecord.job_id)
           .join(DatasetRecord, DatasetRecord.id == IndexingJobRecord.dataset_id)
+          .join(DocumentRecord, DocumentRecord.id == IndexingJobDocumentRecord.document_id)
           .where(IndexingJobDocumentRecord.id == job_document_id))
         state = result.one_or_none()
         if state is None:
             return True
-        return (state.cancel_requested_at is not None or state.deleted_at is not None
+        return (state.cancel_requested_at is not None or state.dataset_deleted_at is not None
+                or state.document_deleted_at is not None
                 or state.status == "cancelled" or (worker_id is not None and state.worker_id != worker_id))
 
     async def complete_job_document(
@@ -735,6 +746,8 @@ class IndexingRepository:
             status="pending",
             max_attempts=3,
         )
+        from .revision_snapshot import bind_document_revisions
+        await bind_document_revisions(self.session, dataset_id, [job_document])
         self.session.add(job_document)
         await self.session.commit()
         return job_document.id

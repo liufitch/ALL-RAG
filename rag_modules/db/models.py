@@ -76,6 +76,13 @@ class DocumentRecord(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cleanup_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cleanup_last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_documents_pending_cleanup", "cleanup_completed_at", "cleanup_last_attempt_at",
+              postgresql_where=deleted_at.is_not(None)),
+    )
 
 
 class DocumentRevisionRecord(Base):
@@ -298,6 +305,9 @@ class IndexingJobDocumentRecord(Base):
         String(36),
         ForeignKey("documents.id", name="fk_indexing_job_documents_document"),
         nullable=False,
+    )
+    revision_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("document_revisions.id", name="fk_indexing_job_documents_revision"), nullable=True,
     )
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     current_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -126,8 +126,8 @@ def test_live_document_lifecycle_and_archive_round_trip(live_api):
         _wait_job(client, imported_base, imported["job_id"])
         imported_hits = _json(client, "POST", imported_base + "/retrieve", json={"query": token})["items"]
         assert imported_hits and token in imported_hits[0]["content"]
-        # Archives contain original files, so edits to derived segments do not replace the source.
-        assert "MANUALFUNCTIONALREVISION" not in imported_hits[0]["content"]
+        # Imported rebuilds consume saved edits while retaining the separate original file.
+        assert "MANUALFUNCTIONALREVISION" in imported_hits[0]["content"]
         _json(client, "DELETE", doc)
         assert not hits()
         assert client.get(doc + "/download").status_code == 404

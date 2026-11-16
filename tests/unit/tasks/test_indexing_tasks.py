@@ -155,3 +155,23 @@ async def test_cancel_requested_stops_engine_and_marks_cancelled():
 
     assert repo.row.status == "cancelled"
     assert any(name == "cancel" for name, _ in repo.calls)
+
+
+def test_failed_cleanup_compensation_is_retried_by_task_boundary(monkeypatch):
+    from celery.exceptions import Retry
+    from rag_modules.tasks.indexing_tasks import index_document
+    from rag_modules.tasks.runtime import DocumentCleanupCompensationPending
+    error = DocumentCleanupCompensationPending("Document cleanup compensation must be retried.")
+    calls = []
+    def fail(*args, **kwargs):
+        raise error
+    def retry(**kwargs):
+        calls.append(kwargs)
+        raise Retry()
+    monkeypatch.setattr("rag_modules.tasks.runtime.run_indexing_task", fail)
+    monkeypatch.setattr(index_document, "retry", retry)
+    with pytest.raises(Retry):
+        index_document.run(job_document_id="stale-writer")
+    assert len(calls) == 1
+    assert calls[0]["exc"] is error
+    assert index_document.max_retries is None

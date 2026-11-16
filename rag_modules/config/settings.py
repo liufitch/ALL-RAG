@@ -153,6 +153,15 @@ class EmbeddingSettings(BaseModel):
         raise ValueError(f"unknown or disabled embedding model: {model_id}")
 
 
+class RerankSettings(BaseModel):
+    """Jina/Cohere-compatible rerank endpoint, used only when requested."""
+
+    base_url: str = "http://localhost:8002/v1"
+    api_key: SecretStr = SecretStr("")
+    model: str = Field(default="bge-reranker-large", min_length=1)
+    request_timeout: int = Field(default=30, ge=1, le=300)
+
+
 class GraphSettings(BaseModel):
     enabled: bool = False
     uri: str = "bolt://localhost:7687"
@@ -287,6 +296,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
+    rerank: RerankSettings = Field(default_factory=RerankSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     object_storage: ObjectStorageSettings = Field(default_factory=ObjectStorageSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)

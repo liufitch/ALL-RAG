@@ -15,6 +15,7 @@ import anyio
 from pydantic import BaseModel, Field, field_validator
 
 from rag_modules.api.dto.knowledge_base.settings import RetrievalConfig
+from rag_modules.documents.revisions import validate_revision_segments
 
 
 class ArchiveValidationError(ValueError):
@@ -28,7 +29,7 @@ class _ArchiveFile(BaseModel):
 
 
 class _ArchiveManifest(BaseModel):
-    format_version: Literal[1]
+    format_version: Literal[1, 2]
     document_count: int = Field(ge=0, strict=True)
     files: list[_ArchiveFile]
 
@@ -61,6 +62,19 @@ class _ArchiveDocument(BaseModel):
     archived: bool = False
 
 
+class _ArchiveRevision(BaseModel):
+    document_id: str = Field(min_length=1)
+    version: int = Field(ge=1, strict=True)
+    created_by: str = Field(min_length=1, max_length=36)
+    created_at: datetime
+    segments: dict
+
+    @field_validator("segments")
+    @classmethod
+    def validate_segments(cls, value):
+        return validate_revision_segments(value)
+
+
 class KnowledgeBaseArchiveService:
     MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
     MAX_FILE_BYTES = 128 * 1024 * 1024
@@ -76,6 +90,7 @@ class KnowledgeBaseArchiveService:
         if dataset is None:
             raise ArchiveValidationError("knowledge base not found")
         documents = await self.repository.list_all_documents(dataset_id)
+        revisions = await self.repository.list_document_revisions(dataset_id)
         fd, filename = tempfile.mkstemp(prefix="graph-rag-export-", suffix=".zip", dir=self.temp_dir)
         os.close(fd)
         manifest_files = []
@@ -114,8 +129,17 @@ class KnowledgeBaseArchiveService:
                 self._write_json(archive, "dataset.json", dataset_payload)
                 self._write_json(archive, "retrieval.json", retrieval_payload)
                 self._write_json(archive, "documents.json", document_payload)
+                revision_bytes = json.dumps([{
+                    "document_id": revision.document_id, "version": revision.version,
+                    "created_by": revision.created_by, "created_at": revision.created_at.isoformat(),
+                    "segments": revision.segments,
+                } for revision in revisions], ensure_ascii=False, separators=(",", ":")).encode()
+                if len(revision_bytes) > self.MAX_FILE_BYTES:
+                    raise ArchiveValidationError("revision metadata exceeds archive file size limit")
+                archive.writestr("revisions.json", revision_bytes)
+                manifest_files.append({"path": "revisions.json", "sha256": hashlib.sha256(revision_bytes).hexdigest(), "size": len(revision_bytes)})
                 self._write_json(archive, "manifest.json", {
-                    "format_version": 1,
+                    "format_version": 2,
                     "exported_at": datetime.now(timezone.utc).isoformat(),
                     "source_dataset_id": dataset.id,
                     "document_count": len(document_payload),
@@ -141,8 +165,11 @@ class KnowledgeBaseArchiveService:
             raise ArchiveValidationError("invalid archive") from exc
         with archive:
             names = archive.namelist()
-            if len(names) > self.MAX_FILES + 4 or len(set(names)) != len(names):
+            if len(names) > self.MAX_FILES + 5 or len(set(names)) != len(names):
                 raise ArchiveValidationError("archive contains invalid members")
+            if (any(item.file_size > self.MAX_FILE_BYTES for item in archive.infolist())
+                    or sum(item.file_size for item in archive.infolist()) > self.MAX_ARCHIVE_BYTES):
+                raise ArchiveValidationError("archive exceeds expanded size limit")
             for name in names:
                 path = PurePath(name)
                 if name.startswith("/") or ".." in path.parts or str(path) != name or "\\" in name:
@@ -163,8 +190,43 @@ class KnowledgeBaseArchiveService:
             entries = {item.get("path"): item for item in manifest.get("files", [])}
             if len(document_payload) > self.MAX_FILES or manifest.get("document_count") != len(document_payload):
                 raise ArchiveValidationError("archive document count is invalid")
-            if len(entries) > self.MAX_FILES:
+            if len(entries) != len(manifest["files"]) or len(entries) > self.MAX_FILES + 1:
                 raise ArchiveValidationError("archive contains too many files")
+            revisions_by_document = {}
+            if manifest["format_version"] == 2:
+                if "revisions.json" not in names or "revisions.json" not in entries:
+                    raise ArchiveValidationError("archive is missing revision snapshots")
+                revision_bytes = archive.read("revisions.json")
+                entry = entries["revisions.json"]
+                if len(revision_bytes) != entry["size"] or hashlib.sha256(revision_bytes).hexdigest() != entry["sha256"]:
+                    raise ArchiveValidationError("revision hash does not match manifest")
+                try:
+                    revisions = json.loads(revision_bytes)
+                    if not isinstance(revisions, list):
+                        raise ValueError("revisions must be a list")
+                    revisions = [_ArchiveRevision.model_validate(item) for item in revisions]
+                except (ValueError, TypeError) as exc:
+                    raise ArchiveValidationError("archive revision metadata is invalid") from exc
+                document_ids = [item["id"] for item in document_payload]
+                if any(not identifier for identifier in document_ids) or len(set(document_ids)) != len(document_ids):
+                    raise ArchiveValidationError("archive document IDs are invalid")
+                seen_versions = set()
+                for revision in revisions:
+                    key = (revision.document_id, revision.version)
+                    if revision.document_id not in document_ids or key in seen_versions:
+                        raise ArchiveValidationError("archive revision ownership or version is invalid")
+                    seen_versions.add(key)
+                    data = revision.model_dump()
+                    # Snapshot IDs are local inputs; map parents with the same
+                    # per-revision mapping before creating fresh persisted IDs.
+                    segment_ids = {item["id"]: uuid4().hex for item in data["segments"]["items"]}
+                    for item in data["segments"]["items"]:
+                        item["id"] = segment_ids[item["id"]]
+                        if item["parent_id"] is not None:
+                            item["parent_id"] = segment_ids[item["parent_id"]]
+                    revisions_by_document.setdefault(revision.document_id, []).append(data)
+            elif "revisions.json" in names:
+                raise ArchiveValidationError("revision snapshots require archive format version 2")
             dataset_id = uuid4().hex
             objects: list[str] = []
             imported_documents = []
@@ -212,6 +274,7 @@ class KnowledgeBaseArchiveService:
                             "data_source_info": info, "created_from": "import",
                             "created_by": actor_id, "enabled": bool(item.get("enabled", True)),
                             "archived": bool(item.get("archived", False)), "status": "waiting",
+                            "revisions": revisions_by_document.get(item.get("id"), []),
                         })
                     finally:
                         try:

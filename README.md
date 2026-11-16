@@ -47,6 +47,12 @@ alembic upgrade head
 
 该迁移要求已有 `datasets`、`documents`、`document_segments` 表及 `vector` 扩展，不是空数据库初始化脚本。知识库状态和统计查询依赖迁移新增的索引版本、任务表。
 
+检索的“启用重排”通过独立的 Jina/Cohere 兼容 `/rerank` 服务执行（例如 [vLLM 重排接口](https://docs.vllm.ai/en/latest/models/pooling_models/scoring/)）。在 `.env` 设置 `RERANK__BASE_URL`（例如 `http://localhost:8002/v1`，不含 `/rerank`）、`RERANK__MODEL`、可选的 `RERANK__API_KEY` 和 `RERANK__REQUEST_TIMEOUT`。模型名称需与重排服务实际部署名称一致；Embedding 服务本身不一定提供重排接口。普通与流式检索共用此依赖，只有启用重排且有召回候选时才请求模型；超时或返回无效结果时保留原召回顺序，并记录 `rerank_failed` 日志。Docker 访问宿主机服务时，应将地址中的 `localhost` 改为 `host.docker.internal`。
+
+文档软删除后，Worker 会清理 MinIO 原文件、各索引版本的 Milvus 向量、Neo4j 来源分段与关系及不再被其他文档引用的实体，并软删除 PostgreSQL 分段。升级迁移 `20261116_01` 后，`documents.cleanup_completed_at` 仅在各项清理成功后填写；旧版已删除的文档也会自动进入补偿扫描。Celery Beat 每 60 秒按批次补投未完成的清理任务，Broker 或单个存储故障不会丢失清理意图，也不会阻止其他存储的清理。运行中的索引任务会在检查点观察文档删除，清理任务等待运行状态结束后执行。即使租约恢复后旧 Worker 的远程写入才完成，Worker 退出时也会重新打开该文档的清理状态；这次补偿写入若遇到数据库故障，将通过 Celery 持续退避重试，覆盖重投时文档已删除、无需再次构建索引的情况。请保持消费 `maintenance` 队列的 Worker 和 Beat 运行。
+
+清理历史 Neo4j 数据使用 `GRAPH__URI`、`GRAPH__USERNAME`、`GRAPH__PASSWORD` 和 `GRAPH__DATABASE`，即使已将 `GRAPH__ENABLED` 关闭也会尝试清理；关闭新索引的图谱能力不会把历史图谱直接标记为已清理。Neo4j 不可用或凭据缺失时，任务保留待补偿状态并记录 `document_cleanup_pending`，需要恢复连接后才能完成清理。
+
 本次控制台修复的原因、改动清单、状态规则及验证结果见 [2026-09-05 复盘记录](docs/superpowers/retrospectives/2026-09-05-console-review-fixes.md)。
 
 开发模式需要分别启动后端和前端：
@@ -183,3 +189,9 @@ API 地址为 `http://localhost:8000`。Compose 的 `app` profile 启动 API 与
 当前按 `linux/amd64` 构建 CPU 镜像，以兼容 PaddlePaddle 的 Linux x86_64 wheel；在 Apple Silicon Docker Desktop 上会使用架构仿真，首次构建和 OCR 推理会较慢。Docker Desktop 不提供 NVIDIA CUDA GPU 直通；GPU 部署需要 Linux/NVIDIA 主机和匹配的 PaddlePaddle GPU 镜像。宿主机直接运行 API/Worker 时，仍可按 [OCR 文档](docs/paddleocr.md) 安装 `pip install -e '.[ocr]'`。
 
 启用后，`.png`、`.jpg`、`.jpeg` 直接使用 OCR；PDF 逐页优先使用文本层，只有没有文本的页面才渲染并 OCR。OCR 先执行标准清洗，用户在分段预览后仍可使用现有分段编辑器手动修改；保存会创建 revision，原始上传文件保持不变。
+
+人工修订会作为独立的持久化输入保留。新建全库重建、配置索引或兼容上传索引任务时，每篇文档会绑定当时最新的已保存修订；没有修订的文档才重新解析原文件。保存成功但索引失败或取消的修订仍是用户已保存的内容，后续重建会使用它；重试既有任务则保持原先绑定的版本，不会读取排队期间新增的修订。高质量索引保留人工修订的分段边界与父子结构，自动分段规则的变更应用于未修订文档；切换到经济模式时，快照中的各段作为独立普通分段索引，原始父子结构仍完整保存在修订历史中。绑定的快照丢失或无效时，任务会明确失败，不会回退到原文件而覆盖修订。
+
+新版 ZIP 归档使用 `format_version: 2`，在原文件、配置和文档元数据之外增加 `revisions.json`，保存各文档的修订历史、版本、作者、时间、分段内容、问答、关键词、来源位置及父子引用，并在 manifest 中校验大小和 SHA-256。导入时为文档、修订及分段生成新标识，同步重映射父子引用；修订以 `saved` 状态保存，不携带旧环境的任务或索引状态，首次重建即可消费。导入前会校验修订归属、版本唯一性及分段结构。仍可导入旧版 v1 归档；旧归档没有携带的人工修订无法从原文件恢复，需要从仍保留修订记录的原知识库重新导出。
+
+启用上述任务输入绑定前运行 `alembic upgrade head`（迁移 `20261116_02`），并重启新版 API 和 Worker。已有单文档修订任务的显式引用会迁移到文档任务记录；后续新建的多文档任务可分别使用各文档自己的修订版本。

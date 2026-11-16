@@ -201,7 +201,7 @@ def test_real_high_quality_semantic_hybrid_revision_and_rebuild(real):
     new_snapshot = real.snapshot(base)
     assert new_snapshot["index_id"] != snapshot["index_id"]
     assert new_snapshot["vector_count"] == 3
-    assert "REALREVISION2026" not in real.retrieve(base, "维他命", "vector")[0]["content"]
+    assert "REALREVISION2026" in real.retrieve(base, "维他命", "vector")[0]["content"]
 
 
 def test_real_parent_child_vectors_return_full_parent_context(real):

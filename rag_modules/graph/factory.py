@@ -1,4 +1,4 @@
-"""只在启用时建立 Neo4j 连接。"""
+"""Connect for enabled graph operations or explicit historical asset cleanup."""
 
 from functools import lru_cache
 
@@ -7,9 +7,9 @@ from rag_modules.config.settings import settings
 from .neo4j_store import Neo4jGraphStore
 
 
-@lru_cache(maxsize=1)
-def get_graph_store() -> Neo4jGraphStore | None:
-    if not settings.graph.enabled:
+@lru_cache(maxsize=2)
+def get_graph_store(*, for_cleanup: bool = False) -> Neo4jGraphStore | None:
+    if not settings.graph.enabled and not for_cleanup:
         return None
     from neo4j import GraphDatabase
 
@@ -19,7 +19,8 @@ def get_graph_store() -> Neo4jGraphStore | None:
     )
     store = Neo4jGraphStore(driver, database=settings.graph.database)
     try:
-        store.ensure_schema()
+        if not for_cleanup:
+            store.ensure_schema()
     except Exception:
         driver.close()
         raise

@@ -19,6 +19,9 @@ class Repo:
             created_at=datetime.now(timezone.utc), retrieval_model_config={"top_k": 5},
         )
 
+    async def list_document_revisions(self, dataset_id):
+        return []
+
     async def list_all_documents(self, dataset_id):
         return [DocumentRecord(
             id="doc-1", dataset_id=dataset_id, position=1,
@@ -44,7 +47,7 @@ async def test_export_contains_manifest_metadata_and_file(tmp_path):
         names = set(archive.namelist())
         assert {"manifest.json", "dataset.json", "retrieval.json", "documents.json"}.issubset(names)
         manifest = json.loads(archive.read("manifest.json"))
-        assert manifest["format_version"] == 1
+        assert manifest["format_version"] == 2
         assert manifest["files"][0]["sha256"] == hashlib.sha256(b"hello").hexdigest()
         assert archive.read("files/doc-1/guide.txt") == b"hello"
 

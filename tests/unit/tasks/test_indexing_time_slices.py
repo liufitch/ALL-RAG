@@ -138,7 +138,7 @@ async def test_cancellation_observes_changes_from_another_session(tmp_path):
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
     from rag_modules.common import utcnow
     from rag_modules.db.base import Base
-    from rag_modules.db.models import DatasetRecord, IndexingJobRecord, IndexingJobDocumentRecord
+    from rag_modules.db.models import DatasetRecord, DocumentRecord, IndexingJobRecord, IndexingJobDocumentRecord
     from rag_modules.repositories.indexing_repository import IndexingRepository
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cancellation.db'}")
@@ -149,7 +149,8 @@ async def test_cancellation_observes_changes_from_another_session(tmp_path):
         async with factory() as worker:
             dataset = DatasetRecord(id="ds", name="D", provider="p", permission="only_me", indexing_technique="economy", created_by="u")
             job = IndexingJobRecord(id="job", dataset_id="ds", job_type="initial_index", scope="selected_documents", status="running", indexing_technique="economy", segmentation_mode="general", process_rule={}, retrieval_config={}, created_by="u")
-            worker.add_all([dataset, job, IndexingJobDocumentRecord(id="jd", job_id="job", document_id="doc", status="running", worker_id="owner")])
+            document = DocumentRecord(id="doc", dataset_id="ds", name="doc.txt", data_source_type="upload", created_from="api", created_by="u", indexing_status="indexing")
+            worker.add_all([dataset, document, job, IndexingJobDocumentRecord(id="jd", job_id="job", document_id="doc", status="running", worker_id="owner")])
             await worker.commit()
             repository = IndexingRepository(worker)
             assert await repository.cancellation_requested("jd") is False

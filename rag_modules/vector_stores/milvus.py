@@ -244,6 +244,8 @@ class MilvusVectorStore:
             raise VectorValidationError()
         client = self._client()
         try:
+            if not client.has_collection(collection_name=collection_name, timeout=self._config.connect_timeout):
+                return 0
             response = client.delete(
                 collection_name=collection_name,
                 filter=f'document_id == "{document_id}"',

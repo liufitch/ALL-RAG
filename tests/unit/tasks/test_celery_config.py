@@ -12,3 +12,14 @@ def test_celery_uses_rabbitmq_with_late_ack_and_no_result_backend():
         "indexing",
         "maintenance",
     }
+
+
+def test_cleanup_is_scheduled_and_routed_to_consumed_maintenance_queue():
+    dispatch_task = "rag_modules.tasks.document_cleanup_tasks.dispatch_pending_cleanup"
+    cleanup_task = "rag_modules.tasks.document_cleanup_tasks.cleanup_document"
+    scheduled = [entry for entry in celery_app.conf.beat_schedule.values() if entry["task"] == dispatch_task]
+    assert len(scheduled) == 1
+    assert scheduled[0]["schedule"] > 0
+    assert scheduled[0]["options"]["queue"] == "maintenance"
+    for task in [dispatch_task, cleanup_task]:
+        assert celery_app.amqp.router.route({}, task)["queue"].name == "maintenance"

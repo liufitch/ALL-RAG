@@ -777,3 +777,9 @@ def test_unrelated_programmer_error_is_not_swallowed():
 
     with pytest.raises(RuntimeError, match="programmer defect"):
         make_store(client).ensure_collection("collection", 3)
+
+
+def test_delete_document_is_successful_when_collection_already_removed():
+    client = RecordingMilvusClient(existing=False)
+    assert make_store(client).delete_document("collection", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") == 0
+    assert client.deleted_filters == []

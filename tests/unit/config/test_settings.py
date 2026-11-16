@@ -231,3 +231,16 @@ def test_total_merged_cell_limit_cannot_exceed_physical_cell_limit():
             max_merged_cell_area=5,
             max_total_merged_cell_area=6,
         )
+
+
+def test_rerank_model_endpoint_and_secret_load_from_nested_environment(monkeypatch):
+    monkeypatch.setenv("RERANK__BASE_URL", "http://reranker.test/v1")
+    monkeypatch.setenv("RERANK__MODEL", "test-reranker")
+    monkeypatch.setenv("RERANK__API_KEY", "secret-rerank-token")
+    monkeypatch.setenv("RERANK__REQUEST_TIMEOUT", "12")
+    config = Settings(_env_file=None).rerank
+    assert config.base_url == "http://reranker.test/v1"
+    assert config.model == "test-reranker"
+    assert config.request_timeout == 12
+    assert config.api_key.get_secret_value() == "secret-rerank-token"
+    assert "secret-rerank-token" not in repr(config)

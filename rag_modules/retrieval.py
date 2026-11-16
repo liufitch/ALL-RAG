@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 import inspect
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -12,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from rag_modules.db.models import DatasetIndexRecord, DatasetRecord, DocumentRecord, DocumentSegmentRecord
 from rag_modules.indexing.keywords import KeywordExtractor
 from rag_modules.vector_stores.base import VectorSearchHit
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +149,7 @@ class RetrievalService:
                         trace[next(i for i, item in enumerate(trace) if item["segment_id"] == identifier)]["after_rank"] = rank + 1
             except (RuntimeError, TypeError, ValueError, OSError):
                 # Reranking is an optimization; a provider outage must not hide base recall.
-                pass
+                logger.warning("rerank_failed dataset_id=%s", dataset_id)
         items = []
         seen_contexts: set[str] = set()
         for score, identifier, match in candidates:

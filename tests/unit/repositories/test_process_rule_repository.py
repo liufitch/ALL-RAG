@@ -323,3 +323,25 @@ async def test_new_confirmation_ignores_staging_from_failed_incremental_job(cons
     # Redelivery of the finalization message must preserve its successful state.
     assert await repository.finalize_indexing_job(replacement.job.id) is True
     assert replacement.job.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_imported_revision_foreign_keys_and_configuration_job_binding(constrained_session, tmp_path):
+    from tests.unit.services.test_revision_preservation import MemoryStorage, segment
+    from rag_modules.services.knowledge_base_archive_service import KnowledgeBaseArchiveService
+    session = constrained_session
+    document = await session.get(DocumentRecord, "doc-1")
+    document.name = "guide.txt"
+    document.data_source_info = {"object_key": "original"}
+    session.add(DocumentRevisionRecord(id="saved-edit", dataset_id="dataset-1", document_id="doc-1", version=1, segments={"items": [segment("s", "manual content")]}, created_by="tester", status="saved"))
+    await session.commit()
+    service = KnowledgeBaseArchiveService(KnowledgeBaseRepository(session), MemoryStorage(), temp_dir=tmp_path)
+    path = await service.export_dataset("dataset-1")
+    with open(path, "rb") as source:
+        imported = await service.import_dataset(source)
+    dataset_id = imported["dataset_id"]
+    revision = await session.scalar(select(DocumentRevisionRecord).where(DocumentRevisionRecord.dataset_id == dataset_id))
+    result = await ProcessRuleService(ProcessRuleRepository(session)).confirm(dataset_id, ProcessRuleConfirmationRequest(document_ids=[revision.document_id], indexing_technique="economy", segmentation={"mode": "general", "max_chunk_length": 500, "overlap": 50}), "tester")
+    assert result.job_documents[0].revision_id == revision.id
+    assert revision.status == "saved"
+    assert revision.indexing_job_id is None

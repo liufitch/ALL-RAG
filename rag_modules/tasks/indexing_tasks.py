@@ -11,7 +11,10 @@ from billiard.exceptions import SoftTimeLimitExceeded
 from typing import Any, Callable
 from uuid import uuid4
 
+from sqlalchemy import select
+
 from .celery_app import celery_app
+from .runtime import DocumentCleanupCompensationPending
 from rag_modules.indexing.engine import DocumentIndexingError
 from rag_modules.indexing.progress import DatabaseProgressReporter, IndexingCancelled, IndexingYielded
 from rag_modules.indexing.models import IndexDocumentCommand, SegmentStagingCommand
@@ -132,7 +135,11 @@ class IndexingTaskRunner:
                     await self.engine.aclose()
 
 
-@celery_app.task(name="rag_modules.tasks.indexing_tasks.index_document")
+@celery_app.task(
+    name="rag_modules.tasks.indexing_tasks.index_document",
+    autoretry_for=(DocumentCleanupCompensationPending,), max_retries=None,
+    retry_backoff=True, retry_backoff_max=300,
+)
 def index_document(*, job_document_id: str | None = None, dataset_id: str | None = None, document_id: str | None = None) -> None:
     """Process a durable job-document identifier.
 
@@ -174,31 +181,43 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
     if index is None:
         return None
     revision_segments = None
-    if job.revision_id:
+    revision_invalid = False
+    revision_id = job_document.revision_id or job.revision_id
+    if revision_id:
         from rag_modules.db.models import DocumentRevisionRecord
+        from rag_modules.documents.revisions import validate_revision_segments
 
-        revision = await session.get(DocumentRevisionRecord, job.revision_id)
-        snapshot = revision.segments.get("items", []) if revision and isinstance(revision.segments, dict) else []
-        revision_segments = tuple(
-            PreviewSegment(
-                local_id=item["id"],
-                parent_local_id=item.get("parent_id"),
-                position=int(item["position"]),
-                content=item["content"],
-                source_metadata={
-                    **dict(item.get("source_metadata") or {}),
-                    "revision_id": revision.id if revision else job.revision_id,
-                },
-                index_type=item.get("index_type") or "general",
-                question=item.get("question"),
-                answer=item.get("answer"),
-                keywords=tuple(item.get("keywords") or ()),
+        revision = await session.scalar(select(DocumentRevisionRecord).where(
+            DocumentRevisionRecord.id == revision_id,
+            DocumentRevisionRecord.dataset_id == job.dataset_id,
+            DocumentRevisionRecord.document_id == document.id,
+        ))
+        try:
+            if revision is None:
+                raise ValueError("missing revision")
+            snapshot = validate_revision_segments(revision.segments)["items"]
+            revision_segments = tuple(
+                PreviewSegment(
+                    local_id=item["id"], parent_local_id=item["parent_id"] if job.indexing_technique != "economy" else None,
+                    position=item["position"], content=item["content"],
+                    source_metadata={**item["source_metadata"], "revision_id": revision.id},
+                    index_type=item["index_type"] if job.indexing_technique != "economy" else "general",
+                    question=item["question"], answer=item["answer"], keywords=tuple(item["keywords"]),
+                ) for item in snapshot
             )
-            for item in snapshot
-        )
+        except (ValueError, TypeError, KeyError):
+            # Defer the safe failure until the runner has claimed the row, so
+            # it persists a terminal failure rather than endlessly rebuilding it.
+            revision_invalid = True
 
     process = (job.process_rule or {}).get("segmentation", job.process_rule or {})
-    if job.segmentation_mode == "parent_child":
+    segmentation_mode = job.segmentation_mode
+    if revision_segments is not None:
+        # Manual snapshots own their boundaries; automatic segmentation changes
+        # apply to unedited sources. Economy indexes every saved segment as an
+        # independent general segment, retaining the original hierarchy in the revision.
+        segmentation_mode = "parent_child" if any(item.index_type == "child" for item in revision_segments) else "general"
+    if segmentation_mode == "parent_child":
         segmentation = ParentChildSegmentationConfig(
             parent_mode=process.get("parent_mode", "paragraph"),
             parent_max_length=int(process.get("parent_max_chunk_length", process.get("parent_max_length", settings.indexing.parent_max_chunk_length))),
@@ -229,6 +248,8 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
     )
 
     def command_factory(_row):
+        if revision_invalid:
+            raise DocumentIndexingError("REVISION_SNAPSHOT_INVALID", False, "The bound document revision is unavailable.")
         return IndexDocumentCommand(
             staging=SegmentStagingCommand(
                 dataset_id=job.dataset_id,
@@ -236,7 +257,7 @@ async def build_task_runner(session, *, job_document_id: str, dataset_id: str | 
                 document_id=document.id,
                 indexing_job_id=job.id,
                 indexing_technique=job.indexing_technique,
-                segmentation_mode=job.segmentation_mode,
+                segmentation_mode=segmentation_mode,
             ),
             object_key=info["object_key"],
             filename=document.name,

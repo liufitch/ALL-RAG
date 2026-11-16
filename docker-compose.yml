@@ -189,6 +189,7 @@ services:
       GRAPH__URI: ${GRAPH__URI:-bolt://neo4j:7687}
       GRAPH__PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
       EMBEDDING__BASE_URL: ${EMBEDDING__BASE_URL:-http://host.docker.internal:8001/v1}
+      RERANK__BASE_URL: ${RERANK__BASE_URL:-http://host.docker.internal:8002/v1}
       GRAPH__EXTRACTION_BASE_URL: ${GRAPH__EXTRACTION_BASE_URL:-http://host.docker.internal:8001/v1}
       PARSER__OCR_ENABLED: ${PARSER__OCR_ENABLED:-true}
       PARSER__OCR_DEVICE: ${PARSER__OCR_DEVICE:-cpu}

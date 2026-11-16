@@ -99,6 +99,31 @@ class Neo4jGraphStore:
             completed.update(str(record["id"]) for record in records)
         return completed
 
+    def delete_document(self, dataset_id: str, document_id: str) -> None:
+        """Remove source facts and orphan entities while retaining shared ones."""
+        def write(tx):
+            params = {"dataset_id": dataset_id, "document_id": document_id}
+            tx.run(
+                "MATCH (s:SourceSegment {dataset_id: $dataset_id, document_id: $document_id}) "
+                "MATCH ()-[r:RELATED {segment_id: s.id}]->() DELETE r",
+                **params,
+            )
+            tx.run(
+                "MATCH (s:SourceSegment {dataset_id: $dataset_id, document_id: $document_id})-[:MENTIONS]->(e:Entity) "
+                "WITH DISTINCT e WHERE NOT EXISTS { "
+                "MATCH (other:SourceSegment)-[:MENTIONS]->(e) "
+                "WHERE other.dataset_id <> $dataset_id OR other.document_id <> $document_id "
+                "} DETACH DELETE e",
+                **params,
+            )
+            tx.run(
+                "MATCH (s:SourceSegment {dataset_id: $dataset_id, document_id: $document_id}) DETACH DELETE s",
+                **params,
+            )
+
+        with self.driver.session(database=self.database) as session:
+            session.execute_write(write)
+
     def search(self, index_id: str, query: str, limit: int) -> list[GraphHit]:
         records, _, _ = self.driver.execute_query(
             "MATCH (e:Entity {dataset_index_id: $index_id}) "

@@ -215,7 +215,7 @@ class DocumentService:
     async def get_segment_revision(self, dataset_id: str, document_id: str) -> int:
         await self.get_document(dataset_id, document_id)
         revision = await self.repository.get_latest_revision(dataset_id, document_id)
-        if revision is not None and revision.status not in {"completed", "failed", "cancelled"}:
+        if revision is not None and revision.status not in {"completed", "failed", "cancelled", "saved"}:
             from rag_modules.services.document_revision_service import RevisionConflictError
             raise RevisionConflictError("A revision is still being indexed; reload after it completes.")
         return int(revision.version) if revision is not None else 0
